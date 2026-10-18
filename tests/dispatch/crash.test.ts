@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
 import { status } from "../../src/dispatch/status.ts";
+import { watch } from "../../src/dispatch/watch.ts";
 import { fixture, task } from "./fixture.ts";
 
 // Phase 1 PRD acceptance criterion 8: kill the dispatcher after leasing, after the in-flight update and after worker
@@ -22,8 +23,18 @@ async function crashAt(stage: string, scenario = "commit-result") {
   return f;
 }
 
+/** The killed dispatcher's request ID returns its attempt, without dispatching again or acquiring another lease. */
+async function repeatReturnsAttempt(f: Awaited<ReturnType<typeof fixture>>, stage: string) {
+  const leases = (await f.deps.workspaces.leases()).length;
+  const again = await dispatchOnce(f.deps, { requestId: `crash-${stage}` });
+  assert.equal(again.reason, "existing_request");
+  assert.equal(again.attempt?.taskId, "crash-a1");
+  assert.equal((await f.deps.workspaces.leases()).length, leases);
+}
+
 test("killed after leasing: the leased task is not dispatched again and status reports it", async () => {
   const f = await crashAt("after-lease");
+  await repeatReturnsAttempt(f, "after-lease");
   assert.equal((await f.deps.attempts.forTask("crash-a1"))[0]!.entries.at(-1)?.kind, "requested");
   assert.equal((await f.deps.workspaces.leases()).filter(l => l.holder === "crash-a1").length, 1);
   const view = await status(f.deps);
@@ -37,6 +48,7 @@ test("killed after leasing: the leased task is not dispatched again and status r
 
 test("killed after the in-flight update: the in-flight task is not dispatched again", async () => {
   const f = await crashAt("after-start");
+  await repeatReturnsAttempt(f, "after-start");
   assert.equal((await f.tasks.read("crash-a1"))?.state, "in_flight");
   assert.equal((await f.deps.attempts.forTask("crash-a1"))[0]!.entries.at(-1)?.kind, "leased");
   const next = await dispatchOnce(f.deps);
@@ -55,8 +67,18 @@ test("killed after launch: dispatch is refused until the operator confirms the w
   const stuck = view.attempts.find(a => a.attempt.taskId === "crash-a1");
   assert.equal(stuck?.possiblyRunning, true);
   assert.equal(view.nextAction.code, "stop_worker");
+  await repeatReturnsAttempt(f, "after-launch");
+
+  // watch reads only the runtime records, so it keeps following the attempt with no dispatcher, and stops once the
+  // operator confirms the worker stopped.
+  let watched: { found: boolean; finished: boolean } | undefined;
+  const following = watch(f.deps, { leaseId: stuck!.attempt.leaseId!, follow: true, print: () => {}, pollMs: 10 }).then(r => { watched = r; });
+  await sleep(100);
+  assert.equal(watched, undefined);
 
   assert.equal((await resolveStopped(f.deps, { leaseId: stuck!.attempt.leaseId!, confirmed: true })).reason, "resolved");
+  await following;
+  assert.deepEqual(watched, { found: true, finished: true });
   const next = await dispatchOnce(f.deps);
   assert.equal(next.attempt?.taskId, "crash-b1");
   assert.equal((await f.tasks.read("crash-a1"))?.state, "in_flight");

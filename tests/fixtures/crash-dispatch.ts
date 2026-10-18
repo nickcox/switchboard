@@ -33,5 +33,5 @@ if (stage === "after-lease") {
 } else {
   throw new Error(`Unknown stage ${stage}`);
 }
-await dispatchOnce(deps);
+await dispatchOnce(deps, { requestId: `crash-${stage}` });
 throw new Error("The dispatcher should have been killed");
