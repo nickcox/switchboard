@@ -38,7 +38,9 @@ Node.js runs the TypeScript source directly, with no build step. The root tests 
 
 ## Running it
 
-Create a configuration file with absolute paths. For example, `switchboard.json`:
+To try Switchboard without setting up a project, [`investigations/real-dispatch/`](investigations/real-dispatch/README.md) builds a fresh disposable demo and runs one real dispatch.
+
+Otherwise, create a configuration file with absolute paths. For example, `switchboard.json`:
 
 ```json
 {

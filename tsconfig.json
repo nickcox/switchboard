@@ -19,6 +19,7 @@
   },
   "include": [
     "src/**/*.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "investigations/real-dispatch/**/*.ts"
   ]
 }
