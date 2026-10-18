@@ -54,7 +54,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     contextId: "fixture-context", tasks,
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
     attempts: new AttemptLog(runtimeRoot, "fixture-context"), runtime,
-    launch: (input, signal) => worker.execute(input, signal),
+    launch: (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {}),
     retention: request => checkRetention(git, environment, request),
     repository,
     delivery: {

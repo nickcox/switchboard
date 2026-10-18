@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AttemptConflict, type AttemptLog, type AttemptRecord, type AttemptRef } from "../attempts/log.ts";
 import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
-import type { PiRunReport } from "../runtime/pi/worker.ts";
+import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
 import type { RuntimeRecord, RuntimeRecords } from "../runtime/records.ts";
 import { TaskStoreError, type Task, type TaskStore } from "../tasks/store.ts";
 import { WorkspaceError, type Allocation, type Lease, type WorkspaceProvider } from "../workspaces/provider.ts";
@@ -25,7 +25,7 @@ export type Dependencies = {
   workspaces: WorkspaceProvider;
   attempts: AttemptLog;
   runtime: RuntimeRecords;
-  launch: (input: WorkerInput, signal?: AbortSignal) => Promise<PiRunReport>;
+  launch: (input: WorkerInput, signal?: AbortSignal, onRequest?: WorkerHooks["onRequest"]) => Promise<PiRunReport>;
   retention: (request: RetentionRequest) => Promise<RetentionResult>;
   /** The repository whose refs the workspaces share, for retention checks. */
   repository: string;
@@ -185,12 +185,21 @@ export async function dispatchOnce(
     workspace: allocation.path, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], delivery,
   };
   let report: PiRunReport;
-  try { report = await deps.launch(input, options.signal); }
+  // Each stop request or operator message the worker forwards is recorded with its sender (ADR-0005).
+  let requests = Promise.resolve();
+  const onRequest: WorkerHooks["onRequest"] = (request, outcome) => {
+    requests = requests.then(() => deps.attempts.append(ref, "operator_request", {
+      id: request.id, kind: request.kind, sender: request.sender, outcome: outcome.outcome,
+      ...(request.message ? { message: request.message.slice(0, 4000) } : {}), ...(outcome.error ? { error: outcome.error.slice(0, 500) } : {}),
+    })).catch(() => {});
+  };
+  try { report = await deps.launch(input, options.signal, onRequest); }
   catch (error) {
     // The runtime refused before starting a worker; nothing was launched.
     await deps.attempts.append(ref, "worker_finished", { status: "not_started", runtimeDirectory: "-", reason: message(error).slice(0, 500) });
     return finalise(deps, ref, summary, observed, task, delivery, undefined, `Worker not started: ${message(error)}`);
   }
+  await requests;
   const resultCommit = codeCommit(report.result, outputBranch);
   if (resultCommit) summary.resultCommit = resultCommit;
   await deps.attempts.append(ref, "worker_finished", {

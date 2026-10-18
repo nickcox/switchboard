@@ -3,6 +3,7 @@ import { z } from "zod";
 import { bounded, RuntimeFailure } from "../async.ts";
 import { validateWorkerResult, workerResultSchema, type WorkerInput, type WorkerResult } from "../contracts.ts";
 import { ActivityWriter, shorten, type ActivityEntry } from "../activity.ts";
+import { claimRequest, recordResult, unclaimedRequests, type ControlRequest, type RequestResult } from "../requests.ts";
 import { inside, readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding } from "../records.ts";
 import type { RpcRecord } from "./jsonl.ts";
 import { PiRpcClient } from "./rpc-client.ts";
@@ -29,7 +30,14 @@ const optionsSchema = z.object({
   /** Stop the worker once a usage snapshot exceeds either limit. Subscription providers may report a cost of zero. */
   maxCost: z.number().positive().optional(),
   maxTokens: z.number().int().positive().optional(),
+  /** How often the owning dispatcher checks for stop requests and operator messages while the worker runs. */
+  requestPollMs: z.number().int().positive().default(1000),
 });
+export type WorkerHooks = {
+  onActivity?: (entry: ActivityEntry) => void;
+  /** Called once for each stop request or operator message this worker forwarded, with what happened. */
+  onRequest?: (request: ControlRequest, result: Omit<RequestResult, "version" | "at">) => void;
+};
 const statsSchema = z.object({ tokens: z.object({ total: z.number() }), cost: z.number() });
 export type PiWorkerOptions = z.input<typeof optionsSchema>;
 export type PiRunReport = {
@@ -54,14 +62,44 @@ export class PiWorker {
     this.options = optionsSchema.parse(options);
   }
 
-  async execute(input: WorkerInput, operator?: AbortSignal, onActivity?: (entry: ActivityEntry) => void): Promise<PiRunReport> {
+  async execute(input: WorkerInput, operator?: AbortSignal, hooks: WorkerHooks = {}): Promise<PiRunReport> {
     if (operator?.aborted) throw new RuntimeFailure("interrupted", "Interrupted before launch");
     const reserved = await this.records.reserve(input);
     const { binding, directory } = reserved;
-    const activity = new ActivityWriter(directory, onActivity);
-    // Exceeding a usage limit stops the worker the same way an operator interruption does.
+    const activity = new ActivityWriter(directory, hooks.onActivity);
+    // Exceeding a usage limit, or a stop request, stops the worker the same way an operator interruption does.
     const budget = new AbortController();
-    const signal = operator ? AbortSignal.any([operator, budget.signal]) : budget.signal;
+    const stopRequest = new AbortController();
+    let stoppedBy: string | undefined;
+    const signal = AbortSignal.any([budget.signal, stopRequest.signal, ...(operator ? [operator] : [])]);
+    let requestTimer: ReturnType<typeof setInterval> | undefined;
+    let forwarding = false;
+    // Only this process holds the worker's RPC channel, so it alone forwards requests, each at most once.
+    const forwardRequests = async (current: PiRpcClient) => {
+      if (forwarding || current.childExit) return;
+      forwarding = true;
+      try {
+        for (const request of await unclaimedRequests(reserved).catch(() => [])) {
+          if (!(await claimRequest(reserved, request.id, "dispatcher").catch(() => false))) continue;
+          let result: Omit<RequestResult, "version" | "at">;
+          if (request.kind === "stop") {
+            stoppedBy ??= request.sender;
+            result = { outcome: "stopping" };
+            activity.write({ kind: "note", text: `Stop requested by ${request.sender}` });
+            stopRequest.abort();
+          } else {
+            try {
+              const data = await current.request(request.kind, { message: request.message }, this.options.requestMs);
+              const disposition = isObject(data) && typeof data.disposition === "string" ? data.disposition : "accepted";
+              result = { outcome: disposition };
+            } catch (error) { result = { outcome: "failed", error: asError(error).message }; }
+            activity.write({ kind: "note", text: `${request.kind === "steer" ? "Steering message" : "Follow-up"} from ${request.sender} (${result.outcome}): ${shorten(request.message ?? "")}` });
+          }
+          await recordResult(reserved, request.id, result).catch(() => {});
+          try { hooks.onRequest?.(request, result); } catch { /* Recording must not affect the worker. */ }
+        }
+      } finally { forwarding = false; }
+    };
     let lastSnapshot = 0;
     let statsTimer: ReturnType<typeof setInterval> | undefined;
     const snapshot = async (current: PiRpcClient) => {
@@ -119,6 +157,7 @@ export class PiWorker {
       activity.write({ kind: "note", text: `Worker started (session ${binding.input.identity.sessionId})` });
       const running = client;
       statsTimer = setInterval(() => void snapshot(running), this.options.statsMs);
+      requestTimer = setInterval(() => void forwardRequests(running), this.options.requestPollMs);
       const ending = await bounded(settled, this.options.runMs, "worker_timeout", signal);
       await snapshot(client);
       if (ending.aborted) throw new RuntimeFailure("worker_aborted", "Pi reported an aborted run");
@@ -126,6 +165,7 @@ export class PiWorker {
       this.validateState(stateSchema.parse(await this.rpc(client, "get_state", {}, signal)), binding);
     } catch (error) { failure = asError(error); }
     if (statsTimer) clearInterval(statsTimer);
+    if (requestTimer) clearInterval(requestTimer);
 
     if (client) {
       await this.shutdown(client, failure !== undefined);
@@ -149,6 +189,9 @@ export class PiWorker {
     if (operator?.aborted) {
       result = undefined;
       failure = new RuntimeFailure("interrupted", "Operator interrupted the worker");
+    } else if (stopRequest.signal.aborted) {
+      result = undefined;
+      failure = new RuntimeFailure("interrupted", `Stopped at the request of ${stoppedBy}`);
     } else if (budget.signal.aborted) {
       result = undefined;
       failure = new RuntimeFailure("over_budget", "The worker was stopped because the attempt exceeded its usage limit");

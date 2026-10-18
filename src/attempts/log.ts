@@ -28,6 +28,11 @@ const entrySchemas = {
   task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
   halted: z.strictObject({ stage: nonempty, reason: nonempty, detail: nonempty.optional() }),
+  /** A stop request or operator message the dispatcher forwarded to the running worker, with what happened. */
+  operator_request: z.strictObject({
+    id: z.uuid(), kind: z.enum(["stop", "steer", "follow_up"]), sender: nonempty, outcome: nonempty,
+    message: nonempty.optional(), error: nonempty.optional(),
+  }),
   /** An operator confirmed the attempt's worker had stopped although no exit was observed. */
   operator_resolved: z.strictObject({ action: z.literal("worker_stopped"), note: nonempty.optional() }),
 } as const;

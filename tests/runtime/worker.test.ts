@@ -174,7 +174,7 @@ test("missing executable is a definite no-child failure with retained identity",
 test("the worker's activity is recorded and passed to the listener", async () => {
   const f = fixture();
   const seen: string[] = [];
-  const report = await f.worker.execute(f.input, undefined, entry => seen.push(entry.kind));
+  const report = await f.worker.execute(f.input, undefined, { onActivity: entry => seen.push(entry.kind) });
   assert.equal(report.status, "reported");
   const kinds = (await readFile(join(report.directory, "activity.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).kind);
   assert.deepEqual(kinds, seen);

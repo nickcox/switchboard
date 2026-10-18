@@ -14,11 +14,13 @@ export const reasons = {
   stopped: "The attempt stopped after changing some state, which is preserved. The detail says where and why.",
   existing_request: "An attempt with this request ID already exists; its current state is reported instead.",
   resolved: "The operator's confirmation that the worker stopped was recorded. The attempt no longer blocks dispatch.",
+  delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",
+  undelivered: "No running dispatcher took the request in time, so it was withdrawn. It will never be forwarded.",
 } as const;
 export type Reason = keyof typeof reasons;
 
 /** Where a result was decided, matching the Phase 1 PRD dispatch sequence. */
-export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "finalise" | "resolve";
+export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "finalise" | "resolve" | "control";
 
 export const nextActions = {
   none: "Nothing further is needed.",
@@ -33,6 +35,8 @@ export const nextActions = {
   fix_configuration: "Check the configuration and that the task store, Treehouse and runtime are reachable.",
   choose_another_task: "Choose a ready task without an earlier lease, or resolve the earlier attempt first.",
   complete_task_update: "Read the task in the task store and apply the outcome recorded in the attempt log.",
+  watch_attempt: "Follow the attempt with `switchboard watch --lease <lease-id>`.",
+  no_dispatcher: "No running dispatcher owns this worker. If it may still be running, stop it another way, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
 } as const;
 export type NextAction = keyof typeof nextActions;
 
@@ -74,7 +78,9 @@ export function describe(value: DispatchResult): string {
   const a = value.attempt;
   if (a) {
     lines.push(`Task ${a.taskId}, attempt ${a.attempt}${a.requestId ? ` (request ${a.requestId})` : ""}`);
-    if (a.leaseId) lines.push(`Lease ${a.leaseId} at ${a.workspace} on ${a.outputBranch} from ${a.startingCommit}`);
+    if (a.leaseId) {
+      lines.push(`Lease ${a.leaseId}${a.workspace ? ` at ${a.workspace}` : ""}${a.outputBranch ? ` on ${a.outputBranch}` : ""}${a.startingCommit ? ` from ${a.startingCommit}` : ""}`);
+    }
     if (a.sessionId) lines.push(`Session ${a.sessionId}`);
     if (a.resultCommit) lines.push(`Result commit ${a.resultCommit}`);
   }

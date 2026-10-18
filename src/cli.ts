@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { createDependencies, loadConfig } from "./config.ts";
 import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
+import { requestControl } from "./dispatch/control.ts";
 import { resolveStopped } from "./dispatch/resolve.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
@@ -14,9 +15,15 @@ const usage = `Usage:
   switchboard status [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped] [--note <text>] [--json] [--config <path>]
   switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
+  switchboard stop --lease <lease-id> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
+  switchboard steer --lease <lease-id> [--after] [--as <sender>] [--wait <seconds>] [--json] [--config <path>] "<message>"
 
 watch prints an attempt's worker activity and follows it until the worker's exit is recorded. It reads files
 only, so it works from any terminal and after the dispatcher has stopped. status shows each attempt's lease ID.
+
+stop and steer ask the dispatcher that owns a running worker to stop it, or to pass it a message (with --after,
+once it finishes its current work). A request no dispatcher takes within --wait seconds (default 10) is withdrawn
+and never forwarded. --as names the sender recorded with the request; the default is operator:<your user name>.
 
 resolve records the operator's confirmation that a worker with no observed exit has stopped. Without
 --worker-stopped it only reports what each owner holds. It never changes the task or the lease.
@@ -33,10 +40,12 @@ async function main(argv: string[]): Promise<number> {
       once: { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
       lease: { type: "string" }, "worker-stopped": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
+      after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" },
     },
   });
   const command = positionals[0];
-  if (values.help || !command || positionals.length > 1 || !["dispatch", "status", "resolve", "watch"].includes(command)) {
+  const commands = ["dispatch", "status", "resolve", "watch", "stop", "steer"];
+  if (values.help || !command || !commands.includes(command) || positionals.length !== (command === "steer" ? 2 : 1)) {
     console.error(usage);
     return values.help ? 0 : 2;
   }
@@ -44,7 +53,12 @@ async function main(argv: string[]): Promise<number> {
     console.error("dispatch requires --once: Phase 1 dispatches exactly one task per invocation.\n\n" + usage);
     return 2;
   }
-  if ((command === "resolve" || command === "watch") && !values.lease) {
+  const wait = Number(values.wait ?? "10");
+  if (!Number.isFinite(wait) || wait <= 0) {
+    console.error("--wait must be a positive number of seconds.");
+    return 2;
+  }
+  if (["resolve", "watch", "stop", "steer"].includes(command) && !values.lease) {
     console.error(`${command} requires --lease <lease-id>; \`switchboard status\` shows each attempt's lease ID.\n\n${usage}`);
     return 2;
   }
@@ -60,6 +74,16 @@ async function main(argv: string[]): Promise<number> {
   if (command === "status") {
     const value = await status(deps);
     console.log(values.json ? JSON.stringify(value, null, 2) : describeStatus(value));
+    return value.ok ? 0 : 1;
+  }
+
+  if (command === "stop" || command === "steer") {
+    const value = await requestControl(deps, {
+      leaseId: values.lease!, kind: command === "stop" ? "stop" : values.after ? "follow_up" : "steer",
+      ...(command === "steer" ? { message: positionals[1]! } : {}),
+      sender: values.as ?? `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`, waitMs: wait * 1000,
+    });
+    console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
     return value.ok ? 0 : 1;
   }
 

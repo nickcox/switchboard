@@ -94,7 +94,9 @@ export async function createDependencies(config: Config, progress?: (message: st
     }),
     attempts: new AttemptLog(config.runtimeRoot, config.contextId),
     runtime,
-    launch: (input, signal) => worker.execute(input, signal, progress ? entry => progress(describeEntry(entry)) : undefined),
+    launch: (input, signal, onRequest) => worker.execute(input, signal, {
+      ...(progress ? { onActivity: entry => progress(describeEntry(entry)) } : {}), ...(onRequest ? { onRequest } : {}),
+    }),
     retention: request => checkRetention(git, hostEnvironment, request),
     repository: config.workspaces.repository,
     staleMs: config.worker.staleMs,
