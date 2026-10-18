@@ -12,7 +12,7 @@ The earlier rule "Phase 1 has no Switchboard database" pushed this information i
 
 Switchboard keeps an append-only attempt log under the configured runtime root, outside every workspace. An attempt is one launch of one worker for one task in one lease. Its record contains the context, task ID, any caller request ID, lease ID, session ID, delivery contract, starting commit and, when known, result commit, worker outcome, recorded task outcome and retention-check result.
 
-The record is created before the lease is acquired, and later observations are appended as they are confirmed. A repeated request ID finds the existing attempt instead of creating another. Earlier entries are never edited or deleted. The runtime-owned input binding and child-exit records from [ADR-0005](0005-pi-rpc-worker-and-result-file.md) are the attempt's launch and child-exit entries.
+The record is created before the lease is acquired, and later observations are appended as they are confirmed. A repeated request ID finds the existing attempt instead of creating another. Earlier entries are never edited or deleted. The runtime-owned input binding and child-exit records from [ADR-0005](0005-pi-rpc-worker-and-result-file.md) hold the attempt's launch input and observed exit; the log refers to them by lease ID, session ID and runtime directory rather than copying them.
 
 The log is not authoritative for task state, lease state or worker liveness. Each of those is still read from its owner. The log records which owner state belongs to which attempt.
 
@@ -23,7 +23,7 @@ The log is not authoritative for task state, lease state or worker liveness. Eac
 - After a crash, the next invocation finds unresolved attempts in the log and reads their state from each owner. It still does not resume or repair them automatically.
 - An attempt whose worker may still be running blocks all dispatch. An attempt whose worker has stopped blocks only its own task until the operator resolves it.
 - The log does not hold a task lifecycle, a queue, retry state or schedules. Adding any of those needs a separate decision, and [ADR-0003](0003-pi-durable-for-durable-orchestration.md) requires reconsidering Pi Durable first.
-- The file format, location and write-durability guarantees are documented with the implementation. Like the runtime records, the log is not protected from a malicious worker running as the same OS user.
+- The file format, location and write-durability guarantees are documented in the [attempt log format](../phases/01-basic-dispatch/attempt-log.md). Like the runtime records, the log is not protected from a malicious worker running as the same OS user.
 
 ## Alternatives considered
 
