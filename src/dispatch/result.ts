@@ -29,6 +29,7 @@ export const nextActions = {
   confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>`, then run resolve again with --worker-stopped.",
   apply_task_outcome: "Read the task and the workspace, record the task outcome in the task store, and return the lease once the work is retained.",
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",
+  return_lease: "The task is done. Return the lease through Treehouse once the retention check is confirmed and the workspace is no longer needed.",
   fix_configuration: "Check the configuration and that the task store, Treehouse and runtime are reachable.",
   choose_another_task: "Choose a ready task without an earlier lease, or resolve the earlier attempt first.",
   complete_task_update: "Read the task in the task store and apply the outcome recorded in the attempt log.",

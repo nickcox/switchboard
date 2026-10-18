@@ -243,7 +243,7 @@ async function finalise(
     ok: outcome.done, reason: outcome.done ? "done" : "held", stage: "finalise", lease: "preserved", observed, attempt: summary, worker, retention,
     task: { id: recorded.id, state: recorded.state, held: recorded.held, holdReason: recorded.holdReason },
     ...(outcome.done ? {} : { detail: holdReason }),
-    nextAction: outcome.done ? "none" : outcome.review ? "review_branch" : "inspect_attempt",
+    nextAction: outcome.done ? "return_lease" : outcome.review ? "review_branch" : "inspect_attempt",
   });
 }
 

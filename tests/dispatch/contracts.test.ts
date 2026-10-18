@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dispatchOnce, type ContractSpec } from "../../src/dispatch/dispatch.ts";
+import { status } from "../../src/dispatch/status.ts";
 import { fixture } from "./fixture.ts";
 
 // Per-task delivery contracts: a task's kind selects its contract from the configuration.
@@ -15,6 +16,8 @@ test("a task kind with a report contract is done when its report is retained out
   assert.equal(outcome.reason, "done", JSON.stringify(outcome, null, 2));
   assert.equal((await f.tasks.read("scout-a1"))?.state, "done");
   assert.equal(outcome.retention?.retained, true);
+  assert.equal(outcome.nextAction.code, "return_lease");
+  assert.equal((await status(f.deps)).attempts[0]?.nextAction.code, "return_lease");
   const requested = (await f.deps.attempts.forTask("scout-a1"))[0]!.entries[0]!;
   assert.deepEqual(requested.data.contract, { name: "scout", ...scout });
   // The worker was told where artefacts survive.

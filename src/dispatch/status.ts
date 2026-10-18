@@ -48,7 +48,8 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     const reviewHold = typeof task === "object" && task.held && (task.holdReason ?? "").endsWith("review required");
     const code: NextAction = possiblyRunning ? "stop_worker"
       : !leaseHeld ? (typeof task === "object" && task.state === "in_flight" ? "inspect_attempt" : "none")
-      : reviewHold ? "review_branch" : "inspect_attempt";
+      : reviewHold ? "review_branch"
+      : typeof task === "object" && task.state === "done" ? "return_lease" : "inspect_attempt";
     attempts.push({ attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, task, nextAction: action(code) });
   }
   // Runtime records with no matching attempt, for example after a crash before the attempt was logged.
