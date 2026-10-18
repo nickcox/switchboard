@@ -16,7 +16,7 @@ const entrySchemas = {
   launched: z.strictObject({ sessionId: z.uuid(), runtimeDirectory: nonempty }),
   worker_finished: z.strictObject({ status: nonempty, reason: nonempty.optional(), outcome: nonempty.optional() }),
   task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty.optional() }),
-  retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty) }),
+  retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
   halted: z.strictObject({ stage: nonempty, reason: nonempty, detail: nonempty.optional() }),
 } as const;
 export type EntryKind = keyof typeof entrySchemas;

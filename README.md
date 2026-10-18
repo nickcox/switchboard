@@ -29,7 +29,7 @@ Node.js runs the TypeScript source directly, with no build step. The root tests 
 - `src/runtime/pi/`: Pi-specific RPC transport, launch instructions and result-file validation.
 - `src/attempts/log.ts`: the append-only attempt log ([ADR-0006](docs/adr/0006-switchboard-attempt-log.md)).
 - `src/tasks/`: the task-store interface and the tasks-axi 0.2.6 adapter.
-- `src/workspaces/`: the workspace-provider interface and the Treehouse adapter (acquire and inspect only).
+- `src/workspaces/`: the workspace-provider interface, the Treehouse adapter (acquire and inspect only) and the read-only Git retention check.
 - `src/infra/`: shared subprocess handling.
 - `tests/`: runtime framing, lifecycle, identity, discovery and result-failure tests; attempt-log creation races; tasks-axi and Treehouse adapter behaviour.
 - `investigations/`: separate provider/runtime capability probes with their own prerequisites. They are not run by the root test command.
