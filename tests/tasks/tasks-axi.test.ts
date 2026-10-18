@@ -111,7 +111,8 @@ test("a refused change is reported as rejected", async () => {
 test("environment variables and configuration files cannot redirect the store", async () => {
   const { dir, file, store } = await fixture([["add", "addr-a1", "Addressed", "--repo", "fixture"]]);
   const copy = join(dir, "copy.md");
-  writeFileSync(copy, readFileSync(file));
+  const before = readFileSync(file, "utf8");
+  writeFileSync(copy, before);
   writeFileSync(join(dir, ".tasks.toml"), 'backend = "sqlite"\n[markdown]\npath = "copy.md"\n');
   const saved = { file: process.env.TASKS_AXI_FILE, backend: process.env.TASKS_AXI_BACKEND };
   process.env.TASKS_AXI_FILE = copy;
@@ -125,7 +126,7 @@ test("environment variables and configuration files cannot redirect the store", 
     if (saved.backend === undefined) delete process.env.TASKS_AXI_BACKEND;
   }
   assert.equal((await store.read("addr-a1"))?.state, "in_flight");
-  assert.ok(!readFileSync(copy, "utf8").includes("in_flight"));
+  assert.equal(readFileSync(copy, "utf8"), before);
 });
 
 test("a working directory holding a copy of the store, as a workspace would, does not redirect it", async () => {
