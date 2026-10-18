@@ -125,7 +125,9 @@ test("operator interruption requests queue clearing and abort; it ignores a comp
   assert.equal(sent.some(r => r.type === "abort"), true);
   assert.equal(report.status, "interrupted");
   assert.equal(report.result, undefined);
-  assert.equal(report.childExit?.signal, "SIGKILL");
+  // The fixture ignores SIGTERM, so the stop escalates to SIGKILL. Windows has no signals a process can ignore: Node.js
+  // ends the process at once and reports the SIGTERM it was asked to send.
+  assert.equal(report.childExit?.signal, process.platform === "win32" ? "SIGTERM" : "SIGKILL");
   assert.equal(report.workerTermination, "unverified");
 });
 
