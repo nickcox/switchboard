@@ -128,6 +128,25 @@ test("environment variables and configuration files cannot redirect the store", 
   assert.ok(!readFileSync(copy, "utf8").includes("in_flight"));
 });
 
+test("a working directory holding a copy of the store, as a workspace would, does not redirect it", async () => {
+  const { dir, file, store } = await fixture([["add", "cwd-a1", "Addressed", "--repo", "fixture"]]);
+  const workspace = join(dir, "workspace");
+  mkdirSync(workspace);
+  const copy = join(workspace, "backlog.md");
+  const before = readFileSync(file, "utf8");
+  writeFileSync(copy, before);
+  const saved = process.cwd();
+  process.chdir(workspace);
+  try {
+    await store.start("cwd-a1");
+    assert.deepEqual(await store.inFlight(), ["cwd-a1"]);
+  } finally {
+    process.chdir(saved);
+  }
+  assert.notEqual(readFileSync(file, "utf8"), before);
+  assert.equal(readFileSync(copy, "utf8"), before);
+});
+
 test("open refuses relative, linked and non-canonical store paths", async () => {
   const { dir, home, file } = await fixture();
   const base = { node, entrypoint, repo: "fixture", home };
