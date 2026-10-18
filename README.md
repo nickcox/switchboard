@@ -4,7 +4,7 @@ Foreground dispatch of one ready task to one worker in a leased workspace. The [
 
 ## Current status
 
-This repository contains the specifications, integration investigations and a walking skeleton of Phase 1: `switchboard dispatch --once` and `switchboard status` work end to end against tasks-axi, Treehouse and Pi. They have been tested with disposable fixtures and a synthetic Pi worker, but not yet with a real Pi worker through the CLI. Several Phase 1 requirements remain (see [Not yet done](#not-yet-done)).
+This repository contains the specifications, integration investigations and a walking skeleton of Phase 1: `switchboard dispatch --once` and `switchboard status` work end to end against tasks-axi, Treehouse and Pi. They have been tested with disposable fixtures and a synthetic Pi worker, and once with a real Pi worker (`openai-codex` / `gpt-6.1-sol`) against a disposable repository: the task was held for review with its commit retained on the output branch. Several Phase 1 requirements remain (see [Not yet done](#not-yet-done)).
 
 The runtime uses a separate Pi process, standard RPC and a worker-written `result.json`, with no custom Pi extension, external supervisor or Pi Durable dependency. It validates identity and result data, retains runtime-owned input/exit facts, and refuses same-lease relaunch. One real Pi run against a disposable repository has passed.
 
@@ -66,7 +66,6 @@ npm run switchboard -- dispatch --once --config ./switchboard.json
 
 ## Not yet done
 
-- A real Pi worker run through `dispatch --once`.
 - An operator command to resolve an attempt whose worker may still be running. Until then such an attempt blocks all dispatch, and resolving it means recording the worker's exit by hand.
 - Per-task delivery contracts. Every task uses the configured defaults, which hold completed code for review.
 - Fault-injection tests for every failure boundary in the PRD, and the crash tests.
