@@ -106,6 +106,7 @@ async function main(argv: string[]): Promise<number> {
     return value.ok ? 0 : 1;
   }
 
+  if (process.platform !== "darwin") console.error(`Warning: Switchboard has only been verified on macOS, not on ${process.platform}.`);
   // The first interrupt asks the worker to stop; the attempt is then held with an interruption reason.
   const controller = new AbortController();
   process.once("SIGINT", () => {

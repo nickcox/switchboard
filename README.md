@@ -10,7 +10,7 @@ The runtime uses a separate Pi process, standard RPC and a worker-written `resul
 
 **Phase 1 never returns workspaces automatically.** Observing Pi's direct child exit does not prove that detached tool subprocesses stopped, so the adapter always reports `workerTermination: unverified`. Phase 1 finalises the task on direct-child exit, preserves every lease and leaves return to the operator. Automatic return waits until process ownership is verified. See [runtime implementation notes and the Pi Durable comparison](docs/phases/01-basic-dispatch/runtime-integration.md).
 
-macOS is the initial verification target. Linux and Windows are required future platforms, not currently verified runtime integrations.
+macOS is the initial verification target. Linux and Windows are required future platforms, not currently verified runtime integrations. `dispatch` prints a warning on any other platform.
 
 ## Development
 
