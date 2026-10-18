@@ -174,9 +174,11 @@ export class TasksAxiStore implements TaskStore {
 
   private run(args: string[]): Promise<Run> {
     const { node, entrypoint, file, home, timeoutMs } = this.options;
-    // A controlled environment: no TASKS_AXI_* variables, and a home directory chosen by configuration.
+    // A controlled environment: no TASKS_AXI_* variables, and a home directory chosen by configuration. Windows reads
+    // the home directory from USERPROFILE and needs SystemRoot for Node.js to start.
+    const system = process.env.SystemRoot === undefined ? {} : { SystemRoot: process.env.SystemRoot };
     return runCommand(node, [entrypoint, ...args, "--backend", "markdown", "--file", file], {
-      cwd: dirname(file), env: { PATH: process.env.PATH ?? "", HOME: home, NO_COLOR: "1" }, timeoutMs,
+      cwd: dirname(file), env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, ...system, NO_COLOR: "1" }, timeoutMs,
     });
   }
 }

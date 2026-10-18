@@ -99,7 +99,9 @@ export class AttemptLog {
       await rename(temporary, join(directory, String(ref.attempt)));
     } catch (error) {
       await rm(temporary, { recursive: true, force: true }).catch(() => {});
-      if (isCode(error, "EEXIST") || isCode(error, "ENOTEMPTY")) throw new AttemptConflict(ref);
+      // The error code for an existing target differs between platforms (EEXIST, ENOTEMPTY, or EPERM on Windows), so
+      // treat any failed rename as a conflict when the attempt now exists.
+      if (await lstat(join(directory, String(ref.attempt))).then(() => true, () => false)) throw new AttemptConflict(ref);
       throw error;
     }
     return ref;

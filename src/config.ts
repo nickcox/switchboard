@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import { AttemptLog } from "./attempts/log.ts";
@@ -52,7 +53,10 @@ export const configSchema = z.strictObject({
     statsMs: z.number().int().positive().default(5 * 60 * 1000),
     /** status flags a possibly running worker with no activity for this long. */
     staleMs: z.number().int().positive().default(20 * 60 * 1000),
-    /** The worker's complete environment. Defaults to PATH, HOME, USER, TMPDIR and LANG from Switchboard's own. */
+    /**
+     * The worker's complete environment. Defaults to PATH, HOME, USER, TMPDIR and LANG from Switchboard's own, plus
+     * the Windows equivalents and system variables when they are set.
+     */
     environment: z.record(z.string(), z.string()).optional(),
   }),
 });
@@ -81,12 +85,15 @@ export async function createDependencies(config: Config, progress?: (message: st
     statsMs: config.worker.statsMs,
     ...(config.worker.maxCost === undefined ? {} : { maxCost: config.worker.maxCost }),
     ...(config.worker.maxTokens === undefined ? {} : { maxTokens: config.worker.maxTokens }),
-    environment: config.worker.environment ?? inherited(["PATH", "HOME", "USER", "TMPDIR", "LANG"]),
+    environment: config.worker.environment ?? inherited([
+      "PATH", "HOME", "USER", "TMPDIR", "LANG",
+      "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec",
+    ]),
   });
   return {
     contextId: config.contextId,
     tasks: await TasksAxiStore.open({
-      node: process.execPath, entrypoint: tasksAxiEntrypoint, file: config.tasks.file, repo: config.tasks.repo, home: process.env.HOME ?? "/",
+      node: process.execPath, entrypoint: tasksAxiEntrypoint, file: config.tasks.file, repo: config.tasks.repo, home: homedir(),
     }),
     workspaces: await TreehouseProvider.open({
       treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,

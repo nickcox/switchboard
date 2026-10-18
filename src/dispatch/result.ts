@@ -28,7 +28,7 @@ export const nextActions = {
   review_branch: "Review the output branch, integrate it, then record the task as done in the task store. Return the lease after confirming the retention check.",
   inspect_attempt: "Inspect the attempt's task, lease and runtime records, resolve them, then dispatch again.",
   stop_worker: "Confirm the worker has stopped, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
-  confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>`, then run resolve again with --worker-stopped.",
+  confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>` on macOS or Linux, or Resource Monitor on Windows, then run resolve again with --worker-stopped.",
   apply_task_outcome: "Read the task and the workspace, record the task outcome in the task store, and return the lease once the work is retained.",
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",
   return_lease: "The task is done. Return the lease through Treehouse once the retention check is confirmed and the workspace is no longer needed.",
