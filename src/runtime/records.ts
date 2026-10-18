@@ -31,7 +31,7 @@ export type RuntimeRecord = {
   child: { status: "exited"; exit: ChildExit } | { status: "unknown" };
 };
 
-function key(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+export function key(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 export function inside(parent: string, candidate: string): boolean {
   const path = relative(parent, candidate);
   return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
@@ -61,7 +61,7 @@ export async function readJsonFile(path: string, maxBytes = maxRecordBytes): Pro
   } finally { await handle.close(); }
 }
 
-async function writeOnce(path: string, value: unknown): Promise<void> {
+export async function writeOnce(path: string, value: unknown): Promise<void> {
   const data = `${JSON.stringify(value, null, 2)}\n`;
   if (Buffer.byteLength(data, "utf8") > maxRecordBytes) throw new Error("Runtime record exceeds byte limit");
   const file = await open(path, "wx", 0o600);

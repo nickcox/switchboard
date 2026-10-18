@@ -19,7 +19,7 @@ The log is not authoritative for task state, lease state or worker liveness. Eac
 ## Consequences
 
 - This is the only persistent state Switchboard keeps in Phase 1. It follows [principle 3](../principles.md): an attempt is a fact no existing owner holds.
-- Each task's attempts are numbered, and each attempt's first entry is created with exclusive file creation before the lease is acquired. Two invocations at once cannot dispatch the same task. Phase 1 relies on this instead of a host-wide dispatcher lock.
+- Each task's attempts are numbered, and each attempt's first entry is created with exclusive file creation before the lease is acquired. Creation names the latest attempt the caller has already inspected and fails if any other attempt is now the latest. Two invocations at once cannot dispatch the same task, whatever their timing. Phase 1 relies on this instead of a host-wide dispatcher lock.
 - After a crash, the next invocation finds unresolved attempts in the log and reads their state from each owner. It still does not resume or repair them automatically.
 - An attempt whose worker may still be running blocks all dispatch. An attempt whose worker has stopped blocks only its own task until the operator resolves it.
 - The log does not hold a task lifecycle, a queue, retry state or schedules. Adding any of those needs a separate decision, and [ADR-0003](0003-pi-durable-for-durable-orchestration.md) requires reconsidering Pi Durable first.

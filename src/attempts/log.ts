@@ -1,0 +1,207 @@
+import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { z } from "zod";
+import { isMissing, key, readJsonFile, writeOnce } from "../runtime/records.ts";
+
+const nonempty = z.string().min(1).refine(value => value.trim().length > 0);
+const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
+
+/** Entry payloads by kind. New kinds are added as dispatch stages are implemented. */
+const entrySchemas = {
+  requested: z.strictObject({ requestId: nonempty.optional() }),
+  leased: z.strictObject({
+    leaseId: nonempty, workspace: nonempty, baseRef: nonempty, outputBranch: nonempty, startingCommit: commit,
+  }),
+  task_started: z.strictObject({}),
+  launched: z.strictObject({ sessionId: z.uuid(), runtimeDirectory: nonempty }),
+  worker_finished: z.strictObject({ status: nonempty, reason: nonempty.optional(), outcome: nonempty.optional() }),
+  task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty.optional() }),
+  retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty) }),
+  halted: z.strictObject({ stage: nonempty, reason: nonempty, detail: nonempty.optional() }),
+} as const;
+export type EntryKind = keyof typeof entrySchemas;
+export type EntryData<K extends EntryKind> = z.infer<(typeof entrySchemas)[K]>;
+
+const entryKinds = Object.keys(entrySchemas) as [EntryKind, ...EntryKind[]];
+const envelopeSchema = z.strictObject({
+  version: z.literal(1),
+  contextId: nonempty,
+  taskId: nonempty,
+  attempt: z.number().int().positive(),
+  sequence: z.number().int().nonnegative(),
+  kind: z.enum(entryKinds),
+  recordedAt: z.iso.datetime(),
+  data: z.record(z.string(), z.unknown()),
+});
+export type AttemptEntry = z.infer<typeof envelopeSchema>;
+
+export type AttemptRef = { contextId: string; taskId: string; attempt: number };
+export type AttemptRecord = AttemptRef & { entries: AttemptEntry[] };
+
+/** Another invocation created this attempt first. Nothing was written by the caller. */
+export class AttemptConflict extends Error {
+  constructor(readonly ref: AttemptRef) {
+    super(`Attempt ${ref.attempt} for task ${ref.taskId} was not created: another attempt is now the latest`);
+  }
+}
+
+const entryName = /^(\d{4})-([a-z_]+)\.json$/;
+
+/**
+ * Append-only record of which task, lease, session, commits and outcome belong to each attempt (ADR-0006).
+ * It is not authoritative for task, lease or liveness state. Unreadable or inconsistent entries cause refusal.
+ */
+export class AttemptLog {
+  constructor(private readonly root: string, readonly contextId: string) {
+    if (!isAbsolute(root)) throw new Error("Attempt log root must be absolute");
+    nonempty.parse(contextId);
+  }
+
+  /**
+   * Creates attempt `previous + 1` for a task and writes its first entry. `previous` is the latest attempt the caller
+   * has already inspected (0 for none). Creation fails if any other attempt is now the latest, and exclusive directory
+   * creation gives one winner when callers race for the same number, so two invocations cannot both start the task.
+   */
+  async create(taskId: string, requested: EntryData<"requested">, previous: number): Promise<AttemptRef> {
+    nonempty.parse(taskId);
+    z.number().int().nonnegative().parse(previous);
+    const directory = await this.taskDirectory(taskId, true);
+    const ref = { contextId: this.contextId, taskId, attempt: previous + 1 };
+    if (((await this.attemptNumbers(directory)).at(-1) ?? 0) !== previous) throw new AttemptConflict(ref);
+    try { await mkdir(join(directory, String(ref.attempt)), { mode: 0o700 }); }
+    catch (error) {
+      if (isCode(error, "EEXIST")) throw new AttemptConflict(ref);
+      throw error;
+    }
+    await this.write(ref, 0, "requested", requested);
+    return ref;
+  }
+
+  async append<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>): Promise<void> {
+    const record = await this.read(ref);
+    await this.write(ref, record.entries.length, kind, data);
+  }
+
+  async read(ref: AttemptRef): Promise<AttemptRecord> {
+    const directory = join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));
+    return { ...ref, entries: await this.entries(directory, ref) };
+  }
+
+  /** All attempts in this context, ordered by task directory then attempt number. */
+  async list(): Promise<AttemptRecord[]> {
+    const context = await this.contextDirectory(false);
+    if (!context) return [];
+    const records: AttemptRecord[] = [];
+    for (const taskEntry of await readdir(context, { withFileTypes: true })) {
+      if (!taskEntry.isDirectory() || !/^[a-f0-9]{64}$/.test(taskEntry.name)) {
+        throw new Error("Uninspectable attempt log entry");
+      }
+      const directory = join(context, taskEntry.name);
+      for (const attempt of await this.attemptNumbers(directory)) {
+        const first = await this.firstEntry(join(directory, String(attempt)));
+        if (key(first.taskId) !== taskEntry.name || first.attempt !== attempt) {
+          throw new Error("Attempt entry does not match its storage location");
+        }
+        records.push(await this.read({ contextId: this.contextId, taskId: first.taskId, attempt }));
+      }
+    }
+    return records;
+  }
+
+  async forTask(taskId: string): Promise<AttemptRecord[]> {
+    const directory = await this.taskDirectory(taskId, false).catch(error => {
+      if (isMissing(error)) return undefined;
+      throw error;
+    });
+    if (!directory) return [];
+    const records = [];
+    for (const attempt of await this.attemptNumbers(directory)) {
+      records.push(await this.read({ contextId: this.contextId, taskId, attempt }));
+    }
+    return records;
+  }
+
+  async findByRequest(requestId: string): Promise<AttemptRecord | undefined> {
+    return (await this.list()).find(record => record.entries[0]?.data.requestId === requestId);
+  }
+
+  private async write<K extends EntryKind>(ref: AttemptRef, sequence: number, kind: K, data: EntryData<K>) {
+    const entry = envelopeSchema.parse({
+      version: 1, ...ref, sequence, kind, recordedAt: new Date().toISOString(),
+      data: entrySchemas[kind].parse(data),
+    });
+    const directory = join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));
+    // Write-once: a concurrent writer at the same sequence fails rather than replacing an entry.
+    await writeOnce(join(directory, `${String(sequence).padStart(4, "0")}-${kind}.json`), entry);
+  }
+
+  private async entries(directory: string, ref: AttemptRef): Promise<AttemptEntry[]> {
+    const names = (await readdir(directory)).sort();
+    const entries: AttemptEntry[] = [];
+    for (const [index, name] of names.entries()) {
+      const match = entryName.exec(name);
+      if (!match || Number(match[1]) !== index) throw new Error("Uninspectable attempt entry sequence");
+      const entry = envelopeSchema.parse(await readJsonFile(join(directory, name)));
+      const data = entrySchemas[entry.kind].parse(entry.data);
+      if (entry.kind !== match[2] || entry.sequence !== index || entry.contextId !== ref.contextId ||
+        entry.taskId !== ref.taskId || entry.attempt !== ref.attempt) {
+        throw new Error("Attempt entry does not match its storage location");
+      }
+      if ((index === 0) !== (entry.kind === "requested")) throw new Error("Attempt must begin with one requested entry");
+      entries.push({ ...entry, data });
+    }
+    if (entries.length === 0) throw new Error("Attempt has no entries");
+    return entries;
+  }
+
+  private async firstEntry(directory: string): Promise<AttemptEntry> {
+    const first = (await readdir(directory)).sort()[0];
+    if (!first) throw new Error("Attempt has no entries");
+    return envelopeSchema.parse(await readJsonFile(join(directory, first)));
+  }
+
+  private async attemptNumbers(directory: string): Promise<number[]> {
+    const numbers: number[] = [];
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[1-9]\d*$/.test(entry.name)) throw new Error("Uninspectable attempt directory");
+      numbers.push(Number(entry.name));
+    }
+    return numbers.sort((a, b) => a - b);
+  }
+
+  private async contextDirectory(create: true): Promise<string>;
+  private async contextDirectory(create: boolean): Promise<string | undefined>;
+  private async contextDirectory(create: boolean): Promise<string | undefined> {
+    if (create) await mkdir(this.root, { recursive: true, mode: 0o700 });
+    let root: string;
+    try { root = await realpath(this.root); }
+    catch (error) { if (!create && isMissing(error)) return undefined; throw error; }
+    // Kept apart from runtime records, whose discovery refuses unexpected entries in a context directory.
+    const context = join(root, "attempts", key(this.contextId));
+    if (create) await mkdir(context, { recursive: true, mode: 0o700 });
+    try { await safeDirectory(context); }
+    catch (error) { if (!create && isMissing(error)) return undefined; throw error; }
+    return context;
+  }
+
+  private async taskDirectory(taskId: string, create: boolean): Promise<string> {
+    const context = await this.contextDirectory(create);
+    if (!context) throw Object.assign(new Error("No attempt log"), { code: "ENOENT" });
+    const directory = join(context, key(taskId));
+    if (create) {
+      try { await mkdir(directory, { mode: 0o700 }); }
+      catch (error) { if (!isCode(error, "EEXIST")) throw error; }
+    }
+    await safeDirectory(directory);
+    return directory;
+  }
+}
+
+async function safeDirectory(path: string): Promise<void> {
+  const stat = await lstat(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe attempt log directory");
+}
+
+function isCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
