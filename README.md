@@ -4,13 +4,13 @@ Foreground dispatch of one ready task to one worker in a leased workspace. The [
 
 ## Current status
 
-This repository contains the specifications, integration investigations and a walking skeleton of Phase 1: `switchboard dispatch --once` and `switchboard status` work end to end against tasks-axi, Treehouse and Pi. They have been tested with disposable fixtures and a synthetic Pi worker, and once with a real Pi worker (`openai-codex` / `gpt-6.1-sol`) against a disposable repository: the task was held for review with its commit retained on the output branch. Several Phase 1 requirements remain (see [Not yet done](#not-yet-done)).
+Phase 1 is implemented: `switchboard dispatch --once` sends one ready tasks-axi task to one Pi worker in a Treehouse-leased workspace, and `status`, `resolve`, `watch`, `stop` and `steer` inspect and control attempts. It has been tested with disposable fixtures and a synthetic Pi worker, and in real runs with a Pi worker (`openai-codex` / `gpt-6.1-sol`) against disposable repositories: a code task held for review with its commit retained, a `scout` task whose report was retained and recorded as done, and a worker steered while it ran.
 
-The runtime uses a separate Pi process, standard RPC and a worker-written `result.json`, with no custom Pi extension, external supervisor or Pi Durable dependency. It validates identity and result data, retains runtime-owned input/exit facts, and refuses same-lease relaunch. One real Pi run against a disposable repository has passed.
+The worker is a separate Pi process using Pi's standard RPC mode and a worker-written `result.json`, with no custom Pi extension, external supervisor or Pi Durable dependency.
 
-**Phase 1 never returns workspaces automatically.** Observing Pi's direct child exit does not prove that detached tool subprocesses stopped, so the adapter always reports `workerTermination: unverified`. Phase 1 finalises the task on direct-child exit, preserves every lease and leaves return to the operator. Automatic return waits until process ownership is verified. See [runtime implementation notes and the Pi Durable comparison](docs/phases/01-basic-dispatch/runtime-integration.md).
+**Phase 1 never returns workspaces automatically.** Observing Pi's process exit does not prove that background processes started by its tools have stopped, so Switchboard preserves every lease and leaves its return to the operator. See the [runtime notes](docs/phases/01-basic-dispatch/runtime-integration.md#unresolved-process-ownership-gate).
 
-macOS is the initial verification target. Linux and Windows are required future platforms, not currently verified runtime integrations. `dispatch` prints a warning on any other platform.
+**Platforms.** Real dispatch has been verified on macOS only. The test suite also passes on Linux and Windows in CI, and `dispatch` prints a warning on any platform other than macOS.
 
 ## Development
 
@@ -22,19 +22,19 @@ npm run check
 npm test
 ```
 
-Node.js runs the TypeScript source directly, with no build step. The root tests use synthetic RPC subprocesses for the Pi runtime, run the pinned tasks-axi CLI against disposable stores, and run `treehouse` and `git` against disposable repositories, so both must be on `PATH`. They do not launch Pi agents, call a model, touch real repositories or Treehouse pools, or change a real task store. Fixture data is retained under the ignored `.investigation/` directory.
+Node.js runs the TypeScript source directly, with no build step. The tests use a synthetic Pi worker, run the pinned tasks-axi CLI against disposable stores, and run `treehouse` and `git` against disposable repositories, so both must be on `PATH`. They do not launch Pi agents, call a model, touch real repositories or Treehouse pools, or change a real task store. Fixture data is kept under the ignored `.investigation/` directory. CI runs the same commands on macOS, Linux and Windows (`.github/workflows/test.yml`).
 
 - `src/runtime/contracts.ts`: provider-independent worker input and result schemas.
-- `src/runtime/records.ts`: runtime-owned input bindings, discovery and observed direct-child exit records.
+- `src/runtime/records.ts`, `activity.ts` and `requests.ts`: runtime-owned records, the worker activity log, and stop requests and messages for a running worker.
 - `src/runtime/pi/`: Pi-specific RPC transport, launch instructions and result-file validation.
-- `src/attempts/log.ts`: the append-only attempt log ([ADR-0006](docs/adr/0006-switchboard-attempt-log.md)).
+- `src/attempts/log.ts`: the append-only attempt log ([format](docs/phases/01-basic-dispatch/attempt-log.md)).
 - `src/tasks/`: the task-store interface and the tasks-axi 0.2.6 adapter.
 - `src/workspaces/`: the workspace-provider interface, the Treehouse adapter (acquire and inspect only) and the read-only Git retention check.
 - `src/infra/`: shared subprocess handling and executable lookup.
-- `src/dispatch/`: the dispatch policy operations, `status`, and the structured result format with its reason categories and next-action codes (`result.ts`).
+- `src/dispatch/`: dispatch, `status`, `resolve`, `watch`, `stop` and `steer`, and the structured result format with its reason and next-action codes (`result.ts`).
 - `src/config.ts` and `src/cli.ts`: the configuration file and the `switchboard` command.
-- `tests/`: runtime framing, lifecycle, identity, discovery and result-failure tests; attempt-log creation races; tasks-axi and Treehouse adapter behaviour; dispatch and the CLI end to end with the synthetic worker; a fault injected at each dispatch boundary, checked against the same invariants; and dispatcher crashes after leasing, after the in-flight update and after launch.
-- `investigations/`: separate provider/runtime capability probes with their own prerequisites. They are not run by the root test command.
+- `tests/`: unit and end-to-end tests, including a fault injected at each dispatch boundary and dispatcher crashes after leasing, after the in-flight update and after launch.
+- `investigations/`: separate probes and the [real dispatch demo](investigations/real-dispatch/README.md), with their own prerequisites. They are not run by the test command.
 
 ## Running it
 
@@ -63,18 +63,24 @@ Otherwise, create a configuration file with absolute paths. For example, `switch
 }
 ```
 
-Then, in PowerShell:
+`git` and `treehouse` must be on `PATH`. Then, in PowerShell:
 
 ```powershell
 npm run switchboard -- status --config ./switchboard.json
 npm run switchboard -- dispatch --once --config ./switchboard.json
 ```
 
-If `status` reports that a worker may still be running, check it has stopped and run `npm run switchboard -- resolve --lease <lease-id> --worker-stopped --config ./switchboard.json`; that attempt then stops blocking dispatch. `dispatch --once` prints each tool call as the worker makes it; run it under tmux or `nohup` for long tasks, because closing its terminal ends the dispatcher. From another terminal, `npm run switchboard -- watch --lease <lease-id> --config ./switchboard.json` follows a worker's activity, and `status` shows its last activity, usage, transcript path and whether it has gone quiet. `maxCost` and `maxTokens` stop a worker that exceeds them. `stop --lease <lease-id>` asks the dispatcher that owns a worker to stop it, and `steer --lease <lease-id> "<message>"` passes it a message (`--after` waits until it finishes its current work); a request no running dispatcher takes is withdrawn and reported as undelivered. A task's tasks-axi `kind` selects its delivery contract from `byTaskKind`; a task with no kind uses the default, which holds completed code for review. `--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
+- **Delivery contracts.** A task's tasks-axi `kind` selects its delivery contract from `byTaskKind`. A task with no kind uses the default, which holds completed code for review.
+- **Long runs.** `dispatch --once` prints each tool call as the worker makes it and stays in the foreground until the worker finishes. Run it under tmux or `nohup` for long tasks, because closing its terminal ends the dispatcher.
+- **Watching.** From another terminal, `watch --lease <lease-id>` follows a worker's activity, and `status` shows its last activity, usage, transcript path and whether it has gone quiet. `maxCost` and `maxTokens` stop a worker that exceeds them.
+- **Stopping and steering.** `stop --lease <lease-id>` asks the dispatcher that owns a worker to stop it. `steer --lease <lease-id> "<message>"` passes it a message, and `--after` waits until it finishes its current work. A request that no running dispatcher takes is withdrawn and reported as undelivered.
+- **A worker that may still be running.** If `status` reports one, check it has stopped, then run `resolve --lease <lease-id> --worker-stopped`. That attempt then stops blocking dispatch.
+- **Returning leases.** Every outcome preserves the workspace lease. Return it through Treehouse after reviewing the work and confirming the report's retention check.
+- `--json` prints the structured result of any command.
 
 ## Not yet done
 
-- Linux and Windows.
+- A real dispatch on Linux and Windows.
 
 ## Decisions
 

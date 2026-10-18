@@ -22,8 +22,7 @@ Neither Herdr nor a generic process supervisor is required for this first integr
 
 - No custom Pi extension or model-callable result tool is a Phase 1 dependency.
 - RPC progress, model settlement, direct-child exit, worker termination and task acceptance are separate facts. The adapter must not equate them.
-- Automatic workspace return requires a verified process-ownership strategy covering tool subprocesses. Pi's shell tool can create detached subprocesses; observing the Pi child exit alone does not authorise workspace return. Phase 1 finalises on direct-child exit and never returns workspaces, so this is no longer a Phase 1 gate.
-- The adapter reports `workerTermination: unverified` on every path. Dispatch is enabled through `switchboard dispatch --once`, which preserves every lease for this reason.
+- Automatic workspace return requires a verified process-ownership strategy covering tool subprocesses, because Pi's shell tool can create detached subprocesses that outlive the Pi child. Until then the adapter reports `workerTermination: unverified` on every path, and Phase 1 finalises on direct-child exit and never returns workspaces ([runtime notes](../phases/01-basic-dispatch/runtime-integration.md#unresolved-process-ownership-gate)).
 - An operator message changes the worker's instructions after launch. It is part of the attempt record reviewers see, and does not change the delivery contract or the result requirements.
 - Same-lease relaunch is refused even after a completed child-exit observation. A later resume design must define separate semantics.
 - Runtime files are not a security sandbox. A worker with the same OS account and filesystem access is not isolated from malicious tampering by filenames or instructions alone.

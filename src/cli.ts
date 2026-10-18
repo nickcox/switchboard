@@ -30,7 +30,7 @@ resolve records the operator's confirmation that a worker with no observed exit 
 
 The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
 Exit status: 0 when no work was ready or the task was recorded as done (dispatch), nothing needs attention (status),
-or the confirmation was recorded (resolve);
+the confirmation was recorded (resolve), Pi accepted the request (stop, steer) or the attempt was found (watch);
 1 for any other outcome, described by the report's reason; 2 for usage or configuration errors.`;
 
 async function main(argv: string[]): Promise<number> {

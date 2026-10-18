@@ -10,7 +10,7 @@ The first release runs on one host, with one dispatcher and one active worker. T
 
 ## Implementation
 
-Implement the Switchboard CLI in strict TypeScript on Node.js. macOS, Linux and Windows are required host platforms for Switchboard; Phase 1 initially supports macOS only. Linux and Windows support is deferred, not optional. Support is verified separately on each native host before it is advertised.
+Implement the Switchboard CLI in strict TypeScript on Node.js. macOS, Linux and Windows are required host platforms. The test suite runs on all three; a platform is supported once a real dispatch has also passed on it, which so far is macOS only.
 
 Node.js runs Switchboard and its external CLIs; Pi is the worker runtime that runs on it. Keep subprocess handling and OS-specific locking, process control and path handling inside adapters and infrastructure code. Dispatch policy and safety contracts must not depend on Unix-only behaviour. Validate external data at runtime and verify equivalent locking, process-lifecycle and retention behaviour on each supported host OS. See [ADR-0004](adr/0004-typescript-and-node-for-switchboard-cli.md) for tooling, portability and compatibility boundaries.
 
@@ -97,7 +97,7 @@ Dispatch and reconciliation policy depend on task-store, workspace-provider and 
 
 The initial interfaces may adopt tasks-axi's task model and Treehouse's lease model where these fit Switchboard's requirements. Do not invent a more general model solely for hypothetical replacements. A replacement provider must satisfy the same ownership, identity and safety contracts, mapping its own model within its adapter. Phase 1 requires neither multiple implementations nor a plugin system.
 
-Keep task access, workspace operations and runtime operations separate. Phase 1 uses a separate Pi CLI process with built-in RPC and a validated result file, without a custom Pi extension or external process supervisor. [ADR-0005](adr/0005-pi-rpc-worker-and-result-file.md) records this initial choice and the continuing comparison with Pi Durable. Whole-worker termination still requires process-ownership verification; direct-child exit is insufficient. Phase 1 finalises on direct-child exit and therefore never returns leases automatically. Additional runtimes can implement the same responsibilities later. Herdr may implement a runtime adapter but is not an architectural dependency and does not own workspace leases.
+Keep task access, workspace operations and runtime operations separate. Phase 1 uses a separate Pi CLI process with built-in RPC and a validated result file, without a custom Pi extension or external process supervisor. [ADR-0005](adr/0005-pi-rpc-worker-and-result-file.md) records this initial choice and the continuing comparison with Pi Durable. Additional runtimes can implement the same responsibilities later. Herdr may implement a runtime adapter but is not an architectural dependency and does not own workspace leases.
 
 Pi Durable will support the supervisor and durable orchestration. A Pi Durable computational task is distinct from a tasks-axi work item. Switchboard mailbox and schedule interfaces must remain independent of Pi Durable's internal types. Durable execution does not make external task, lease and runtime mutations atomic or exactly once.
 
@@ -105,13 +105,13 @@ Pi Durable will support the supervisor and durable orchestration. A Pi Durable c
 
 | Phase | Useful capability |
 | --- | --- |
-| 1 — Basic dispatch | One ready task through Treehouse to Pi, with explicit finalisation and compensation |
-| 2 — Reconciliation and recovery | Inspect disagreements across owners; define safe restart and repair actions; automatic lease return once process ownership is verified |
-| 3 — Multiple workers and runtimes | Extend the initial adapter; add bounded concurrency and another runtime |
-| 4 — Agent supervisor | Introduce an agent supervisor using the operations, authority model and events in [Supervision](#supervision); retain deterministic dispatch policy; Pi Durable for supervisor continuity, subject to ADR-0003 |
-| 5 — Mailboxes | Define Switchboard message semantics and implement durable delivery through Pi Durable, generalising Phase 1's operator messages to running workers |
-| 6 — Scheduling | Add one-off and recurring triggers through existing dispatch and messaging paths |
-| 7 — External events | Translate external events into work or messages, initially through polling where suitable |
+| 1 – Basic dispatch | One ready task through Treehouse to Pi, with explicit finalisation and compensation |
+| 2 – Reconciliation and recovery | Inspect disagreements across owners; define safe restart and repair actions; automatic lease return once process ownership is verified |
+| 3 – Multiple workers and runtimes | Extend the initial adapter; add bounded concurrency and another runtime |
+| 4 – Agent supervisor | Introduce an agent supervisor using the operations, authority model and events in [Supervision](#supervision); retain deterministic dispatch policy; Pi Durable for supervisor continuity, subject to ADR-0003 |
+| 5 – Mailboxes | Define Switchboard message semantics and implement durable delivery through Pi Durable, generalising Phase 1's operator messages to running workers |
+| 6 – Scheduling | Add one-off and recurring triggers through existing dispatch and messaging paths |
+| 7 – External events | Translate external events into work or messages, initially through polling where suitable |
 
 Later phases are direction only; their PRDs will be written when needed. Distributed dispatch, a replacement task tracker, a replacement workspace manager and a custom durable agent harness are outside the current scope.
 

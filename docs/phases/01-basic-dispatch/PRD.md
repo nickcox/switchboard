@@ -10,7 +10,7 @@ Run in the foreground on one host, against one configured task store and reposit
 
 Phase 1 never returns a lease automatically. Returning a lease recycles the workspace, which is the only routine action that can destroy work, and confirming that every process a worker started has stopped is not yet solved (see [runtime implementation notes](runtime-integration.md#unresolved-process-ownership-gate)). Switchboard preserves every lease and reports whether the work is retained. The operator returns leases through Treehouse. Automatic return is deferred until process ownership is verified.
 
-Implement the CLI in strict TypeScript on a pinned Node.js version, initially on macOS, following [ADR-0004](../../adr/0004-typescript-and-node-for-switchboard-cli.md). Linux and Windows are required future platforms, but their implementation and native acceptance runs are outside Phase 1. Keep OS-specific file creation, process control and path handling behind infrastructure interfaces so the same dispatch safety contracts can be implemented on all three platforms. Dispatch warns, but does not refuse, on a host other than macOS. Most known platform differences make dispatch stop with an error rather than launch twice, and the real risk to exclusive creation is a runtime directory on a network share or synced folder, which an operating-system check does not detect.
+Implement the CLI in strict TypeScript on a pinned Node.js version, initially on macOS, following [ADR-0004](../../adr/0004-typescript-and-node-for-switchboard-cli.md). Linux and Windows are required platforms. The test suite runs on both, but their real-dispatch acceptance runs are outside Phase 1. Keep OS-specific file creation, process control and path handling behind infrastructure interfaces so the same dispatch safety contracts can be implemented on all three platforms. Dispatch warns, but does not refuse, on a host other than macOS. Most known platform differences make dispatch stop with an error rather than launch twice, and the real risk to exclusive creation is a runtime directory on a network share or synced folder, which an operating-system check does not detect.
 
 Run type checking separately from the tests. Validate external data at runtime and verify exclusive attempt creation on the supported host before enabling dispatch. External components may use their own supported runtimes.
 
@@ -20,13 +20,14 @@ Excluded: automatic lease return, Switchboard persistent state other than the at
 
 Phase 1 has only a human operator, but every command is designed for a later agent supervisor to call unchanged (see [Supervision](../../architecture.md#supervision)).
 
-Provide three commands:
+Provide these commands:
 
 - `switchboard dispatch --once` with optional `--task <id>` and `--request-id <id>`. Without a task ID, select the first task in tasks-axi's ready ordering, breaking unspecified ties by task ID. With an ID, require that task to be ready. Never dispatch a second task in the same invocation.
 - `switchboard status`, which is read-only. It reports the preflight result, attempts from the attempt log with each owner's current state, attempts whose workers may still be running, and tasks blocked by an earlier attempt, each with its next action.
 - `switchboard resolve --lease <lease-id> --worker-stopped`, which records the operator's confirmation that a worker with no observed exit has stopped, so its attempt stops blocking dispatch. Without `--worker-stopped` it only reports what each owner holds. The confirmation is recorded separately from an observed exit and never treated as one. It changes neither the task nor the lease.
+- `switchboard watch`, `switchboard stop` and `switchboard steer`, described in [Watching and controlling a running attempt](#watching-and-controlling-a-running-attempt).
 
-Implement the dispatch sequence as separate policy operations: select, acquire, start, launch, observe and finalise. Each enforces its own checks from the [dispatch sequence](#dispatch-sequence), so later phases can expose them as separate commands without moving a safety check. Phase 1 does not expose them separately, and has no command to stop a discovered attempt or return a lease.
+Implement the dispatch sequence as separate policy operations: select, acquire, start, launch, observe and finalise. Each enforces its own checks from the [dispatch sequence](#dispatch-sequence), so later phases can expose them as separate commands without moving a safety check. Phase 1 does not expose them separately, and has no command to return a lease.
 
 `dispatch --once` prints task ID, lease ID, workspace and session ID as they become known. The final report includes worker outcome, retained deliverables and work references, task acceptance or remaining approval/integration requirement, confirmed task state, the preserved lease with its retention-check result, any failed operation and a concrete next action. No ready work is a successful no-op; explicit ineligible selection is an error. Return zero only for no work or a completed attempt whose task outcome is recorded and confirmed; hold, failure and unresolved attempts return non-zero with distinct report reasons.
 
@@ -36,18 +37,18 @@ A caller may pass `--request-id`. Switchboard records it in the attempt's first 
 
 ### Structured results
 
-Both commands support `--json`. Every result and every refusal contains:
+Every command supports `--json`. Every result and every refusal contains:
 
 - `ok`: whether the command achieved its purpose.
-- `reason`: one of a small set of stable codes, each a category of behaviour: `no_ready_work`, `done`, `held`, `refused` (nothing was changed), `stopped` (some state was changed and is preserved), `existing_request` and `resolved`. Renaming or removing a code is a breaking change.
-- `stage`: where the result was decided (`preflight`, `select`, `acquire`, `start`, `launch`, `finalise` or `resolve`).
+- `reason`: one of a small set of stable codes, each a category of behaviour: `no_ready_work`, `done`, `held`, `refused` (nothing was changed), `stopped` (some state was changed and is preserved), `existing_request`, `resolved`, and `delivered` or `undelivered` for a stop request or message. Renaming or removing a code is a breaking change.
+- `stage`: where the result was decided (`preflight`, `select`, `acquire`, `start`, `launch`, `finalise`, `resolve` or `control`).
 - `detail`: the specific cause in prose. It is for people and logs, not a stable interface.
 - `lease`: `none`, `preserved`, or `unknown` when leases could not be listed.
 - The attempt's identifiers when known: context, task ID, lease ID, session ID.
 - The owner state the decision was based on, including any state that was unknown.
 - `nextAction`: a stable code and a plain description of what should happen next and who must do it.
 
-Human-readable output is generated from the same result. Consumers must never need to parse prose. Document the reason and next-action codes alongside the implementation.
+Human-readable output is generated from the same result. Consumers must never need to parse prose. The reason and next-action codes are documented in `src/dispatch/result.ts`.
 
 ## Watching and controlling a running attempt
 
@@ -87,7 +88,7 @@ Resolve and validate the authoritative task-store location at preflight and use 
 
 Use a separate Pi CLI process with built-in RPC and a worker-written, schema-validated result file outside the leased workspace, following [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md). No custom Pi extension, external process supervisor or Pi Durable dependency is required for this initial integration. The [runtime implementation notes](runtime-integration.md) track its current limits and the ongoing comparison with Pi Durable.
 
-Phase 1 finalises an attempt once Pi's direct child process has exited. Tool subprocesses may still be running at that point, so finalisation never returns the workspace. The recorded result commit is identified by its full commit ID, so later changes in the workspace cannot alter the recorded deliverable. Verifying that every process the worker started has stopped is required before any automatic lease return, not before finalisation.
+Phase 1 finalises an attempt once Pi's direct child process has exited, even though tool subprocesses may still be running (see [Objective and scope](#objective-and-scope)). The recorded result commit is identified by its full commit ID, so later changes in the workspace cannot alter the recorded deliverable.
 
 Runtime observations and results must be structured and identity-bound. Agent idleness is not process termination, and neither proves task completion. Terminal text and an empty Treehouse process list are not authoritative runtime evidence. Keep required retained evidence outside recyclable workspaces. An unresolved lookup causes refusal, not a replacement launch.
 
