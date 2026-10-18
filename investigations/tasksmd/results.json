@@ -1,0 +1,155 @@
+{
+  "recordedDate": "2026-10-18",
+  "scope": "Isolated CLI capability probe of the git-native backend, not full Phase 1 acceptance",
+  "versions": {
+    "@tasks-md/cli": "0.10.2",
+    "npmIntegrity": "sha512-U4lFM2l2VeA15CtHzQqvTCTEHKK8nY2T6LA7hIFioCsaguA7svATJWdEZ8wCDwn+dB5pL6aMxXxsBMVapKlyGQ==",
+    "tarballSha256": "7cf38a201417280e09c068ef8260baac6fc0fee9a3c5ff88f23da2063a880619",
+    "bun": "1.3.11",
+    "node": "v26.7.0",
+    "git": "git version 2.54.0 (Apple Git-157)",
+    "platform": "darwin-arm64"
+  },
+  "observed": {
+    "createdIds": [
+      "race-task",
+      "worker-task",
+      "dependent-task",
+      "lower-priority-task"
+    ],
+    "idsComeFromTitles": true,
+    "blockedClaim": {
+      "status": "blocked",
+      "exitCode": 1
+    },
+    "concurrentClaim": {
+      "statuses": [
+        "claimed",
+        "lost"
+      ],
+      "exitCodes": [
+        0,
+        1
+      ],
+      "exactlyOneClaimed": true,
+      "claimedEventsInLog": 1
+    },
+    "claim": {
+      "status": "claimed",
+      "claimIdVisibleToEveryReader": true,
+      "leaseHours": 24,
+      "pickAfterClaim": {
+        "picked": true,
+        "id": "lower-priority-task",
+        "title": "Lower priority task",
+        "priority": "P3",
+        "tags": []
+      }
+    },
+    "liveClaimRefusedForOtherActor": {
+      "status": "lost",
+      "exitCode": 1
+    },
+    "fencing": {
+      "staleComplete": {
+        "status": "conflict",
+        "exitCode": 1
+      },
+      "staleUpdate": {
+        "status": "conflict",
+        "exitCode": 1
+      },
+      "stillOpenAndUnchanged": true
+    },
+    "tokenOptional": {
+      "otherActorCompleteWithoutToken": {
+        "status": "ok",
+        "exitCode": 0
+      },
+      "taskClosedByOtherActor": true,
+      "ownerUpdateAfterForeignCompletion": {
+        "status": "ok",
+        "exitCode": 0
+      }
+    },
+    "hold": {
+      "updateStatus": "ok",
+      "updateExit": 0,
+      "releaseStatus": "ok",
+      "releaseExit": 0,
+      "blockedReasonRetained": true,
+      "unclaimed": true,
+      "bodyUnchanged": true,
+      "pickSkipsHeldTask": true,
+      "claimRefusedWhileHeld": "blocked",
+      "dependentStillBlocked": true
+    },
+    "listFromNonRepositoryDirectory": {
+      "default": {
+        "exitCode": 0,
+        "stdout": "[]",
+        "stderr": ""
+      },
+      "forcedGitNative": {
+        "exitCode": 0,
+        "stdout": "[]",
+        "stderr": ""
+      }
+    },
+    "worktree": {
+      "sharesClaimsRef": true,
+      "workerClaimFromWorktree": "claimed",
+      "visibleInAuthoritativeStore": "worker"
+    },
+    "completion": {
+      "status": "ok",
+      "exitCode": 0,
+      "absentFromList": true,
+      "eventsStillInLog": [
+        "completed",
+        "updated",
+        "claimed",
+        "created"
+      ]
+    },
+    "compaction": {
+      "exitCode": 0,
+      "raceTaskEventsAfter": 0,
+      "heldTaskSurvives": true
+    },
+    "lostAcknowledgement": {
+      "update": {
+        "exitCode": 0,
+        "status": "ok",
+        "eventsInOrigin": 2
+      },
+      "complete": {
+        "exitCode": 0,
+        "status": "ok",
+        "eventsInOrigin": 2
+      },
+      "claim": {
+        "exitCode": 1,
+        "status": "lost",
+        "assigneeAfter": "switchboard"
+      }
+    },
+    "originUnavailable": {
+      "list": {
+        "exitCode": 0,
+        "returnedLocalCopy": true
+      },
+      "claimOfBlockedTask": {
+        "exitCode": 1,
+        "status": "blocked"
+      },
+      "create": {
+        "exitCode": 1,
+        "stderr": "file:///Users/nick/code/personal/switchboard/investigations/tasksmd/node_modules/@tasks-md/cli/dist/backend/git-native.js:712\n            throw new Error(`Could not push created task to tasks-claims after ${MAX_PUSH_ATTEMPTS} attempts.`);\n                  ^\n\nError: Could not push created task to ta"
+      },
+      "unpushedTaskVisibleLocally": true,
+      "unpushedTaskVisibleElsewhere": false,
+      "unpushedTaskAfterReconnectFetch": false
+    }
+  }
+}

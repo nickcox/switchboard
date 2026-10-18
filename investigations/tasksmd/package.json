@@ -1,0 +1,6 @@
+{
+  "name": "switchboard-tasksmd-probe",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@tasks-md/cli": "0.10.2" }
+}

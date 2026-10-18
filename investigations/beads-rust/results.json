@@ -1,0 +1,49 @@
+{
+  "recordedDate": "2026-10-18",
+  "scope": "Isolated CLI capability probes, not full Phase 1 acceptance",
+  "versions": {
+    "br": "0.7.6",
+    "sourceCommit": "ad4212f562ca59864946b8620c1361f0933ee4a8",
+    "bun": "1.3.11",
+    "platform": "darwin-arm64",
+    "engine": "FrankenSQLite 0.4.10",
+    "archiveSha256": "d01a4ef66aa5cd40152fc6481b78def7b6dfefd56da1b26dd1c84b38603de6f6",
+    "mcpIncludedInBinary": false
+  },
+  "completedRun": {
+    "cliOperations": 43,
+    "allAssertionsPassed": true,
+    "localCommandLog": ".investigation/br-comparison/fixture-rthSpZ/commands.jsonl"
+  },
+  "observed": {
+    "emptyReady": [],
+    "blockedClaimRefused": true,
+    "blockedClaimExitCode": 4,
+    "inProgressExcludedFromReady": true,
+    "indefiniteHoldExcludedFromReady": true,
+    "holdPreservesInstructionsAndAcceptance": true,
+    "holdRetainsWorkReferences": true,
+    "dependentRemainsBlockedByHeldTask": true,
+    "staleUpdateRefused": true,
+    "staleUpdateExitCode": 6,
+    "staleUpdateErrorCode": "UPDATE_PRECONDITION_FAILED",
+    "explicitStoreAccessibleFromAnotherCwd": true,
+    "dependencyCompletionDoesNotReleaseHold": true,
+    "childCompletionDoesNotCloseDeferredParent": true,
+    "acceptedCompletionAndEvidenceReadable": true,
+    "configuredPrefixRouteOverridesExplicitPrimaryDb": true
+  },
+  "remainingGates": [
+    "Licence clarification",
+    "Storage crash, concurrency, migration and recovery qualification",
+    "Single-context restrictions covering routing, redirects and synchronisation",
+    "Pinned and validated workflow configuration",
+    "Full adapter fault tests and real Pi end-to-end dispatch"
+  ],
+  "limitations": [
+    "No supported TypeScript SDK or JavaScript binding found in the investigated release",
+    "MCP API requires a different build with the optional mcp feature",
+    "No real tasks, leases or agents were used",
+    "No power-loss or crash-durability guarantee established"
+  ]
+}

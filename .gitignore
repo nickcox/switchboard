@@ -1,0 +1,3 @@
+# Local dependencies and isolated investigation data
+node_modules/
+.investigation/

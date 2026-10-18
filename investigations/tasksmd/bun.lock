@@ -1,0 +1,21 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "switchboard-tasksmd-probe",
+      "dependencies": {
+        "@tasks-md/cli": "0.10.2",
+      },
+    },
+  },
+  "packages": {
+    "@tasks-md/cli": ["@tasks-md/cli@0.10.2", "", { "dependencies": { "@tasks-md/lint": "^0.10.2", "@tasks-md/parser": "^0.10.2", "commander": "^13.0.0" }, "bin": { "tasks": "dist/cli.js" } }, "sha512-U4lFM2l2VeA15CtHzQqvTCTEHKK8nY2T6LA7hIFioCsaguA7svATJWdEZ8wCDwn+dB5pL6aMxXxsBMVapKlyGQ=="],
+
+    "@tasks-md/lint": ["@tasks-md/lint@0.10.2", "", { "dependencies": { "@tasks-md/parser": "^0.10.2" }, "bin": { "tasks-lint": "dist/cli.js" } }, "sha512-VzNjpDG9U4Gh85m41ocW/gdBFzxxKRx4DWZXo98i3dRQ5W/BFmLsKyq/kqiaf4dFv28/Y8A8jDAu3m9sQ/Wilg=="],
+
+    "@tasks-md/parser": ["@tasks-md/parser@0.10.2", "", {}, "sha512-o16KeuKH77/x6m/XKgUBhU91XqKZjNr6sjzscrNdDZiN9Qh3e+8NRQiLRZvbJ/452CFyVAbHoLN5bzffmbcYRA=="],
+
+    "commander": ["commander@13.1.0", "", {}, "sha512-/rFeCpNJQbhSZjGVwO9RFV3xPqbnERS8MmIQzCtD/zl6gpJuV/bMLuN92oG3F7d8oDEHHRrujSXNUr8fpjntKw=="],
+  }
+}

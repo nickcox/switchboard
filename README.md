@@ -1,0 +1,42 @@
+# Switchboard
+
+Foreground dispatch of one ready task to one worker in a leased workspace. The [architecture](docs/architecture.md) and [Phase 1 PRD](docs/phases/01-basic-dispatch/PRD.md) define the intended behaviour.
+
+## Current status
+
+This repository contains the specifications, integration investigations and the first Pi RPC runtime adapter foundation. It does **not** yet provide `switchboard dispatch --once` or enable live dispatch.
+
+The runtime uses a separate Pi process, standard RPC and a worker-written `result.json`, with no custom Pi extension, external supervisor or Pi Durable dependency. It validates identity and result data, retains runtime-owned input/exit facts, and refuses same-lease relaunch. One real Pi run against a disposable repository has passed.
+
+**Phase 1 never returns workspaces automatically.** Observing Pi's direct child exit does not prove that detached tool subprocesses stopped, so the adapter always reports `workerTermination: unverified`. Phase 1 finalises the task on direct-child exit, preserves every lease and leaves return to the operator. Automatic return waits until process ownership is verified. See [runtime implementation notes and the Pi Durable comparison](docs/phases/01-basic-dispatch/runtime-integration.md).
+
+macOS is the initial verification target. Linux and Windows are required future platforms, not currently verified runtime integrations.
+
+## Development
+
+Use Bun 1.3.11. From this directory, using PowerShell:
+
+```powershell
+bun install --frozen-lockfile --ignore-scripts
+bun run check
+bun run test
+```
+
+The root tests use synthetic RPC subprocesses only. They do not launch Pi agents, call a model, acquire Treehouse leases or change an authoritative task store. Fixture data is retained under the ignored `.investigation/runtime-unit/` directory.
+
+- `src/runtime/contracts.ts`: provider-independent worker input and result schemas.
+- `src/runtime/records.ts`: runtime-owned input bindings, discovery and observed direct-child exit records.
+- `src/runtime/pi/`: Pi-specific RPC transport, launch instructions and result-file validation.
+- `tests/`: offline framing, lifecycle, identity, discovery and result-failure tests.
+- `investigations/`: separate provider/runtime capability probes with their own prerequisites. They are not run by the root test command.
+
+Pi's executable, Node runtime, model configuration and credentials are supplied explicitly by the eventual application configuration. The task-store and workspace adapters, the attempt log and a real end-to-end dispatch remain required before live dispatch. Do not point this unfinished foundation at real work expecting Phase 1 guarantees.
+
+## Decisions
+
+- [tasks-axi owns task state](docs/adr/0001-tasks-axi-is-task-source-of-truth.md).
+- [Treehouse owns workspace leases](docs/adr/0002-treehouse-owns-workspace-leases.md).
+- [Pi Durable is deferred and continuously reconsidered](docs/adr/0003-pi-durable-for-durable-orchestration.md).
+- [TypeScript/Bun and required host platforms](docs/adr/0004-typescript-and-bun-for-switchboard-cli.md).
+- [Pi RPC subprocess and result file](docs/adr/0005-pi-rpc-worker-and-result-file.md).
+- [Switchboard attempt log](docs/adr/0006-switchboard-attempt-log.md).
