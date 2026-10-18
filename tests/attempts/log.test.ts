@@ -105,3 +105,15 @@ test("a full attempt record can be passed as the reference when appending", asyn
   await log.append(record, "halted", { stage: "test", reason: "fixture" });
   assert.equal((await log.read(ref)).entries.length, 2);
 });
+
+test("temporary files from writes in progress are ignored by readers", async () => {
+  const root = freshRoot();
+  const log = new AttemptLog(root, "c");
+  const ref = await log.create("task-1", {}, 0);
+  const context = join(root, "attempts", readdirSync(join(root, "attempts"))[0]!);
+  const taskDir = join(context, readdirSync(context)[0]!);
+  writeFileSync(join(taskDir, ".2.abc.tmp"), "");
+  writeFileSync(join(taskDir, "1", ".0001-halted.json.abc.tmp"), "{partial");
+  assert.equal((await log.read(ref)).entries.length, 1);
+  assert.deepEqual((await log.list()).map(r => r.attempt), [1]);
+});

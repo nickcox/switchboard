@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { link, lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import { identitySchema, sameIdentity, workerInputSchema, type WorkerInput } from "./contracts.ts";
 
@@ -76,14 +76,22 @@ export async function readJsonFile(path: string, maxBytes = maxRecordBytes): Pro
   } finally { await handle.close(); }
 }
 
+/**
+ * Writes a file that must never be replaced. The content is written to a temporary file first and then hard-linked to
+ * its final name, which fails with EEXIST if the name exists, so a reader sees either no file or the complete file.
+ * Temporary files start with "." and readers ignore them.
+ */
 export async function writeOnce(path: string, value: unknown): Promise<void> {
   const data = `${JSON.stringify(value, null, 2)}\n`;
   if (Buffer.byteLength(data, "utf8") > maxRecordBytes) throw new Error("Runtime record exceeds byte limit");
-  const file = await open(path, "wx", 0o600);
+  const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  const file = await open(temporary, "wx", 0o600);
   try {
     await file.writeFile(data);
     await file.sync();
   } finally { await file.close(); }
+  try { await link(temporary, path); }
+  finally { await unlink(temporary).catch(() => {}); }
 }
 
 /** Runtime-owned identity/input and observed child-exit facts, not dispatcher lifecycle state. */
@@ -156,7 +164,15 @@ export class RuntimeRecords {
         throw new Error("Uninspectable runtime storage entry");
       }
       const directory = join(context, entry.name);
-      const binding = bindingSchema.parse(await readJsonFile(join(directory, "binding.json")));
+      let bindingValue: unknown;
+      try { bindingValue = await readJsonFile(join(directory, "binding.json")); }
+      catch (error) {
+        // reserve() is still creating this directory. The worker is only started after its binding is written,
+        // so no worker can exist for a directory without one.
+        if (isMissing(error)) continue;
+        throw error;
+      }
+      const binding = bindingSchema.parse(bindingValue);
       if (binding.input.identity.contextId !== contextId || key(binding.input.identity.leaseId) !== entry.name ||
         binding.resultPath !== join(directory, "result.json") || binding.sessionDirectory !== join(directory, "sessions") ||
         (binding.artefactDirectory !== undefined && binding.artefactDirectory !== join(directory, "artefacts"))) {

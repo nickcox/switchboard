@@ -1,4 +1,5 @@
-import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readdir, realpath, rename, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { isMissing, key, readJsonFile, writeOnce } from "../runtime/records.ts";
@@ -84,12 +85,18 @@ export class AttemptLog {
     const directory = await this.taskDirectory(taskId, true);
     const ref = { contextId: this.contextId, taskId, attempt: previous + 1 };
     if (((await this.attemptNumbers(directory)).at(-1) ?? 0) !== previous) throw new AttemptConflict(ref);
-    try { await mkdir(join(directory, String(ref.attempt)), { mode: 0o700 }); }
-    catch (error) {
-      if (isCode(error, "EEXIST")) throw new AttemptConflict(ref);
+    // Build the attempt with its first entry under a temporary name, then rename it into place. Readers never see an
+    // attempt without entries, and the rename fails if another invocation created this attempt first.
+    const temporary = join(directory, `.${ref.attempt}.${randomUUID()}.tmp`);
+    await mkdir(temporary, { mode: 0o700 });
+    try {
+      await this.write(ref, 0, "requested", requested, temporary);
+      await rename(temporary, join(directory, String(ref.attempt)));
+    } catch (error) {
+      await rm(temporary, { recursive: true, force: true }).catch(() => {});
+      if (isCode(error, "EEXIST") || isCode(error, "ENOTEMPTY")) throw new AttemptConflict(ref);
       throw error;
     }
-    await this.write(ref, 0, "requested", requested);
     return ref;
   }
 
@@ -141,19 +148,20 @@ export class AttemptLog {
     return (await this.list()).find(record => record.entries[0]?.data.requestId === requestId);
   }
 
-  private async write<K extends EntryKind>(ref: AttemptRef, sequence: number, kind: K, data: EntryData<K>) {
+  private async write<K extends EntryKind>(ref: AttemptRef, sequence: number, kind: K, data: EntryData<K>, into?: string) {
     const entry = envelopeSchema.parse({
       // Only the identity fields: callers may pass a full AttemptRecord as the reference.
       version: 1, contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt, sequence, kind, recordedAt: new Date().toISOString(),
       data: entrySchemas[kind].parse(data),
     });
-    const directory = join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));
+    const directory = into ?? join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));
     // Write-once: a concurrent writer at the same sequence fails rather than replacing an entry.
     await writeOnce(join(directory, `${String(sequence).padStart(4, "0")}-${kind}.json`), entry);
   }
 
   private async entries(directory: string, ref: AttemptRef): Promise<AttemptEntry[]> {
-    const names = (await readdir(directory)).sort();
+    // Names starting with "." are temporary files from an entry still being written.
+    const names = (await readdir(directory)).filter(name => !name.startsWith(".")).sort();
     const entries: AttemptEntry[] = [];
     for (const [index, name] of names.entries()) {
       const match = entryName.exec(name);
@@ -172,7 +180,7 @@ export class AttemptLog {
   }
 
   private async firstEntry(directory: string): Promise<AttemptEntry> {
-    const first = (await readdir(directory)).sort()[0];
+    const first = (await readdir(directory)).filter(name => !name.startsWith(".")).sort()[0];
     if (!first) throw new Error("Attempt has no entries");
     return envelopeSchema.parse(await readJsonFile(join(directory, first)));
   }
@@ -180,6 +188,7 @@ export class AttemptLog {
   private async attemptNumbers(directory: string): Promise<number[]> {
     const numbers: number[] = [];
     for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue; // An attempt still being created, or one whose creation lost a race.
       if (!entry.isDirectory() || !/^[1-9]\d*$/.test(entry.name)) throw new Error("Uninspectable attempt directory");
       numbers.push(Number(entry.name));
     }
