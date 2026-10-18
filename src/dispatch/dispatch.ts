@@ -30,6 +30,8 @@ export type Dependencies = {
   /** The repository whose refs the workspaces share, for retention checks. */
   repository: string;
   delivery: DeliveryConfiguration;
+  /** A possibly running worker with no activity for this long is flagged in status. Default 20 minutes. */
+  staleMs?: number;
   progress?: (message: string) => void;
 };
 
@@ -251,7 +253,7 @@ async function finalise(
 function decide(report: PiRunReport | undefined, delivery: DeliveryContract, retention: RetentionResult): { done: boolean; review: boolean; label: string } {
   const hold = (label: string, review = false) => ({ done: false, review, label });
   if (!report || report.status === "failed") return hold("failed");
-  if (report.status === "interrupted") return hold("interrupted");
+  if (report.status === "interrupted") return hold(report.reason === "over_budget" ? "over budget" : "interrupted");
   const outcome = report.result?.outcome;
   if (outcome === "hold") return hold("held by worker");
   if (outcome !== "completed") return hold("failed");

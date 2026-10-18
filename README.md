@@ -57,7 +57,8 @@ Otherwise, create a configuration file with absolute paths. For example, `switch
   "worker": {
     "piEntrypoint": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
     "provider": "openai-codex",
-    "model": "gpt-6.1-sol"
+    "model": "gpt-6.1-sol",
+    "maxCost": 5
   }
 }
 ```
@@ -69,11 +70,11 @@ npm run switchboard -- status --config ./switchboard.json
 npm run switchboard -- dispatch --once --config ./switchboard.json
 ```
 
-If `status` reports that a worker may still be running, check it has stopped and run `npm run switchboard -- resolve --lease <lease-id> --worker-stopped --config ./switchboard.json`; that attempt then stops blocking dispatch. A task's tasks-axi `kind` selects its delivery contract from `byTaskKind`; a task with no kind uses the default, which holds completed code for review. `--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
+If `status` reports that a worker may still be running, check it has stopped and run `npm run switchboard -- resolve --lease <lease-id> --worker-stopped --config ./switchboard.json`; that attempt then stops blocking dispatch. `dispatch --once` prints each tool call as the worker makes it; run it under tmux or `nohup` for long tasks, because closing its terminal ends the dispatcher. From another terminal, `npm run switchboard -- watch --lease <lease-id> --config ./switchboard.json` follows a worker's activity, and `status` shows its last activity, usage, transcript path and whether it has gone quiet. `maxCost` and `maxTokens` stop a worker that exceeds them. A task's tasks-axi `kind` selects its delivery contract from `byTaskKind`; a task with no kind uses the default, which holds completed code for review. `--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
 
 ## Not yet done
 
-- Watching, stopping and redirecting a running worker, and a cost limit per attempt. These are specified in the PRD's [Watching and controlling a running attempt](docs/phases/01-basic-dispatch/PRD.md#watching-and-controlling-a-running-attempt) section. Until then, run `dispatch --once` under tmux or `nohup`, read Pi's session file for progress, and stop a worker with Ctrl-C in its terminal.
+- Stopping or redirecting a running worker from another terminal (`stop` and `steer`), specified in the PRD's [Watching and controlling a running attempt](docs/phases/01-basic-dispatch/PRD.md#watching-and-controlling-a-running-attempt) section. Until then, stop a worker with Ctrl-C in its dispatch terminal.
 - Linux and Windows.
 
 ## Decisions

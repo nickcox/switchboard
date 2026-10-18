@@ -5,7 +5,7 @@ import { AttemptLog } from "../../src/attempts/log.ts";
 import type { ContractSpec, Dependencies } from "../../src/dispatch/dispatch.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import type { DeliveryContract } from "../../src/runtime/contracts.ts";
-import { PiWorker } from "../../src/runtime/pi/worker.ts";
+import { PiWorker, type PiWorkerOptions } from "../../src/runtime/pi/worker.ts";
 import { RuntimeRecords } from "../../src/runtime/records.ts";
 import { TasksAxiStore } from "../../src/tasks/tasks-axi.ts";
 import { checkRetention } from "../../src/workspaces/retention.ts";
@@ -18,7 +18,7 @@ const entrypoint = resolve(import.meta.dirname, "../../node_modules/tasks-axi/di
 const evidence = resolve(import.meta.dirname, "../../.investigation/dispatch-unit");
 mkdirSync(evidence, { recursive: true });
 
-export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string; byTaskKind?: Record<string, ContractSpec> } = {}) {
+export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string; byTaskKind?: Record<string, ContractSpec>; worker?: Partial<PiWorkerOptions> } = {}) {
   const dir = realpathSync(mkdtempSync(join(evidence, "case-")));
   const home = join(dir, "home");
   mkdirSync(home);
@@ -47,6 +47,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     executable: process.execPath, entrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"),
     provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: 5000, stopMs: 600,
     environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
+    ...options.worker,
   });
   const tasks = await TasksAxiStore.open({ node: process.execPath, entrypoint, file, repo: "fixture", home });
   const deps: Dependencies = {

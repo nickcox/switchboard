@@ -1,5 +1,8 @@
+import { readActivity } from "../runtime/activity.ts";
+import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Task } from "../tasks/store.ts";
 import { inspect, summarise, type Dependencies } from "./dispatch.ts";
+import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch.ts";
 import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
 export type AttemptStatus = {
@@ -8,8 +11,29 @@ export type AttemptStatus = {
   possiblyRunning: boolean;
   leaseHeld: boolean;
   task: { state: string; held: boolean; holdReason: string | null } | "missing" | "unreadable";
+  /** From the attempt's activity log, when the worker was launched. Diagnostic only. */
+  activity?: ActivitySummary & { stale: boolean };
+  /** Pi's session file: the worker's full transcript. */
+  transcript?: string;
+  /** How to continue the work by hand. Offered only once the worker is known to have stopped. */
+  takeover?: string;
   nextAction: { code: NextAction; description: string };
 };
+
+const defaultStaleMs = 20 * 60 * 1000;
+
+async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, staleMs: number): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover">> {
+  if (!record) return {};
+  const activity = summariseActivity(await readActivity(record.directory));
+  const stale = possiblyRunning && (activity.lastActivity === null || Date.now() - Date.parse(activity.lastActivity) > staleMs);
+  const transcript = await transcriptPath(record);
+  const { sessionId } = record.binding.input.identity;
+  return {
+    activity: { ...activity, stale },
+    ...(transcript ? { transcript } : {}),
+    ...(possiblyRunning ? {} : { takeover: `In ${record.binding.input.workspace}, run: pi --session-id ${sessionId} --session-dir ${record.binding.sessionDirectory}` }),
+  };
+}
 
 export type StatusResult = {
   ok: boolean;
@@ -50,11 +74,19 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
       : !leaseHeld ? (typeof task === "object" && task.state === "in_flight" ? "inspect_attempt" : "none")
       : reviewHold ? "review_branch"
       : typeof task === "object" && task.state === "done" ? "return_lease" : "inspect_attempt";
-    attempts.push({ attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, task, nextAction: action(code) });
+    const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
+    attempts.push({
+      attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, task,
+      ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs), nextAction: action(code),
+    });
   }
   // Runtime records with no matching attempt, for example after a crash before the attempt was logged.
   for (const p of state.possiblyRunning.filter(p => p.attempt === 0)) {
-    attempts.push({ attempt: p, lastEntry: "none", possiblyRunning: true, leaseHeld: state.leases.some(l => l.leaseId === p.leaseId), task: "unreadable", nextAction: action("stop_worker") });
+    const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === p.leaseId);
+    attempts.push({
+      attempt: p, lastEntry: "none", possiblyRunning: true, leaseHeld: state.leases.some(l => l.leaseId === p.leaseId), task: "unreadable",
+      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs), nextAction: action("stop_worker"),
+    });
   }
   const known = new Set(attempts.map(a => a.attempt.leaseId).filter(Boolean));
   const unaccountedLeases = state.leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
@@ -81,6 +113,12 @@ export function describeStatus(value: StatusResult): string {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;
     const lease = a.attempt.leaseId ? `lease ${a.attempt.leaseId} ${a.leaseHeld ? `held at ${a.attempt.workspace ?? "an unknown path"}` : "not held"}` : "no lease";
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? "; WORKER MAY BE RUNNING" : ""}`);
+    if (a.activity?.lastActivity) {
+      const usage = a.activity.tokens === null ? "" : `; ${a.activity.tokens} tokens, $${(a.activity.cost ?? 0).toFixed(2)}`;
+      lines.push(`  Last activity ${a.activity.lastActivity}${a.activity.currentTool ? `, running ${a.activity.currentTool}` : ""}${usage}${a.activity.stale ? "; NO RECENT ACTIVITY" : ""}`);
+    } else if (a.activity?.stale) lines.push("  No activity recorded; NO RECENT ACTIVITY");
+    if (a.transcript) lines.push(`  Transcript: ${a.transcript}`);
+    if (a.takeover) lines.push(`  Take over by hand: ${a.takeover}`);
     if (a.nextAction.code !== "none") lines.push(`  Next: ${a.nextAction.description}`);
   }
   for (const l of value.unaccountedLeases) lines.push(`- Lease ${l.leaseId} for ${l.holder} at ${l.path} is not in the attempt log`);

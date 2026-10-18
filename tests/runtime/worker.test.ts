@@ -170,3 +170,28 @@ test("missing executable is a definite no-child failure with retained identity",
   assert.equal(report.result, undefined);
   assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.child.status, "exited");
 });
+
+test("the worker's activity is recorded and passed to the listener", async () => {
+  const f = fixture();
+  const seen: string[] = [];
+  const report = await f.worker.execute(f.input, undefined, entry => seen.push(entry.kind));
+  assert.equal(report.status, "reported");
+  const kinds = (await readFile(join(report.directory, "activity.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).kind);
+  assert.deepEqual(kinds, seen);
+  for (const kind of ["note", "tool_start", "tool_end", "assistant", "stats"]) assert.ok(kinds.includes(kind), `${kind} recorded`);
+});
+
+test("exceeding the cost limit stops the worker and reports it as over budget", async () => {
+  const f = fixture("expensive", { maxCost: 1 });
+  const report = await f.worker.execute(f.input);
+  assert.equal(report.status, "interrupted");
+  assert.equal(report.reason, "over_budget");
+  assert.equal(report.result, undefined);
+  assert.match(await readFile(join(report.directory, "activity.jsonl"), "utf8"), /Usage limit exceeded/);
+});
+
+test("a token limit stops the worker even when the provider reports no cost", async () => {
+  const f = fixture("normal", { maxTokens: 100 });
+  const report = await f.worker.execute(f.input);
+  assert.equal(report.reason, "over_budget");
+});

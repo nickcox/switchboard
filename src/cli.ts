@@ -6,11 +6,17 @@ import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
 import { resolveStopped } from "./dispatch/resolve.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
+import { watch } from "./dispatch/watch.ts";
+import { describeEntry } from "./runtime/activity.ts";
 
 const usage = `Usage:
   switchboard dispatch --once [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped] [--note <text>] [--json] [--config <path>]
+  switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
+
+watch prints an attempt's worker activity and follows it until the worker's exit is recorded. It reads files
+only, so it works from any terminal and after the dispatcher has stopped. status shows each attempt's lease ID.
 
 resolve records the operator's confirmation that a worker with no observed exit has stopped. Without
 --worker-stopped it only reports what each owner holds. It never changes the task or the lease.
@@ -26,11 +32,11 @@ async function main(argv: string[]): Promise<number> {
     options: {
       once: { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
-      lease: { type: "string" }, "worker-stopped": { type: "boolean" }, note: { type: "string" },
+      lease: { type: "string" }, "worker-stopped": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
     },
   });
   const command = positionals[0];
-  if (values.help || !command || positionals.length > 1 || !["dispatch", "status", "resolve"].includes(command)) {
+  if (values.help || !command || positionals.length > 1 || !["dispatch", "status", "resolve", "watch"].includes(command)) {
     console.error(usage);
     return values.help ? 0 : 2;
   }
@@ -38,8 +44,8 @@ async function main(argv: string[]): Promise<number> {
     console.error("dispatch requires --once: Phase 1 dispatches exactly one task per invocation.\n\n" + usage);
     return 2;
   }
-  if (command === "resolve" && !values.lease) {
-    console.error("resolve requires --lease <lease-id>; `switchboard status` shows each attempt's lease ID.\n\n" + usage);
+  if ((command === "resolve" || command === "watch") && !values.lease) {
+    console.error(`${command} requires --lease <lease-id>; \`switchboard status\` shows each attempt's lease ID.\n\n${usage}`);
     return 2;
   }
   const configPath = resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json");
@@ -55,6 +61,17 @@ async function main(argv: string[]): Promise<number> {
     const value = await status(deps);
     console.log(values.json ? JSON.stringify(value, null, 2) : describeStatus(value));
     return value.ok ? 0 : 1;
+  }
+
+  if (command === "watch") {
+    const controller = new AbortController();
+    process.once("SIGINT", () => controller.abort());
+    const outcome = await watch(deps, {
+      leaseId: values.lease!, follow: values["no-follow"] !== true, signal: controller.signal,
+      print: entry => console.log(values.json ? JSON.stringify(entry) : describeEntry(entry)),
+    });
+    if (!outcome.found) console.error(`No runtime record for lease ${values.lease} in this context. The worker may not have been launched.`);
+    return outcome.found ? 0 : 1;
   }
 
   if (command === "resolve") {

@@ -2,7 +2,9 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { bounded, RuntimeFailure } from "../async.ts";
 import { validateWorkerResult, workerResultSchema, type WorkerInput, type WorkerResult } from "../contracts.ts";
+import { ActivityWriter, shorten, type ActivityEntry } from "../activity.ts";
 import { inside, readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding } from "../records.ts";
+import type { RpcRecord } from "./jsonl.ts";
 import { PiRpcClient } from "./rpc-client.ts";
 
 const stateSchema = z.object({
@@ -22,7 +24,13 @@ const optionsSchema = z.object({
   requestMs: z.number().int().positive().default(5000),
   runMs: z.number().int().positive().default(30 * 60 * 1000),
   stopMs: z.number().int().min(100).default(5000),
+  /** How often to record a usage snapshot while the worker runs. One is also taken after each assistant message. */
+  statsMs: z.number().int().positive().default(5 * 60 * 1000),
+  /** Stop the worker once a usage snapshot exceeds either limit. Subscription providers may report a cost of zero. */
+  maxCost: z.number().positive().optional(),
+  maxTokens: z.number().int().positive().optional(),
 });
+const statsSchema = z.object({ tokens: z.object({ total: z.number() }), cost: z.number() });
 export type PiWorkerOptions = z.input<typeof optionsSchema>;
 export type PiRunReport = {
   binding: RuntimeBinding;
@@ -46,10 +54,46 @@ export class PiWorker {
     this.options = optionsSchema.parse(options);
   }
 
-  async execute(input: WorkerInput, signal?: AbortSignal): Promise<PiRunReport> {
-    if (signal?.aborted) throw new RuntimeFailure("interrupted", "Interrupted before launch");
+  async execute(input: WorkerInput, operator?: AbortSignal, onActivity?: (entry: ActivityEntry) => void): Promise<PiRunReport> {
+    if (operator?.aborted) throw new RuntimeFailure("interrupted", "Interrupted before launch");
     const reserved = await this.records.reserve(input);
     const { binding, directory } = reserved;
+    const activity = new ActivityWriter(directory, onActivity);
+    // Exceeding a usage limit stops the worker the same way an operator interruption does.
+    const budget = new AbortController();
+    const signal = operator ? AbortSignal.any([operator, budget.signal]) : budget.signal;
+    let lastSnapshot = 0;
+    let statsTimer: ReturnType<typeof setInterval> | undefined;
+    const snapshot = async (current: PiRpcClient) => {
+      if (current.childExit || budget.signal.aborted) return;
+      lastSnapshot = Date.now();
+      try {
+        const stats = statsSchema.parse(await current.request("get_session_stats", {}, this.options.requestMs));
+        activity.write({ kind: "stats", tokens: stats.tokens.total, cost: stats.cost });
+        const over = (this.options.maxCost !== undefined && stats.cost > this.options.maxCost) ||
+          (this.options.maxTokens !== undefined && stats.tokens.total > this.options.maxTokens);
+        if (over && !budget.signal.aborted) {
+          activity.write({ kind: "note", text: `Usage limit exceeded (${stats.tokens.total} tokens, $${stats.cost.toFixed(2)}); stopping the worker` });
+          budget.abort();
+        }
+      } catch { /* Usage snapshots are diagnostic; a failed one is skipped. */ }
+    };
+    const observe = (record: RpcRecord, current: () => PiRpcClient | undefined) => {
+      if (record.type === "tool_execution_start") {
+        activity.write({ kind: "tool_start", tool: String(record.toolName), id: String(record.toolCallId), args: shorten(JSON.stringify(record.args ?? {})) });
+      } else if (record.type === "tool_execution_end") {
+        activity.write({ kind: "tool_end", tool: String(record.toolName), id: String(record.toolCallId), ms: typeof record.durationMs === "number" ? record.durationMs : null, error: record.isError === true });
+      } else if (record.type === "queue_update") {
+        activity.write({ kind: "queue", steering: Array.isArray(record.steering) ? record.steering.length : 0, followUp: Array.isArray(record.followUp) ? record.followUp.length : 0 });
+      } else if (record.type === "message_end" && isObject(record.message) && record.message.role === "assistant") {
+        const text = Array.isArray(record.message.content)
+          ? record.message.content.flatMap(part => (isObject(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : [])).join(" ")
+          : "";
+        if (text.trim()) activity.write({ kind: "assistant", text: shorten(text) });
+        const client = current();
+        if (client && Date.now() - lastSnapshot > 30_000) void snapshot(client);
+      }
+    };
     let client: PiRpcClient | undefined;
     let failure: Error | undefined;
     let result: WorkerResult | undefined;
@@ -61,6 +105,7 @@ export class PiWorker {
         args: this.arguments(binding),
         cwd: binding.input.workspace,
         env: { ...this.options.environment, PI_SKIP_VERSION_CHECK: "1", PI_OFFLINE: "1" },
+        onEvent: record => observe(record, () => client),
       });
       receipt = client.exited.then(exit => this.records.recordChildExit(reserved, exit));
       void receipt.catch(() => {});
@@ -71,11 +116,16 @@ export class PiWorker {
       const settled = client.beginRun();
       // Never retry this command: a lost acknowledgement may still have started work.
       promptSchema.parse(await this.rpc(client, "prompt", { message: workerPrompt(binding) }, signal));
+      activity.write({ kind: "note", text: `Worker started (session ${binding.input.identity.sessionId})` });
+      const running = client;
+      statsTimer = setInterval(() => void snapshot(running), this.options.statsMs);
       const ending = await bounded(settled, this.options.runMs, "worker_timeout", signal);
+      await snapshot(client);
       if (ending.aborted) throw new RuntimeFailure("worker_aborted", "Pi reported an aborted run");
       if (ending.lastAssistantStop !== "stop") throw new RuntimeFailure("invalid_model_end", "Missing successful terminal assistant response");
       this.validateState(stateSchema.parse(await this.rpc(client, "get_state", {}, signal)), binding);
     } catch (error) { failure = asError(error); }
+    if (statsTimer) clearInterval(statsTimer);
 
     if (client) {
       await this.shutdown(client, failure !== undefined);
@@ -96,15 +146,21 @@ export class PiWorker {
       // A synchronous spawn failure creates no child. Retain the unused allocation evidence.
       await this.records.recordChildExit(reserved, { started: false, code: null, signal: null });
     }
-    if (signal?.aborted) {
+    if (operator?.aborted) {
       result = undefined;
       failure = new RuntimeFailure("interrupted", "Operator interrupted the worker");
+    } else if (budget.signal.aborted) {
+      result = undefined;
+      failure = new RuntimeFailure("over_budget", "The worker was stopped because the attempt exceeded its usage limit");
     }
     const childExit = client?.childExit;
+    const stopped = failure instanceof RuntimeFailure && (failure.reason === "interrupted" || failure.reason === "over_budget");
+    const status = !childExit && client ? "unresolved" : stopped ? "interrupted" : failure ? "failed" : "reported";
+    activity.write({ kind: "note", text: `Worker finished: ${status}${failure ? ` (${failure instanceof RuntimeFailure ? failure.reason : "runtime_failure"})` : ""}` });
+    await activity.close();
     return {
       binding, directory, workerTermination: "unverified", childExit,
-      status: !childExit && client ? "unresolved" : failure instanceof RuntimeFailure && failure.reason === "interrupted"
-        ? "interrupted" : failure ? "failed" : "reported",
+      status,
       reason: !childExit && client ? "termination_unknown" : failure instanceof RuntimeFailure ? failure.reason : failure ? "runtime_failure" : undefined,
       detail: failure?.message, stderrTail: client?.stderrTail ?? "", result,
     };
@@ -159,6 +215,9 @@ export class PiWorker {
   }
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 function asError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
 
 export function workerPrompt(binding: RuntimeBinding): string {

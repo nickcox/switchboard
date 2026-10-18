@@ -97,11 +97,15 @@ function handle(request: Record<string, unknown>) {
     send({ type: "agent_start" });
     if (scenario !== "no-ack" && scenario !== "fast-events") respond(request, { disposition: "started" });
     if (scenario === "ignore-stop") return;
-    send({ type: "message_end", message: { role: "assistant", stopReason: scenario === "model-error" ? "error" : "stop" } });
+    send({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "echo synthetic" } });
+    send({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: {}, isError: false, durationMs: 12 });
+    send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Synthetic worker finished" }], stopReason: scenario === "model-error" ? "error" : "stop" } });
     send({ type: "agent_settled", aborted: false });
     if (scenario === "fast-events") respond(request, { disposition: "started" });
     if (scenario === "trailing-json") process.stdout.write('{"type":');
     if (scenario === "nonzero-exit") process.exit(9);
+  } else if (request.type === "get_session_stats") {
+    respond(request, { tokens: { total: 1200 }, cost: scenario === "expensive" ? 9.99 : 0.01 });
   } else if (request.type === "clear_queue") respond(request, { steering: [], followUp: [] });
   else if (request.type === "abort") {
     if (scenario !== "ignore-stop") respond(request);

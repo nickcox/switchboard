@@ -26,10 +26,15 @@ export class PiRpcClient {
   readonly exited: Promise<ChildExit>;
   readonly closed: Promise<void>;
 
+  private readonly onEvent: ((record: RpcRecord) => void) | undefined;
+
   constructor(options: {
     executable: string; args: string[]; cwd: string; env: Record<string, string>; maxRecordBytes?: number;
+    /** Observes every event record (not responses). Errors it throws are ignored. */
+    onEvent?: (record: RpcRecord) => void;
   }) {
     this.decoder = new JsonlDecoder(options.maxRecordBytes);
+    this.onEvent = options.onEvent;
     this.child = spawn(options.executable, options.args, {
       cwd: options.cwd, env: options.env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
     });
@@ -118,6 +123,7 @@ export class PiRpcClient {
       else pending.reject(new RuntimeFailure("rpc_rejected", typeof record.error === "string" ? record.error : "Pi rejected RPC command"));
       return;
     }
+    try { this.onEvent?.(record); } catch { /* Observation must never affect the protocol. */ }
     if (!this.armed) return;
     if (record.type === "agent_start") this.agentStarted = true;
     if (record.type === "message_end" && isObject(record.message) && record.message.role === "assistant") {

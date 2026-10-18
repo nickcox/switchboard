@@ -4,6 +4,7 @@ import { z } from "zod";
 import { AttemptLog } from "./attempts/log.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
+import { describeEntry } from "./runtime/activity.ts";
 import { PiWorker } from "./runtime/pi/worker.ts";
 import { RuntimeRecords } from "./runtime/records.ts";
 import { TasksAxiStore } from "./tasks/tasks-axi.ts";
@@ -43,6 +44,14 @@ export const configSchema = z.strictObject({
     model: nonempty,
     shellTool: z.enum(["bash", "powershell"]).default("bash"),
     runMs: z.number().int().positive().default(30 * 60 * 1000),
+    /** Stop the worker when an attempt's reported cost (in the provider's currency, usually US dollars) exceeds this. */
+    maxCost: z.number().positive().optional(),
+    /** Stop the worker when an attempt's total tokens exceed this. Useful when a subscription provider reports zero cost. */
+    maxTokens: z.number().int().positive().optional(),
+    /** How often to record a usage snapshot while the worker runs. */
+    statsMs: z.number().int().positive().default(5 * 60 * 1000),
+    /** status flags a possibly running worker with no activity for this long. */
+    staleMs: z.number().int().positive().default(20 * 60 * 1000),
     /** The worker's complete environment. Defaults to PATH, HOME, USER, TMPDIR and LANG from Switchboard's own. */
     environment: z.record(z.string(), z.string()).optional(),
   }),
@@ -69,6 +78,9 @@ export async function createDependencies(config: Config, progress?: (message: st
   const worker = new PiWorker(runtime, {
     executable: process.execPath, entrypoint: config.worker.piEntrypoint,
     provider: config.worker.provider, model: config.worker.model, shellTool: config.worker.shellTool, runMs: config.worker.runMs,
+    statsMs: config.worker.statsMs,
+    ...(config.worker.maxCost === undefined ? {} : { maxCost: config.worker.maxCost }),
+    ...(config.worker.maxTokens === undefined ? {} : { maxTokens: config.worker.maxTokens }),
     environment: config.worker.environment ?? inherited(["PATH", "HOME", "USER", "TMPDIR", "LANG"]),
   });
   return {
@@ -82,9 +94,10 @@ export async function createDependencies(config: Config, progress?: (message: st
     }),
     attempts: new AttemptLog(config.runtimeRoot, config.contextId),
     runtime,
-    launch: (input, signal) => worker.execute(input, signal),
+    launch: (input, signal) => worker.execute(input, signal, progress ? entry => progress(describeEntry(entry)) : undefined),
     retention: request => checkRetention(git, hostEnvironment, request),
     repository: config.workspaces.repository,
+    staleMs: config.worker.staleMs,
     delivery: {
       baseRef: config.delivery.baseRef, branchPrefix: config.delivery.branchPrefix, byTaskKind: config.delivery.byTaskKind,
       default: {
