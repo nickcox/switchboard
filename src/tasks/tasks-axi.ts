@@ -31,6 +31,8 @@ const shownSchema = z.object({
     held: yesNo,
     hold_reason: z.string().transform(dash),
     repo: z.string().transform(dash),
+    // tasks-axi shows "task" when no kind is set, so an explicit "task" also counts as no kind.
+    kind: z.string().transform(value => (value === "task" ? null : value)),
     body: z.string(),
   }),
 });
@@ -82,7 +84,7 @@ export class TasksAxiStore implements TaskStore {
     }
     const task = parsed.data.task;
     return {
-      id: task.id, title: task.title, state: task.state, repo: task.repo, blocked: task.blocked,
+      id: task.id, title: task.title, state: task.state, repo: task.repo, kind: task.kind, blocked: task.blocked,
       held: task.held, holdReason: task.hold_reason, body: task.body,
     };
   }

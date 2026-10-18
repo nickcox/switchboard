@@ -36,6 +36,16 @@ function reportResult() {
     workReferences: [{ kind: "git", name: "code", branch: binding.input.delivery.outputBranch, commit: "b".repeat(40) }],
   };
   if (scenario === "missing-result") return;
+  if (scenario === "artefact-result" || scenario === "artefact-in-workspace") {
+    // A report deliverable: written to the attempt's artefact directory, or wrongly left in the workspace.
+    const directory = scenario === "artefact-result" ? binding.artefactDirectory! : process.cwd();
+    const report = join(directory, "report.md");
+    writeFileSync(report, "# Synthetic report\n");
+    writeFileSync(binding.resultPath, JSON.stringify({
+      ...result, workReferences: [{ kind: "artefact", name: "report", path: report, description: "Synthetic investigation report" }],
+    }));
+    return;
+  }
   if (scenario === "commit-result") {
     // Makes a real commit on the output branch in the workspace, so retention checks can pass.
     writeFileSync(join(process.cwd(), "worker-output.txt"), "synthetic worker output\n");

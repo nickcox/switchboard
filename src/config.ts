@@ -12,6 +12,12 @@ import { TreehouseProvider } from "./workspaces/treehouse.ts";
 
 const absolute = z.string().refine(isAbsolute, "Must be an absolute path");
 const nonempty = z.string().min(1);
+const contractSchema = z.strictObject({
+  kind: z.enum(["code", "artefact"]),
+  acceptance: z.enum(["review_or_integration", "independent_deliverable"]),
+  requiredEvidence: z.array(nonempty).default([]),
+  requiredDeliverables: z.array(nonempty).default([]),
+});
 
 /** The Switchboard configuration file. Every path is absolute so nothing depends on the caller's directory. */
 export const configSchema = z.strictObject({
@@ -27,6 +33,8 @@ export const configSchema = z.strictObject({
     acceptance: z.enum(["review_or_integration", "independent_deliverable"]).default("review_or_integration"),
     requiredEvidence: z.array(nonempty).default([]),
     requiredDeliverables: z.array(nonempty).default([]),
+    /** Contracts selected by task kind, for example a "scout" kind whose deliverable is a report. */
+    byTaskKind: z.record(nonempty, contractSchema).default({}),
   }),
   worker: z.strictObject({
     /** The Pi CLI entry point run with this Node.js executable, for example .../pi-coding-agent/dist/bundle/cli.js. */
@@ -77,7 +85,13 @@ export async function createDependencies(config: Config, progress?: (message: st
     launch: (input, signal) => worker.execute(input, signal),
     retention: request => checkRetention(git, hostEnvironment, request),
     repository: config.workspaces.repository,
-    delivery: config.delivery,
+    delivery: {
+      baseRef: config.delivery.baseRef, branchPrefix: config.delivery.branchPrefix, byTaskKind: config.delivery.byTaskKind,
+      default: {
+        kind: config.delivery.kind, acceptance: config.delivery.acceptance,
+        requiredEvidence: config.delivery.requiredEvidence, requiredDeliverables: config.delivery.requiredDeliverables,
+      },
+    },
     ...(progress ? { progress } : {}),
   };
 }

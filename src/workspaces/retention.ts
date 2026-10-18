@@ -12,6 +12,11 @@ export type RetentionRequest = {
   resultCommit?: string;
   /** Absolute paths of required reports and evidence, which must exist outside the workspace. */
   artefacts: string[];
+  /**
+   * True when the deliverable is not code, so the workspace is scratch: its uncommitted files and commits on no
+   * branch are reported as notes instead of preventing retention.
+   */
+  scratchWorkspace?: boolean;
 };
 
 export type RetentionResult = {
@@ -34,6 +39,7 @@ const gitTimeoutMs = 15000;
 export async function checkRetention(git: string, environment: Record<string, string>, request: RetentionRequest): Promise<RetentionResult> {
   const findings: string[] = [];
   const notes: string[] = [];
+  const workspaceFinding = (text: string) => (request.scratchWorkspace ? notes.push(`Scratch workspace: ${text}`) : findings.push(text));
   // A command that cannot even start (for example a missing workspace) is a check that could not run.
   const run = (cwd: string, args: string[]) => runCommand(git, args, { cwd, env: environment, timeoutMs: gitTimeoutMs })
     .catch((error: unknown) => ({ exitCode: null, stdout: "", stderr: String(error), timedOut: false }));
@@ -57,7 +63,7 @@ export async function checkRetention(git: string, environment: Record<string, st
   if (orphaned.exitCode !== 0) unable("for commits on no branch", orphaned);
   else {
     const commits = orphaned.stdout.split("\n").filter(Boolean);
-    if (commits.length > 0) findings.push(`${commits.length} commit(s) in the workspace are on no branch: ${commits.slice(0, listLimit).join(", ")}`);
+    if (commits.length > 0) workspaceFinding(`${commits.length} commit(s) in the workspace are on no branch: ${commits.slice(0, listLimit).join(", ")}`);
   }
 
   const status = await run(request.workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"]);
@@ -74,7 +80,7 @@ export async function checkRetention(git: string, environment: Record<string, st
       if (code.startsWith("R") || code.startsWith("C")) index += 1;
       (code === "!!" ? ignored : changed).push(code === "!!" ? path : `${code.trim()} ${path}`);
     }
-    if (changed.length > 0) findings.push(`${changed.length} uncommitted or untracked path(s) in the workspace: ${changed.slice(0, listLimit).join(", ")}`);
+    if (changed.length > 0) workspaceFinding(`${changed.length} uncommitted or untracked path(s) in the workspace: ${changed.slice(0, listLimit).join(", ")}`);
     if (ignored.length > 0) notes.push(`${ignored.length} ignored path(s) in the workspace: ${ignored.slice(0, listLimit).join(", ")}`);
   }
 

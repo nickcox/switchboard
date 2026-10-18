@@ -34,8 +34,8 @@ function fixture() {
     run(["commit", "-q", "--no-gpg-sign", "-am", "Fixture result"], workspace);
     return run(["rev-parse", "HEAD"], workspace);
   };
-  const check = (request: { resultCommit?: string; artefacts?: string[]; outputBranch?: string }) =>
-    checkRetention(git, environment, { repository, workspace, outputBranch: request.outputBranch ?? "out/1", artefacts: request.artefacts ?? [], ...(request.resultCommit ? { resultCommit: request.resultCommit } : {}) });
+  const check = (request: { resultCommit?: string; artefacts?: string[]; outputBranch?: string; scratchWorkspace?: boolean }) =>
+    checkRetention(git, environment, { repository, workspace, outputBranch: request.outputBranch ?? "out/1", artefacts: request.artefacts ?? [], ...(request.resultCommit ? { resultCommit: request.resultCommit } : {}), ...(request.scratchWorkspace ? { scratchWorkspace: true } : {}) });
   return { dir, repository, workspace, run, commitWork, check };
 }
 
@@ -109,4 +109,15 @@ test("a check that cannot run counts as not retained", async () => {
   });
   assert.equal(result.retained, false);
   assert.match(result.findings.join(), /Could not check/);
+});
+
+test("a scratch workspace's leftovers are notes, while artefacts are still required", async () => {
+  const f = fixture();
+  writeFileSync(join(f.workspace, "scratch.txt"), "notes\n");
+  const report = join(f.dir, "report.md");
+  writeFileSync(report, "report\n");
+  const kept = await f.check({ artefacts: [report], scratchWorkspace: true });
+  assert.equal(kept.retained, true);
+  assert.match(kept.notes.join(), /Scratch workspace: 1 uncommitted or untracked path/);
+  assert.equal((await f.check({ artefacts: [join(f.dir, "missing.md")], scratchWorkspace: true })).retained, false);
 });

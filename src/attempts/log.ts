@@ -8,7 +8,14 @@ const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 
 /** Entry payloads by kind. New kinds are added as dispatch stages are implemented. */
 const entrySchemas = {
-  requested: z.strictObject({ requestId: nonempty.optional() }),
+  requested: z.strictObject({
+    requestId: nonempty.optional(),
+    /** The delivery contract resolved before acquisition: "default" or the task kind that selected it. */
+    contract: z.strictObject({
+      name: nonempty, kind: z.enum(["code", "artefact"]), acceptance: z.enum(["review_or_integration", "independent_deliverable"]),
+      requiredEvidence: z.array(nonempty), requiredDeliverables: z.array(nonempty),
+    }).optional(),
+  }),
   leased: z.strictObject({
     leaseId: nonempty, workspace: nonempty, baseRef: nonempty, outputBranch: nonempty, startingCommit: commit,
   }),

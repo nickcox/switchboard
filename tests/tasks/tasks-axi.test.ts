@@ -50,9 +50,20 @@ test("read returns typed fields and preserves the body exactly; a missing task i
   const body = 'Instructions, commas and "quotes"\n\n## Acceptance\n- keep Unicode: α';
   const { store } = await fixture([["add", "read-a1", "123", "--repo", "fixture", "--body", body]]);
   assert.deepEqual(await store.read("read-a1"), {
-    id: "read-a1", title: "123", state: "queued", repo: "fixture", blocked: false, held: false, holdReason: null, body,
+    id: "read-a1", title: "123", state: "queued", repo: "fixture", kind: null, blocked: false, held: false, holdReason: null, body,
   });
   assert.equal(await store.read("missing-z9"), undefined);
+});
+
+test("a task's kind is read; no kind and an explicit 'task' are both null", async () => {
+  const { store } = await fixture([
+    ["add", "scout-a1", "Scout", "--repo", "fixture", "--kind", "scout"],
+    ["add", "plain-b1", "Plain", "--repo", "fixture"],
+    ["add", "named-c1", "Named", "--repo", "fixture", "--kind", "task"],
+  ]);
+  assert.equal((await store.read("scout-a1"))?.kind, "scout");
+  assert.equal((await store.read("plain-b1"))?.kind, null);
+  assert.equal((await store.read("named-c1"))?.kind, null);
 });
 
 test("start, done and hold read back what the store holds", async () => {

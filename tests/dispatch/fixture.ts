@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AttemptLog } from "../../src/attempts/log.ts";
-import type { Dependencies } from "../../src/dispatch/dispatch.ts";
+import type { ContractSpec, Dependencies } from "../../src/dispatch/dispatch.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import type { DeliveryContract } from "../../src/runtime/contracts.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
@@ -18,7 +18,7 @@ const entrypoint = resolve(import.meta.dirname, "../../node_modules/tasks-axi/di
 const evidence = resolve(import.meta.dirname, "../../.investigation/dispatch-unit");
 mkdirSync(evidence, { recursive: true });
 
-export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string } = {}) {
+export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string; byTaskKind?: Record<string, ContractSpec> } = {}) {
   const dir = realpathSync(mkdtempSync(join(evidence, "case-")));
   const home = join(dir, "home");
   mkdirSync(home);
@@ -57,15 +57,16 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     retention: request => checkRetention(git, environment, request),
     repository,
     delivery: {
-      baseRef: options.baseRef ?? "main", branchPrefix: "switchboard/", kind: "code",
-      acceptance: options.acceptance ?? "review_or_integration", requiredEvidence: ["tests"], requiredDeliverables: ["code"],
+      baseRef: options.baseRef ?? "main", branchPrefix: "switchboard/", byTaskKind: options.byTaskKind ?? {},
+      default: { kind: "code", acceptance: options.acceptance ?? "review_or_integration", requiredEvidence: ["tests"], requiredDeliverables: ["code"] },
     },
   };
   // The same setup as a configuration file, for tests that run Switchboard in a separate process.
   const config = join(dir, "switchboard.json");
   writeFileSync(config, JSON.stringify({
     contextId: "fixture-context", runtimeRoot, tasks: { file, repo: "fixture" },
-    workspaces: { repository, poolRoot: join(dir, "pool") }, delivery: deps.delivery,
+    workspaces: { repository, poolRoot: join(dir, "pool") },
+    delivery: { baseRef: deps.delivery.baseRef, branchPrefix: deps.delivery.branchPrefix, ...deps.delivery.default, byTaskKind: deps.delivery.byTaskKind },
     worker: {
       piEntrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", runMs: 5000,
       environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },

@@ -8,7 +8,16 @@ import { WorkspaceError, type Allocation, type Lease, type WorkspaceProvider } f
 import type { RetentionRequest, RetentionResult } from "../workspaces/retention.ts";
 import { result, type AttemptSummary, type DispatchResult, type NextAction, type Stage } from "./result.ts";
 
-export type DeliveryDefaults = Omit<DeliveryContract, "startingCommit" | "outputBranch"> & { branchPrefix: string };
+/** The parts of a delivery contract chosen per task; the base, branch and starting commit are added per attempt. */
+export type ContractSpec = Pick<DeliveryContract, "kind" | "acceptance" | "requiredEvidence" | "requiredDeliverables">;
+export type DeliveryConfiguration = {
+  baseRef: string;
+  branchPrefix: string;
+  /** Used for a task with no kind. */
+  default: ContractSpec;
+  /** Contracts selected by task kind. A task whose kind is not listed is refused before any change. */
+  byTaskKind: Record<string, ContractSpec>;
+};
 
 export type Dependencies = {
   contextId: string;
@@ -20,7 +29,7 @@ export type Dependencies = {
   retention: (request: RetentionRequest) => Promise<RetentionResult>;
   /** The repository whose refs the workspaces share, for retention checks. */
   repository: string;
-  delivery: DeliveryDefaults;
+  delivery: DeliveryConfiguration;
   progress?: (message: string) => void;
 };
 
@@ -98,10 +107,23 @@ export async function dispatchOnce(
     taskId = state.ready.find(id => !blocked(id));
     if (taskId === undefined) return result({ ok: true, reason: "no_ready_work", stage: "select", lease: "none", observed, nextAction: "dispatch_again" });
   }
+  // Resolve the delivery contract before any change; a task whose contract cannot be resolved is refused.
+  let selected: Task | undefined;
+  try { selected = await deps.tasks.read(taskId); }
+  catch (error) { return refusal("select", "fix_configuration", `The task store could not be read: ${message(error)}`, observed); }
+  if (!selected) return refusal("select", "choose_another_task", `Task ${taskId} no longer exists`, observed);
+  const contractName = selected.kind ?? "default";
+  const contract = selected.kind === null ? deps.delivery.default : deps.delivery.byTaskKind[selected.kind];
+  if (!contract) {
+    return refusal("select", "fix_configuration", `Task ${taskId} has kind "${selected.kind}", which has no delivery contract in the configuration`, observed);
+  }
+
   const previous = state.attempts.filter(a => a.taskId === taskId).map(a => a.attempt).at(-1) ?? 0;
   let ref: AttemptRef;
   try {
-    ref = await deps.attempts.create(taskId, options.requestId === undefined ? {} : { requestId: options.requestId }, previous);
+    ref = await deps.attempts.create(taskId, {
+      ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract },
+    }, previous);
   } catch (error) {
     if (error instanceof AttemptConflict) return refusal("select", "inspect_attempt", `Another invocation created an attempt for task ${taskId} first`, observed);
     return refusal("select", "fix_configuration", `The attempt log could not be written: ${message(error)}`, observed);
@@ -149,8 +171,8 @@ export async function dispatchOnce(
 
   // Steps 6–7: launch exactly one worker and observe it until its direct child exits.
   const delivery: DeliveryContract = {
-    baseRef: deps.delivery.baseRef, startingCommit: allocation.startingCommit, outputBranch, kind: deps.delivery.kind,
-    acceptance: deps.delivery.acceptance, requiredEvidence: deps.delivery.requiredEvidence, requiredDeliverables: deps.delivery.requiredDeliverables,
+    baseRef: deps.delivery.baseRef, startingCommit: allocation.startingCommit, outputBranch, kind: contract.kind,
+    acceptance: contract.acceptance, requiredEvidence: contract.requiredEvidence, requiredDeliverables: contract.requiredDeliverables,
   };
   const sessionId = randomUUID();
   summary.sessionId = sessionId;
@@ -190,6 +212,8 @@ async function finalise(
     repository: deps.repository, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
     ...(summary.resultCommit ? { resultCommit: summary.resultCommit } : {}),
     artefacts: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
+    // For a non-code deliverable the workspace is scratch; only the artefacts must be retained.
+    ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   });
   await deps.attempts.append(ref, "retention_checked", retention);
 

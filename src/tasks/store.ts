@@ -7,6 +7,8 @@ export type Task = {
   title: string;
   state: TaskState;
   repo: string | null;
+  /** The task's kind, which selects its delivery contract. Null when no kind is set. */
+  kind: string | null;
   blocked: boolean;
   held: boolean;
   holdReason: string | null;

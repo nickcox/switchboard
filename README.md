@@ -48,7 +48,12 @@ Otherwise, create a configuration file with absolute paths. For example, `switch
   "runtimeRoot": "/Users/me/.switchboard/my-project",
   "tasks": { "file": "/Users/me/code/my-project/TASKS-backlog.md", "repo": "my-project" },
   "workspaces": { "repository": "/Users/me/code/my-project", "poolRoot": "/Users/me/.switchboard/my-project/pool" },
-  "delivery": { "baseRef": "main" },
+  "delivery": {
+    "baseRef": "main",
+    "byTaskKind": {
+      "scout": { "kind": "artefact", "acceptance": "independent_deliverable", "requiredDeliverables": ["report"] }
+    }
+  },
   "worker": {
     "piEntrypoint": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
     "provider": "openai-codex",
@@ -64,11 +69,10 @@ npm run switchboard -- status --config ./switchboard.json
 npm run switchboard -- dispatch --once --config ./switchboard.json
 ```
 
-If `status` reports that a worker may still be running, check it has stopped and run `npm run switchboard -- resolve --lease <lease-id> --worker-stopped --config ./switchboard.json`; that attempt then stops blocking dispatch. `--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
+If `status` reports that a worker may still be running, check it has stopped and run `npm run switchboard -- resolve --lease <lease-id> --worker-stopped --config ./switchboard.json`; that attempt then stops blocking dispatch. A task's tasks-axi `kind` selects its delivery contract from `byTaskKind`; a task with no kind uses the default, which holds completed code for review. `--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
 
 ## Not yet done
 
-- Per-task delivery contracts. Every task uses the configured defaults, which hold completed code for review.
 - Linux and Windows.
 
 ## Decisions

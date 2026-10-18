@@ -10,6 +10,8 @@ export const bindingSchema = z.strictObject({
   createdAt: z.iso.datetime(),
   input: workerInputSchema,
   sessionDirectory: z.string(),
+  /** Where the worker writes reports and other artefacts, outside the recyclable workspace. Absent in older records. */
+  artefactDirectory: z.string().optional(),
   resultPath: z.string(),
 });
 export type RuntimeBinding = z.infer<typeof bindingSchema>;
@@ -111,9 +113,11 @@ export class RuntimeRecords {
     await mkdir(directory, { mode: 0o700 });
     const sessionDirectory = join(directory, "sessions");
     await mkdir(sessionDirectory, { mode: 0o700 });
+    const artefactDirectory = join(directory, "artefacts");
+    await mkdir(artefactDirectory, { mode: 0o700 });
     const binding = bindingSchema.parse({
       version: 1, createdAt: new Date().toISOString(),
-      input: { ...input, workspace }, sessionDirectory, resultPath: join(directory, "result.json"),
+      input: { ...input, workspace }, sessionDirectory, artefactDirectory, resultPath: join(directory, "result.json"),
     });
     await writeOnce(join(directory, "binding.json"), binding);
     return { directory, binding };
@@ -154,7 +158,8 @@ export class RuntimeRecords {
       const directory = join(context, entry.name);
       const binding = bindingSchema.parse(await readJsonFile(join(directory, "binding.json")));
       if (binding.input.identity.contextId !== contextId || key(binding.input.identity.leaseId) !== entry.name ||
-        binding.resultPath !== join(directory, "result.json") || binding.sessionDirectory !== join(directory, "sessions")) {
+        binding.resultPath !== join(directory, "result.json") || binding.sessionDirectory !== join(directory, "sessions") ||
+        (binding.artefactDirectory !== undefined && binding.artefactDirectory !== join(directory, "artefacts"))) {
         throw new Error("Runtime binding does not match its storage identity");
       }
       let child: RuntimeRecord["child"] = { status: "unknown" };
