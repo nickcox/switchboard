@@ -22,12 +22,14 @@ bun run check
 bun run test
 ```
 
-The root tests use synthetic RPC subprocesses only. They do not launch Pi agents, call a model, acquire Treehouse leases or change an authoritative task store. Fixture data is retained under the ignored `.investigation/runtime-unit/` directory.
+The root tests use synthetic RPC subprocesses for the Pi runtime and run the pinned tasks-axi CLI against disposable stores, so Node.js must be on `PATH`. They do not launch Pi agents, call a model, acquire Treehouse leases or change a real task store. Fixture data is retained under the ignored `.investigation/` directory.
 
 - `src/runtime/contracts.ts`: provider-independent worker input and result schemas.
 - `src/runtime/records.ts`: runtime-owned input bindings, discovery and observed direct-child exit records.
 - `src/runtime/pi/`: Pi-specific RPC transport, launch instructions and result-file validation.
-- `tests/`: offline framing, lifecycle, identity, discovery and result-failure tests.
+- `src/attempts/log.ts`: the append-only attempt log ([ADR-0006](docs/adr/0006-switchboard-attempt-log.md)).
+- `src/tasks/`: the task-store interface and the tasks-axi 0.2.6 adapter.
+- `tests/`: runtime framing, lifecycle, identity, discovery and result-failure tests; attempt-log creation races; tasks-axi adapter behaviour.
 - `investigations/`: separate provider/runtime capability probes with their own prerequisites. They are not run by the root test command.
 
 Pi's executable, Node runtime, model configuration and credentials are supplied explicitly by the eventual application configuration. The task-store and workspace adapters, the attempt log and a real end-to-end dispatch remain required before live dispatch. Do not point this unfinished foundation at real work expecting Phase 1 guarantees.
