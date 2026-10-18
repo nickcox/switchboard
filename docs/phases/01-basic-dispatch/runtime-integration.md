@@ -1,6 +1,6 @@
 # Initial Pi runtime integration
 
-Status: adapter foundation with offline protocol/fault tests and one successful real Pi run against a disposable repository (see [Real Pi run](#real-pi-run)). Full Phase 1 dispatch is not enabled.
+Status: the runtime adapter used by `switchboard dispatch --once`. Tested offline with a synthetic worker and in real runs against disposable repositories (see [Real Pi run](#real-pi-run)). Whole-worker termination remains unverified, so dispatch never returns leases.
 
 Decision: [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md). The selected baseline is Pi coding-agent 1.2.0, with Switchboard on Node.js 26.7.0. Pi Durable 1.3.0 is a comparison target, not an installed application dependency.
 
@@ -14,14 +14,14 @@ The adapter:
 2. Supplies the exact session ID and a session directory outside the leased workspace.
 3. Disables discovered extensions, MCP, skills, prompt templates, themes and context files (`AGENTS.md`, `CLAUDE.md`). Project resource approval is disabled; this is configuration control, not a sandbox.
 4. Requests structured state and checks session identity, session-file location and the exact selected provider/model. Idle startup does not establish task completion.
-5. Disables Pi's automatic model retry setting for this initial integration and sends exactly one prompt, with event observation already installed.
+5. Disables Pi's automatic model retry setting for this initial integration and sends exactly one prompt, with event observation already installed. Operator messages and stop requests are separate and forwarded once each ([ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md)).
 6. Requires prompt disposition `started`, a current agent run, a non-aborted settlement, a successful terminal assistant response and an empty idle queue afterwards.
 7. Closes RPC stdin, observes direct-child exit and stream closure, then validates the worker result file. A zero process exit alone is insufficient.
 8. On interruption/failure, requests queue clearing and abort when the channel permits, closes stdin, and escalates direct-child termination within a bounded stop budget. Sending a signal is never treated as an observed exit.
 
 Request timeouts never cause another prompt or replacement launch. Responses are correlated by request ID and command. Late acknowledgements are ignored rather than retried. Protocol framing splits only on LF, accepts CRLF, preserves split UTF-8 and Unicode line separators, and bounds each record.
 
-This does not yet implement task-store or workspace-provider adapters, authoritative in-flight confirmation, the attempt log, a `dispatch` CLI or independent deliverable/retention verification. Those remain caller/policy responsibilities and must be implemented before live dispatch.
+Task-store and workspace operations, the attempt log, dispatch policy and retention checks are implemented outside this module, in `src/tasks/`, `src/workspaces/`, `src/attempts/` and `src/dispatch/`.
 
 ## Result contract
 
@@ -94,7 +94,7 @@ This gate is not bypassed by asking the worker not to create background processe
 
 **Assessment:** current input/exit records support required runtime facts without introducing a durable execution engine. There is no queue, replay journal, scheduler or automatic restart to justify Pi Durable in Phase 1 yet. However, subprocess ownership is a meaningful upcoming comparison point; built-in cleanup must be tested before writing a larger custom process supervisor.
 
-**Required review checkpoints:** add a short comparison entry when process ownership is selected, when the first real Pi run passes, and before implementing reconciliation. Stop and propose Pi Durable instead of adding custom durable retries, restart/resume, queues, schedules or a persistent worker service. Bringing Durable forward would be an explicit revision to ADR-0003, not an unrecorded dependency change.
+**Required review checkpoints:** add a short comparison entry when process ownership is selected, when the first real Pi run passes, and before implementing reconciliation. Stop and propose Pi Durable instead of adding custom durable retries, restart/resume, queues, schedules or a persistent worker service. Bringing Durable forward would be an explicit revision to ADR-0003, not an unrecorded dependency change. The entry for the first real Pi runs is in ADR-0005.
 
 Pi Durable and Pi coding-agent are distinct runtimes. Neither runtime's internal completion is automatically tasks-axi done or permission to recycle a Treehouse workspace.
 
@@ -106,7 +106,7 @@ This confirmed against real Pi that the CLI flags, the `get_state`, `set_auto_re
 
 The first run found that Pi loaded the operator's global `~/.pi/agent/AGENTS.md` into the worker's system prompt, because none of the other disable flags cover context files. The adapter now passes `--no-context-files`, and a second run confirmed that no context file was loaded.
 
-This was one successful run only. It did not exercise interruption, model errors, process ownership or any task-store or workspace-provider adapter.
+Later runs went through `switchboard dispatch --once` with tasks-axi and Treehouse, using [`investigations/real-dispatch/`](../../../investigations/real-dispatch/README.md): a code task held for review with its commit retained on the output branch, and a `scout` task whose report was retained in the attempt's `artefacts/` directory and recorded as done. Interruption, model errors and process ownership have not been exercised with a real worker.
 
 ## Tests and limitations
 

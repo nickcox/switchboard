@@ -83,7 +83,9 @@ Supervision is expected to be done by an agent from Phase 4. Phase 1 has only a 
 
 | Supervisor alone | Operator approval |
 | --- | --- |
-| Inspect state and attempts; select and dispatch ready work; stop an attempt; record the outcome the worker reported under the delivery contract | Return a lease or otherwise discard work; confirm that a worker with no observed exit has stopped; record an outcome that differs from the worker's result or the delivery contract; change configuration, including authority |
+| Inspect state and attempts; select and dispatch ready work; stop an attempt; record the outcome the worker reported under the delivery contract | Return a lease or otherwise discard work; confirm that a worker with no observed exit has stopped; send a message that changes a running worker's instructions; record an outcome that differs from the worker's result or the delivery contract; change configuration, including authority |
+
+**Worker output is data.** The supervisor reads worker results, activity logs, transcripts and task text as data, never as instructions. Nothing a worker or a task says can grant authority, change policy or approve an operation.
 
 **Events wake the supervisor.** The attempt log is the event source. A deterministic watcher reads new entries and wakes the supervisor only when judgement is needed, such as an unresolved attempt, a recorded hold or failure, or a refused operation. The supervisor does not poll owners or read terminal output. A worker's mid-run request for a decision is a later addition; the versioned result contract must allow a status channel to be added without changing finalisation.
 
@@ -107,7 +109,7 @@ Pi Durable will support the supervisor and durable orchestration. A Pi Durable c
 | 2 — Reconciliation and recovery | Inspect disagreements across owners; define safe restart and repair actions; automatic lease return once process ownership is verified |
 | 3 — Multiple workers and runtimes | Extend the initial adapter; add bounded concurrency and another runtime |
 | 4 — Agent supervisor | Introduce an agent supervisor using the operations, authority model and events in [Supervision](#supervision); retain deterministic dispatch policy; Pi Durable for supervisor continuity, subject to ADR-0003 |
-| 5 — Mailboxes | Define Switchboard message semantics and implement durable delivery through Pi Durable |
+| 5 — Mailboxes | Define Switchboard message semantics and implement durable delivery through Pi Durable, generalising Phase 1's operator messages to running workers |
 | 6 — Scheduling | Add one-off and recurring triggers through existing dispatch and messaging paths |
 | 7 — External events | Translate external events into work or messages, initially through polling where suitable |
 

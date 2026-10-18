@@ -49,6 +49,26 @@ Both commands support `--json`. Every result and every refusal contains:
 
 Human-readable output is generated from the same result. Consumers must never need to parse prose. Document the reason and next-action codes alongside the implementation.
 
+## Watching and controlling a running attempt
+
+Workers can run for minutes or hours, so the operator must be able to see what a worker is doing, stop it, and redirect it, from any terminal.
+
+**Activity log.** The runtime adapter appends each attempt's worker activity to `activity.jsonl` in the attempt's runtime directory: tool starts and ends (tool name, shortened arguments, duration and whether it failed), the start of each assistant message, queue changes, stop requests and operator messages, and a token and cost snapshot at least every five minutes. Entries and the file as a whole have size limits. The log is diagnostic: Switchboard never uses it to decide task, lease or liveness state. Pi's session file remains the full transcript.
+
+**Watching.** `dispatch --once` prints one line per activity entry as it happens, unless `--json` is given. `switchboard watch --lease <lease-id>` follows an attempt's activity log from any terminal, including after its dispatcher has stopped. `status` adds, for each attempt, the time of its last activity, the tool currently running, the cost so far and the path to Pi's session file. It flags an attempt whose worker may still be running but has had no activity for longer than a configured period, 20 minutes by default. That flag is a prompt to look, not evidence that the worker has stopped.
+
+**Cost limit.** The configuration may set a cost limit per attempt. When a snapshot shows the limit exceeded, the dispatcher stops the worker as it would for an operator interruption and holds the task with an over-budget reason. The existing time limit continues to apply.
+
+**Stopping.** `switchboard stop --lease <lease-id>` writes a write-once stop request in the attempt's runtime directory. The dispatcher that owns the worker forwards it as Pi's `abort` and follows the interruption path, so the task is held as interrupted once the worker's exit is observed. If no running dispatcher forwards the request within a short period, `stop` reports it as undelivered; the operator then stops the worker another way and uses `resolve`.
+
+**Redirecting.** `switchboard steer --lease <lease-id> "<message>"` writes a write-once request with a unique ID. The owning dispatcher forwards it once, as Pi's `steer`, or as `follow_up` when `--after` is given, and records it in the attempt log with who sent it and Pi's response. An undelivered request is reported in the same way as a stop request and never retried automatically. Messages are part of the attempt record reviewers see. They do not change the delivery contract or the result requirements ([ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md)).
+
+**Authority.** Stopping is allowed without operator approval. Sending a message that changes a running worker's instructions needs operator approval by default (see [Supervision](../../architecture.md#supervision)).
+
+**Long runs.** `dispatch --once` stays in the foreground until the worker finishes. Run it under a terminal multiplexer such as tmux, or with `nohup`: closing its terminal ends the dispatcher, which counts as a crash. A dispatcher that runs in the background is Phase 3 work.
+
+**Taking over by hand.** After a worker has stopped, `status` prints the command that opens its Pi session interactively in the workspace, so the operator can continue the work by hand. This is never offered while the worker may still be running.
+
 ## Required integration contracts
 
 Implement task-store, workspace-provider and worker-runtime interfaces, with tasks-axi, Treehouse and Pi as the initial adapters. Dispatch policy must depend on these interfaces rather than provider APIs or implementation-specific types. The interfaces may adopt tasks-axi's task model and Treehouse's lease model where appropriate; keep provider commands and transport formats inside adapters. Replacements must satisfy the same ownership, identity and safety contracts. Phase 1 does not require additional providers or a plugin system.
@@ -158,6 +178,7 @@ Do not automatically reset a task to ready after a launch failure: the attempt m
 9. **Contract and retention:** the launch instructions and finalisation use the same delivery contract. Verify the configured base, actual starting commit, unique output branch and exact result commit. A branch that does not contain that commit, or required evidence existing only in removable files, is reported as not retained and prevents done.
 10. **Runtime and store boundaries:** stale-session results cannot complete the current attempt; idle or unavailable runtime observations cannot prove direct-child exit. An uncertain launch is inspected by task/lease identity without relaunching. Task operations still address the configured store from another working directory and never mutate a workspace copy.
 11. **Limited persistence:** a real end-to-end Pi run and failure tests require only tasks-axi, Treehouse, runtime-owned state, the attempt log, configuration and diagnostic output. No other Switchboard database or Pi Durable is installed as a Phase 1 dependency.
+12. **Watching and control:** worker activity is recorded and `watch` follows it after the dispatcher is killed. A stop request ends with the task held as interrupted. An operator message is forwarded exactly once and recorded with its sender. A request with no running dispatcher is reported as undelivered. An exceeded cost limit stops the worker.
 
 Use adapter fault tests for boundary cases and at least one real end-to-end dispatch for command, identity and working-directory verification. Phase 1 is complete only when both pass and the actual adapter mappings and attempt-log format are documented alongside the implementation.
 

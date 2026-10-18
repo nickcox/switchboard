@@ -73,6 +73,7 @@ If `status` reports that a worker may still be running, check it has stopped and
 
 ## Not yet done
 
+- Watching, stopping and redirecting a running worker, and a cost limit per attempt. These are specified in the PRD's [Watching and controlling a running attempt](docs/phases/01-basic-dispatch/PRD.md#watching-and-controlling-a-running-attempt) section. Until then, run `dispatch --once` under tmux or `nohup`, read Pi's session file for progress, and stop a worker with Ctrl-C in its terminal.
 - Linux and Windows.
 
 ## Decisions
