@@ -1,8 +1,8 @@
 import { decode } from "@toon-format/toon";
-import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
+import { describeCommand as describe, runCommand, type CommandResult as Run } from "../infra/command.ts";
 import { TaskStoreError, type Hold, type Task, type TaskStore } from "./store.ts";
 
 /**
@@ -46,8 +46,6 @@ const mutationSchema = z.object({
 
 // tasks-axi rejects parentheses and newlines in hold reasons.
 const holdReason = z.string().min(1).max(200).refine(value => !/[()\r\n]/.test(value), "Hold reason must not contain parentheses or newlines");
-
-type Run = { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
 
 export class TasksAxiStore implements TaskStore {
   private readonly options: z.output<typeof optionsSchema>;
@@ -172,32 +170,15 @@ export class TasksAxiStore implements TaskStore {
     catch { throw new TaskStoreError("unreadable", `Unreadable ${label} output`, describe(run)); }
   }
 
-  private async run(args: string[]): Promise<Run> {
+  private run(args: string[]): Promise<Run> {
     const { node, entrypoint, file, home, timeoutMs } = this.options;
-    const child = spawn(node, [entrypoint, ...args, "--backend", "markdown", "--file", file], {
-      // A controlled environment: no TASKS_AXI_* variables, and a home directory chosen by configuration.
-      cwd: dirname(file), env: { PATH: process.env.PATH ?? "", HOME: home, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true,
+    // A controlled environment: no TASKS_AXI_* variables, and a home directory chosen by configuration.
+    return runCommand(node, [entrypoint, ...args, "--backend", "markdown", "--file", file], {
+      cwd: dirname(file), env: { PATH: process.env.PATH ?? "", HOME: home, NO_COLOR: "1" }, timeoutMs,
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (text: string) => { stdout += text; });
-    child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr += text; });
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
-    try {
-      const exitCode = await new Promise<number | null>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code, signal) => resolve(signal ? null : code));
-      });
-      return { exitCode, stdout, stderr, timedOut };
-    } finally { clearTimeout(timer); }
   }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function describe(run: Run): string {
-  return JSON.stringify({ exitCode: run.exitCode, timedOut: run.timedOut, stdout: run.stdout.slice(-2000), stderr: run.stderr.slice(-2000) });
 }

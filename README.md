@@ -22,14 +22,16 @@ npm run check
 npm test
 ```
 
-Node.js runs the TypeScript source directly, with no build step. The root tests use synthetic RPC subprocesses for the Pi runtime and run the pinned tasks-axi CLI against disposable stores. They do not launch Pi agents, call a model, acquire Treehouse leases or change a real task store. Fixture data is retained under the ignored `.investigation/` directory.
+Node.js runs the TypeScript source directly, with no build step. The root tests use synthetic RPC subprocesses for the Pi runtime, run the pinned tasks-axi CLI against disposable stores, and run `treehouse` and `git` against disposable repositories, so both must be on `PATH`. They do not launch Pi agents, call a model, touch real repositories or Treehouse pools, or change a real task store. Fixture data is retained under the ignored `.investigation/` directory.
 
 - `src/runtime/contracts.ts`: provider-independent worker input and result schemas.
 - `src/runtime/records.ts`: runtime-owned input bindings, discovery and observed direct-child exit records.
 - `src/runtime/pi/`: Pi-specific RPC transport, launch instructions and result-file validation.
 - `src/attempts/log.ts`: the append-only attempt log ([ADR-0006](docs/adr/0006-switchboard-attempt-log.md)).
 - `src/tasks/`: the task-store interface and the tasks-axi 0.2.6 adapter.
-- `tests/`: runtime framing, lifecycle, identity, discovery and result-failure tests; attempt-log creation races; tasks-axi adapter behaviour.
+- `src/workspaces/`: the workspace-provider interface and the Treehouse adapter (acquire and inspect only).
+- `src/infra/`: shared subprocess handling.
+- `tests/`: runtime framing, lifecycle, identity, discovery and result-failure tests; attempt-log creation races; tasks-axi and Treehouse adapter behaviour.
 - `investigations/`: separate provider/runtime capability probes with their own prerequisites. They are not run by the root test command.
 
 Pi's executable, Node runtime, model configuration and credentials are supplied explicitly by the eventual application configuration. The task-store and workspace adapters, the attempt log and a real end-to-end dispatch remain required before live dispatch. Do not point this unfinished foundation at real work expecting Phase 1 guarantees.

@@ -93,6 +93,8 @@ The fixture committed a result on the named output branch, returned the lease, r
 
 Return resets the workspace and removes inventoried seeds. A modified ignored seed disappeared even though `git status --porcelain` was empty. Required reports and evidence must therefore be checked independently and retained outside the workspace. Preserve the lease if dirty files, unretained commits or sole-copy artefacts remain. Verify the output ref contains the recorded commit; branch existence is insufficient.
 
+Treehouse 3.1.3 allows several leases with the same holder and refuses an output branch that already exists (found while building the adapter on 18 October 2026). The holder is therefore not an exclusive claim on a task: Switchboard must check for an existing lease before acquiring, and relies on the attempt log to stop two invocations acquiring for the same task.
+
 Wrong lease identities were refused without touching the replacement allocation. Source inspection confirms the conditions are rechecked while holding the pool state lock before destructive effects. Treehouse process listings remain non-authoritative for Pi liveness, even when empty.
 
 ## Pi runtime boundary
