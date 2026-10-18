@@ -61,7 +61,19 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
       acceptance: options.acceptance ?? "review_or_integration", requiredEvidence: ["tests"], requiredDeliverables: ["code"],
     },
   };
-  return { dir, deps, tasks, run, runtime };
+  // The same setup as a configuration file, for tests that run Switchboard in a separate process.
+  const config = join(dir, "switchboard.json");
+  writeFileSync(config, JSON.stringify({
+    contextId: "fixture-context", runtimeRoot, tasks: { file, repo: "fixture" },
+    workspaces: { repository, poolRoot: join(dir, "pool") }, delivery: deps.delivery,
+    worker: {
+      piEntrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", runMs: 5000,
+      environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
+    },
+  }));
+  // Changes the store directly with the tasks-axi CLI, as an operator or another tool would.
+  const tasksCli = (args: string[]) => execFileSync(process.execPath, [entrypoint, ...args, "--json", "--backend", "markdown", "--file", file], { env: { PATH: environment.PATH, HOME: home }, encoding: "utf8" });
+  return { dir, deps, tasks, run, runtime, config, environment, tasksCli };
 }
 
 export const task = (id: string, body = "Implement the fixture change") => ["add", id, `Task ${id}`, "--repo", "fixture", "--body", body];

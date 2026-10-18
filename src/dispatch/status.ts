@@ -14,7 +14,7 @@ export type AttemptStatus = {
 export type StatusResult = {
   ok: boolean;
   /** `clear` when nothing needs the operator; `attention` when an attempt does; otherwise why state is unknown. */
-  reason: "clear" | "attention" | "store_unreadable" | "workspace_unreadable" | "runtime_unreadable" | "attempt_log_unreadable";
+  reason: "clear" | "attention" | "refused";
   ready: string[];
   inFlight: string[];
   /** Leases in this context's pool that no attempt in the log accounts for. */
@@ -31,7 +31,7 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
   const state = await inspect(deps);
   if ("failed" in state) {
     return {
-      ok: false, reason: state.failed.reason as StatusResult["reason"], ready: [], inFlight: [], unaccountedLeases: [], attempts: [],
+      ok: false, reason: "refused", ready: [], inFlight: [], unaccountedLeases: [], attempts: [],
       ...(state.failed.detail ? { detail: state.failed.detail } : {}), nextAction: action("fix_configuration"),
     };
   }
@@ -73,7 +73,7 @@ function overall(attempts: AttemptStatus[], unaccounted: boolean): NextAction {
 }
 
 export function describeStatus(value: StatusResult): string {
-  const lines = [`${value.reason === "clear" ? "Clear" : value.reason === "attention" ? "Needs attention" : `Unknown: ${value.reason}`}`];
+  const lines = [`${value.reason === "clear" ? "Clear" : value.reason === "attention" ? "Needs attention" : "Unknown: owner state could not be read"}`];
   if (value.detail) lines.push(`Detail: ${value.detail}`);
   lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`);
   for (const a of value.attempts) {

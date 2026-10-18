@@ -1,41 +1,24 @@
 import type { RetentionResult } from "../workspaces/retention.ts";
 
 /**
- * Stable reason codes for every dispatch and status result (Phase 1 PRD, structured results). Renaming or removing a
- * code is a breaking change for callers, including a future supervisor.
+ * Stable reason codes for every dispatch, status and resolve result (Phase 1 PRD, structured results). Each code is
+ * a category of behaviour; `stage` says where it happened and `detail` explains the specific cause in prose, which is
+ * not part of the stable interface. Renaming or removing a code is a breaking change for callers, including a future
+ * supervisor.
  */
 export const reasons = {
   no_ready_work: "No task is ready in the configured repository.",
   done: "The worker's result satisfied the completion contract and the task is recorded as done.",
+  held: "The attempt finished and the task is recorded as held. Its hold reason and the next action say why.",
+  refused: "Nothing was changed. The detail says why the request could not go ahead.",
+  stopped: "The attempt stopped after changing some state, which is preserved. The detail says where and why.",
   existing_request: "An attempt with this request ID already exists; its current state is reported instead.",
-  task_not_ready: "The requested task is not ready.",
-  task_has_lease: "The task already has a workspace lease from an earlier attempt.",
-  task_in_flight: "The task is already in flight.",
-  attempt_may_be_running: "An earlier attempt's worker may still be running, so no new attempt is started.",
-  attempt_conflict: "Another invocation created an attempt for this task first.",
-  store_unreadable: "The task store could not be read.",
-  workspace_unreadable: "Workspace leases could not be listed.",
-  runtime_unreadable: "Runtime records could not be read.",
-  attempt_log_unreadable: "The attempt log could not be read.",
-  lease_refused: "The workspace provider refused to create a lease. The task is unchanged.",
-  lease_outcome_unknown: "The workspace provider did not confirm whether a lease was created.",
-  lease_unexpected: "A lease was created but does not match the request.",
-  readiness_changed: "The task stopped being ready after the lease was acquired. No worker was started.",
-  start_refused: "The task store refused to mark the task in flight. No worker was started.",
-  start_outcome_unknown: "The task store did not confirm the task is in flight. No worker was started.",
-  worker_unresolved: "The worker's process exit was not observed, so it may still be running.",
-  held_review_required: "The worker completed, and the task is held for review or integration.",
-  held_worker_hold: "The worker asked for the task to be held.",
-  held_worker_failed: "The worker failed or produced no valid result, and the task is held.",
-  held_interrupted: "The operator interrupted the worker, and the task is held.",
-  held_not_retained: "The worker reported completion but its work is not retained, so the task is held.",
-  task_update_failed: "The final task update could not be confirmed.",
-  confirmation_required: "Resolving needs the operator's confirmation that the worker has stopped.",
-  resolved_worker_stopped: "The operator confirmed the worker has stopped. The attempt no longer blocks dispatch.",
-  nothing_to_resolve: "No worker for this lease is waiting for confirmation that it has stopped.",
-  unknown_lease: "No attempt or runtime record in this context has this lease ID.",
+  resolved: "The operator's confirmation that the worker stopped was recorded. The attempt no longer blocks dispatch.",
 } as const;
 export type Reason = keyof typeof reasons;
+
+/** Where a result was decided, matching the Phase 1 PRD dispatch sequence. */
+export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "finalise" | "resolve";
 
 export const nextActions = {
   none: "Nothing further is needed.",
@@ -68,12 +51,13 @@ export type AttemptSummary = {
 export type DispatchResult = {
   ok: boolean;
   reason: Reason;
+  stage?: Stage;
   attempt?: AttemptSummary;
   worker?: { status: string; outcome?: string; summary?: string; reason?: string; nextAction?: string };
   task?: { id: string; state: string; held: boolean; holdReason: string | null };
   retention?: RetentionResult;
-  /** Phase 1 never returns a lease, so a lease is either absent or preserved. */
-  lease: "none" | "preserved";
+  /** Phase 1 never returns a lease, so a lease is absent, preserved, or unknown when leases could not be listed. */
+  lease: "none" | "preserved" | "unknown";
   /** Owner state the decision was based on, including anything that was unknown. */
   observed: Record<string, unknown>;
   detail?: string;
@@ -85,7 +69,7 @@ export function result(fields: Omit<DispatchResult, "nextAction"> & { nextAction
 }
 
 export function describe(value: DispatchResult): string {
-  const lines = [`${value.ok ? "OK" : "NOT OK"}: ${value.reason} – ${reasons[value.reason]}`];
+  const lines = [`${value.ok ? "OK" : "NOT OK"}: ${value.reason}${value.stage ? ` at ${value.stage}` : ""} – ${reasons[value.reason]}`];
   const a = value.attempt;
   if (a) {
     lines.push(`Task ${a.taskId}, attempt ${a.attempt}${a.requestId ? ` (request ${a.requestId})` : ""}`);

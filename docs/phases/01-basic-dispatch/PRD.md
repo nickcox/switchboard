@@ -39,7 +39,10 @@ A caller may pass `--request-id`. Switchboard records it in the attempt's first 
 Both commands support `--json`. Every result and every refusal contains:
 
 - `ok`: whether the command achieved its purpose.
-- `reason`: a stable code from a documented list, such as `no_ready_work`, `attempt_may_be_running` or `task_store_unreadable`. Renaming or removing a code is a breaking change.
+- `reason`: one of a small set of stable codes, each a category of behaviour: `no_ready_work`, `done`, `held`, `refused` (nothing was changed), `stopped` (some state was changed and is preserved), `existing_request` and `resolved`. Renaming or removing a code is a breaking change.
+- `stage`: where the result was decided (`preflight`, `select`, `acquire`, `start`, `launch`, `finalise` or `resolve`).
+- `detail`: the specific cause in prose. It is for people and logs, not a stable interface.
+- `lease`: `none`, `preserved`, or `unknown` when leases could not be listed.
 - The attempt's identifiers when known: context, task ID, lease ID, session ID.
 - The owner state the decision was based on, including any state that was unknown.
 - `nextAction`: a stable code and a plain description of what should happen next and who must do it.
@@ -123,20 +126,20 @@ On operator interruption, request worker stop. Once direct-child exit is observe
 
 ## Failure compensation
 
-After an uncertain outcome, read the owner's state back. Continue if the intended state is confirmed; otherwise stop and report the attempt as unresolved with the exact remaining action. No row returns a lease.
+Every boundary follows one rule. After an outcome that is refused, unknown or inconsistent, read the owner's state back. Continue if the intended state is confirmed. Otherwise stop, preserve everything that exists, record why in the attempt log, and report the remaining action. Unreadable owner state before any change refuses dispatch without changing anything.
 
-| Failure boundary | Required response |
-| --- | --- |
-| Readiness/configuration check fails | Make no mutations; report the cause |
-| Lease acquisition fails definitively | Leave task unchanged; do not launch |
-| Lease acquisition outcome is unknown | Inspect Treehouse by holder; no blind reacquisition. If unresolved, stop and report the task ID |
-| Readiness changes after leasing, or in-flight transition is definitively rejected | Do not launch; preserve the unused lease and report it |
-| In-flight update outcome is unknown | Read tasks-axi. Continue if this transition is confirmed under exclusive ownership; otherwise stop |
-| Launch definitively fails before creating a worker | Record hold with launch-failure reason; preserve the unused lease |
-| Launch outcome is unknown | Inspect runtime by task/lease identity. Adopt only an unambiguously identified session; otherwise stop without relaunching or resetting the task |
-| Runtime inspection/result channel fails | Treat liveness/outcome as unknown; report the attempt as unresolved with the inspection or stop action required |
-| Final task update fails or times out | Read tasks-axi to determine whether it applied. Report the result and any exact remaining update |
-| Dispatcher/host crashes | No automatic repair. The next invocation finds the attempt in the log; operator inspects all three owners before changing state |
+Three rules hold at every boundary:
+
+- Never launch a second worker for an attempt, including after an unknown launch outcome.
+- Never acquire a second lease for an attempt, including after an unknown acquisition outcome. Inspect leases by task and branch instead, and report any lease found.
+- Never return a lease.
+
+Two boundaries need more than the general rule:
+
+- **Launch outcome unknown.** Treat the worker as possibly running. Record no task outcome, and refuse further dispatch until the worker's exit is observed or the operator confirms it stopped with `switchboard resolve`.
+- **Final task update unknown.** Read the task back. If the outcome applied, record it as normal. If not, leave the task as it is and report the exact remaining update.
+
+A dispatcher or host crash runs no compensation. The next invocation finds the attempt in the attempt log and applies the dispatch sequence's first two steps.
 
 Do not automatically reset a task to ready after a launch failure: the attempt may need diagnosis, and the task's dependencies may have changed. Compensation must never overwrite a conflicting external task update.
 
@@ -147,7 +150,7 @@ Do not automatically reset a task to ready after a launch failure: the attempt m
 3. **Ordering:** fault injection proves no worker starts before in-flight state is confirmed, and a readiness change after leasing prevents launch.
 4. **Completion:** valid completion satisfying the resolved contract records done. Implementation that still requires review/integration records hold and does not unblock dependent tasks through done. Reports distinguish worker completion, retention, acceptance and the preserved lease.
 5. **Preservation:** no Switchboard path returns a lease. Hold, worker failure, missing/invalid result, dirty work and unretained commits are reported distinctly by the retention check.
-6. **Compensation:** exercise every failure-table boundary, including lost acknowledgements after a successful mutation. Verify that unknown outcomes cause inspection rather than duplicate launch or reacquisition, and that a repeated request ID returns the existing attempt without dispatching again, including after the dispatcher is killed.
+6. **Compensation:** inject a fault at each boundary of the dispatch sequence, including lost acknowledgements after a successful mutation, and check the three rules above at every one. Verify that unknown outcomes cause inspection rather than duplicate launch or reacquisition, and that a repeated request ID returns the existing attempt without dispatching again, including after the dispatcher is killed.
 7. **Concurrency and interruption:** two invocations started at once never dispatch the same task; operator interruption requests stop and records hold once direct-child exit is observed; an unobserved exit leaves the attempt unresolved and blocks further dispatch.
 8. **Crash limitation:** kill the dispatcher after leasing, after in-flight update and after worker launch. The next invocation finds each attempt in the log, never dispatches the same task again, refuses all dispatch while that worker may still be running, and reports available owner state.
 9. **Contract and retention:** the launch instructions and finalisation use the same delivery contract. Verify the configured base, actual starting commit, unique output branch and exact result commit. A branch that does not contain that commit, or required evidence existing only in removable files, is reported as not retained and prevents done.

@@ -22,17 +22,17 @@ test("a runtime record with no observed exit blocks dispatch until the operator 
   assert.equal(view.attempts.find(a => a.attempt.leaseId === "lease-orphan")?.possiblyRunning, true);
 
   const unconfirmed = await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: false });
-  assert.equal(unconfirmed.reason, "confirmation_required");
-  assert.equal((await dispatchOnce(deps)).reason, "attempt_may_be_running");
+  assert.equal(unconfirmed.nextAction.code, "confirm_worker_stopped");
+  assert.equal((await dispatchOnce(deps)).nextAction.code, "stop_worker");
 
   const resolved = await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true, note: "Checked with lsof" });
-  assert.equal(resolved.reason, "resolved_worker_stopped");
+  assert.equal(resolved.reason, "resolved");
   assert.equal(resolved.nextAction.code, "apply_task_outcome");
   const record = (await runtime.discover("fixture-context")).find(r => r.binding.input.identity.leaseId === "lease-orphan");
   assert.equal(record?.child.status, "operator_confirmed_stopped");
 
-  assert.equal((await dispatchOnce(deps)).reason, "held_review_required");
-  assert.equal((await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true })).reason, "nothing_to_resolve");
+  assert.equal((await dispatchOnce(deps)).nextAction.code, "review_branch");
+  assert.equal((await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true })).nextAction.code, "none");
 });
 
 test("an attempt logged as launched but never finished is resolved through the attempt log", async () => {
@@ -43,21 +43,21 @@ test("an attempt logged as launched but never finished is resolved through the a
   await deps.tasks.start("logged-a1");
   await deps.attempts.append(ref, "task_started", {});
   await deps.attempts.append(ref, "launched", { sessionId: randomUUID() });
-  assert.equal((await dispatchOnce(deps)).reason, "attempt_may_be_running");
+  assert.equal((await dispatchOnce(deps)).nextAction.code, "stop_worker");
 
-  assert.equal((await resolveStopped(deps, { leaseId: "lease-logged", confirmed: true })).reason, "resolved_worker_stopped");
+  assert.equal((await resolveStopped(deps, { leaseId: "lease-logged", confirmed: true })).reason, "resolved");
   assert.equal((await deps.attempts.read(ref)).entries.at(-1)?.kind, "operator_resolved");
   // The task store still shows logged-a1 in flight, so dispatch moves on to the next ready task.
   const next = await dispatchOnce(deps);
-  assert.equal(next.reason, "held_review_required");
+  assert.equal(next.nextAction.code, "review_branch");
   assert.equal(next.attempt?.taskId, "other-b1");
 });
 
 test("unknown and already finished leases are reported, not changed", async () => {
   const { deps } = await fixture({ tasks: [task("done-a1")], scenario: "commit-result" });
-  assert.equal((await resolveStopped(deps, { leaseId: "no-such-lease", confirmed: true })).reason, "unknown_lease");
+  assert.equal((await resolveStopped(deps, { leaseId: "no-such-lease", confirmed: true })).nextAction.code, "inspect_attempt");
   const finished = await dispatchOnce(deps);
   const before = (await deps.attempts.forTask("done-a1"))[0]!.entries.length;
-  assert.equal((await resolveStopped(deps, { leaseId: finished.attempt!.leaseId!, confirmed: true })).reason, "nothing_to_resolve");
+  assert.equal((await resolveStopped(deps, { leaseId: finished.attempt!.leaseId!, confirmed: true })).nextAction.code, "none");
   assert.equal((await deps.attempts.forTask("done-a1"))[0]!.entries.length, before);
 });

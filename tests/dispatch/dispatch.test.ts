@@ -17,7 +17,7 @@ test("no ready work is a successful no-op", async () => {
 test("completed code work is held for review, retained on its branch, and the lease is preserved", async () => {
   const { deps, tasks, run } = await fixture({ tasks: [task("work-a1")], scenario: "commit-result" });
   const outcome = await dispatchOnce(deps);
-  assert.equal(outcome.reason, "held_review_required", JSON.stringify(outcome, null, 2));
+  assert.equal(outcome.nextAction.code, "review_branch", JSON.stringify(outcome, null, 2));
   assert.equal(outcome.ok, false);
   assert.equal(outcome.lease, "preserved");
   assert.equal(outcome.retention?.retained, true);
@@ -47,7 +47,7 @@ test("a reported commit that is not on the output branch is held as not retained
   // The default synthetic worker reports a commit ID that does not exist.
   const { deps, tasks } = await fixture({ tasks: [task("ghost-a1")], acceptance: "independent_deliverable" });
   const outcome = await dispatchOnce(deps);
-  assert.equal(outcome.reason, "held_not_retained");
+  assert.equal(outcome.reason, "held");
   assert.equal(outcome.retention?.retained, false);
   assert.equal((await tasks.read("ghost-a1"))?.held, true);
 });
@@ -55,7 +55,7 @@ test("a reported commit that is not on the output branch is held as not retained
 test("a worker with no valid result is held as failed", async () => {
   const { deps, tasks } = await fixture({ tasks: [task("fail-a1")], scenario: "missing-result" });
   const outcome = await dispatchOnce(deps);
-  assert.equal(outcome.reason, "held_worker_failed");
+  assert.equal(outcome.reason, "held");
   assert.equal(outcome.worker?.status, "failed");
   assert.equal((await tasks.read("fail-a1"))?.holdReason, "Switchboard attempt 1 failed");
 });
@@ -64,7 +64,7 @@ test("a held task is not dispatched again, and naming it explicitly is refused b
   const { deps } = await fixture({ tasks: [task("again-a1")], scenario: "commit-result" });
   await dispatchOnce(deps);
   assert.equal((await dispatchOnce(deps)).reason, "no_ready_work");
-  assert.equal((await dispatchOnce(deps, { taskId: "again-a1" })).reason, "task_has_lease");
+  assert.equal((await dispatchOnce(deps, { taskId: "again-a1" })).nextAction.code, "choose_another_task");
 });
 
 test("a repeated request ID returns the existing attempt without dispatching again", async () => {
@@ -88,7 +88,7 @@ test("an attempt whose worker may still be running blocks all dispatch", async (
     delivery: { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] },
   });
   const outcome = await dispatchOnce(deps);
-  assert.equal(outcome.reason, "attempt_may_be_running");
+  assert.equal(outcome.nextAction.code, "stop_worker");
   assert.equal(outcome.nextAction.code, "stop_worker");
   assert.deepEqual(await deps.attempts.forTask("next-a1"), []);
 });
@@ -96,7 +96,7 @@ test("an attempt whose worker may still be running blocks all dispatch", async (
 test("a refused lease leaves the task unchanged and records why the attempt stopped", async () => {
   const { deps, tasks } = await fixture({ tasks: [task("refused-a1")], baseRef: "missing-base" });
   const outcome = await dispatchOnce(deps);
-  assert.equal(outcome.reason, "lease_refused");
+  assert.equal(outcome.reason, "stopped");
   assert.equal(outcome.lease, "none");
   const unchanged = await tasks.read("refused-a1");
   assert.equal(unchanged?.state, "queued");

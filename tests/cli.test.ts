@@ -61,7 +61,7 @@ test("dispatch --once and status report the attempt as structured JSON with docu
   const dispatched = switchboard(["dispatch", "--once", "--json", "--request-id", "cli-1"]);
   assert.equal(dispatched.status, 1, dispatched.stderr);
   const report = JSON.parse(dispatched.stdout);
-  assert.equal(report.reason, "held_review_required");
+  assert.equal(report.reason, "held");
   assert.equal(report.attempt.taskId, "cli-a1");
   assert.equal(report.lease, "preserved");
   assert.equal(report.nextAction.code, "review_branch");

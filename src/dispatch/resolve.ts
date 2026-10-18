@@ -15,18 +15,18 @@ export async function resolveStopped(
   const attempt = state.attempts.find(a => a.entries.some(e => e.kind === "leased" && e.data.leaseId === options.leaseId));
   const taskId = attempt?.taskId ?? runtime?.binding.input.identity.taskId;
   if (!taskId) {
-    return result({ ok: false, reason: "unknown_lease", lease: "none", observed: { leaseId: options.leaseId }, nextAction: "inspect_attempt" });
+    return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: { leaseId: options.leaseId }, detail: "No attempt or runtime record in this context has this lease ID", nextAction: "inspect_attempt" });
   }
   const task = await deps.tasks.read(taskId).catch(() => undefined);
   const leaseHeld = state.leases.some(l => l.leaseId === options.leaseId);
   const summary = attempt ? summarise(attempt) : { contextId: deps.contextId, taskId, attempt: 0, leaseId: options.leaseId, ...(runtime ? { sessionId: runtime.binding.input.identity.sessionId } : {}) };
   const observed = { runtime: runtime?.child.status ?? "no runtime record", leaseHeld, task: task ? { state: task.state, held: task.held } : "unreadable" };
-  const common = { attempt: summary, lease: leaseHeld ? "preserved" as const : "none" as const, observed };
+  const common = { stage: "resolve" as const, attempt: summary, lease: leaseHeld ? "preserved" as const : "none" as const, observed };
 
   if (!state.possiblyRunning.some(p => p.leaseId === options.leaseId)) {
-    return result({ ok: false, reason: "nothing_to_resolve", ...common, nextAction: "none" });
+    return result({ ok: false, reason: "refused", ...common, detail: "No worker for this lease is waiting for confirmation that it has stopped", nextAction: "none" });
   }
-  if (!options.confirmed) return result({ ok: false, reason: "confirmation_required", ...common, nextAction: "confirm_worker_stopped" });
+  if (!options.confirmed) return result({ ok: false, reason: "refused", ...common, detail: "Resolving needs the operator's confirmation that the worker has stopped", nextAction: "confirm_worker_stopped" });
 
   if (runtime?.child.status === "unknown") await deps.runtime.recordOperatorStop(runtime, options.note);
   if (attempt) {
@@ -35,5 +35,5 @@ export async function resolveStopped(
       await deps.attempts.append(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) });
     }
   }
-  return result({ ok: true, reason: "resolved_worker_stopped", ...common, nextAction: "apply_task_outcome" });
+  return result({ ok: true, reason: "resolved", ...common, nextAction: "apply_task_outcome" });
 }
