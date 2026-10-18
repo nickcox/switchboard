@@ -1,5 +1,9 @@
 export class RuntimeFailure extends Error {
-  constructor(readonly reason: string, message: string) { super(message); }
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.reason = reason;
+  }
 }
 
 export function deferred<T>() {

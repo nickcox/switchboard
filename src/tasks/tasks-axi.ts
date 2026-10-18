@@ -1,4 +1,5 @@
 import { decode } from "@toon-format/toon";
+import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
@@ -49,7 +50,8 @@ const holdReason = z.string().min(1).max(200).refine(value => !/[()\r\n]/.test(v
 type Run = { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
 
 export class TasksAxiStore implements TaskStore {
-  private constructor(private readonly options: z.output<typeof optionsSchema>) {}
+  private readonly options: z.output<typeof optionsSchema>;
+  private constructor(options: z.output<typeof optionsSchema>) { this.options = options; }
 
   /** Validates that the store path is an existing, canonical regular file before any command uses it. */
   static async open(options: TasksAxiOptions): Promise<TasksAxiStore> {
@@ -172,15 +174,24 @@ export class TasksAxiStore implements TaskStore {
 
   private async run(args: string[]): Promise<Run> {
     const { node, entrypoint, file, home, timeoutMs } = this.options;
-    const child = Bun.spawn([node, entrypoint, ...args, "--backend", "markdown", "--file", file], {
+    const child = spawn(node, [entrypoint, ...args, "--backend", "markdown", "--file", file], {
       // A controlled environment: no TASKS_AXI_* variables, and a home directory chosen by configuration.
       cwd: dirname(file), env: { PATH: process.env.PATH ?? "", HOME: home, NO_COLOR: "1" },
-      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs, killSignal: "SIGKILL",
+      stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true,
     });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
-    ]);
-    return { exitCode: child.signalCode ? null : exitCode, stdout, stderr, timedOut: child.signalCode !== null };
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (text: string) => { stdout += text; });
+    child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr += text; });
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    try {
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve(signal ? null : code));
+      });
+      return { exitCode, stdout, stderr, timedOut };
+    } finally { clearTimeout(timer); }
   }
 }
 

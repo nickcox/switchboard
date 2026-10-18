@@ -10,9 +10,9 @@ Run in the foreground on one host, against one configured task store and reposit
 
 Phase 1 never returns a lease automatically. Returning a lease recycles the workspace, which is the only routine action that can destroy work, and confirming that every process a worker started has stopped is not yet solved (see [runtime implementation notes](runtime-integration.md#unresolved-process-ownership-gate)). Switchboard preserves every lease and reports whether the work is retained. The operator returns leases through Treehouse. Automatic return is deferred until process ownership is verified.
 
-Implement the CLI in strict TypeScript on a pinned Bun version, initially on macOS, following [ADR-0004](../../adr/0004-typescript-and-bun-for-switchboard-cli.md). Linux and Windows are required future platforms, but their implementation and native acceptance runs are outside Phase 1. Keep OS-specific file creation, process control and path handling behind infrastructure interfaces so the same dispatch safety contracts can be implemented on all three platforms. Refuse dispatch on an unsupported host.
+Implement the CLI in strict TypeScript on a pinned Node.js version, initially on macOS, following [ADR-0004](../../adr/0004-typescript-and-node-for-switchboard-cli.md). Linux and Windows are required future platforms, but their implementation and native acceptance runs are outside Phase 1. Keep OS-specific file creation, process control and path handling behind infrastructure interfaces so the same dispatch safety contracts can be implemented on all three platforms. Refuse dispatch on an unsupported host.
 
-Run type checking separately from Bun tests. Validate external data at runtime and verify exclusive attempt creation on the supported host before enabling dispatch. External components may use their own supported runtimes.
+Run type checking separately from the tests. Validate external data at runtime and verify exclusive attempt creation on the supported host before enabling dispatch. External components may use their own supported runtimes.
 
 Excluded: automatic lease return, Switchboard persistent state other than the attempt log, Pi Durable, supervisor, mailboxes, schedules, external events, worker pools, automatic retry/resume, automatic crash recovery, merging and publishing changes.
 

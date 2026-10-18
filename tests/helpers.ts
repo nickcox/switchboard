@@ -6,7 +6,7 @@ import { RuntimeRecords } from "../src/runtime/records.ts";
 import { PiWorker, type PiWorkerOptions } from "../src/runtime/pi/worker.ts";
 
 export function fixture(scenario = "normal", overrides: Partial<PiWorkerOptions> = {}) {
-  const root = resolve(import.meta.dir, "../.investigation/runtime-unit");
+  const root = resolve(import.meta.dirname, "../.investigation/runtime-unit");
   mkdirSync(root, { recursive: true });
   const dir = mkdtempSync(join(root, "case-"));
   const workspace = join(dir, "workspace");
@@ -27,7 +27,7 @@ export function fixture(scenario = "normal", overrides: Partial<PiWorkerOptions>
   const log = join(dir, "requests.jsonl");
   const options: PiWorkerOptions = {
     executable: process.execPath,
-    entrypoint: resolve(import.meta.dir, "fixtures/pi-rpc.ts"),
+    entrypoint: resolve(import.meta.dirname, "fixtures/pi-rpc.ts"),
     provider: "fixture", model: "fixture", shellTool: "bash",
     requestMs: 1000, runMs: 1000, stopMs: 600,
     environment: {

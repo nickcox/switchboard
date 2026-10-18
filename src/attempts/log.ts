@@ -40,8 +40,10 @@ export type AttemptRecord = AttemptRef & { entries: AttemptEntry[] };
 
 /** Another invocation created this attempt first. Nothing was written by the caller. */
 export class AttemptConflict extends Error {
-  constructor(readonly ref: AttemptRef) {
+  readonly ref: AttemptRef;
+  constructor(ref: AttemptRef) {
     super(`Attempt ${ref.attempt} for task ${ref.taskId} was not created: another attempt is now the latest`);
+    this.ref = ref;
   }
 }
 
@@ -52,9 +54,12 @@ const entryName = /^(\d{4})-([a-z_]+)\.json$/;
  * It is not authoritative for task, lease or liveness state. Unreadable or inconsistent entries cause refusal.
  */
 export class AttemptLog {
-  constructor(private readonly root: string, readonly contextId: string) {
+  private readonly root: string;
+  readonly contextId: string;
+  constructor(root: string, contextId: string) {
     if (!isAbsolute(root)) throw new Error("Attempt log root must be absolute");
-    nonempty.parse(contextId);
+    this.root = root;
+    this.contextId = nonempty.parse(contextId);
   }
 
   /**

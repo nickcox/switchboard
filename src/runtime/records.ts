@@ -73,8 +73,10 @@ export async function writeOnce(path: string, value: unknown): Promise<void> {
 
 /** Runtime-owned identity/input and observed child-exit facts, not dispatcher lifecycle state. */
 export class RuntimeRecords {
-  constructor(private readonly root: string) {
+  private readonly root: string;
+  constructor(root: string) {
     if (!isAbsolute(root)) throw new Error("Runtime storage root must be absolute");
+    this.root = root;
   }
 
   async reserve(value: WorkerInput): Promise<{ directory: string; binding: RuntimeBinding }> {

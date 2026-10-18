@@ -14,15 +14,15 @@ macOS is the initial verification target. Linux and Windows are required future 
 
 ## Development
 
-Use Bun 1.3.11. From this directory, using PowerShell:
+Use Node.js 26.7.0 (see `.node-version`) and npm. From this directory, using PowerShell:
 
 ```powershell
-bun install --frozen-lockfile --ignore-scripts
-bun run check
-bun run test
+npm ci --ignore-scripts
+npm run check
+npm test
 ```
 
-The root tests use synthetic RPC subprocesses for the Pi runtime and run the pinned tasks-axi CLI against disposable stores, so Node.js must be on `PATH`. They do not launch Pi agents, call a model, acquire Treehouse leases or change a real task store. Fixture data is retained under the ignored `.investigation/` directory.
+Node.js runs the TypeScript source directly, with no build step. The root tests use synthetic RPC subprocesses for the Pi runtime and run the pinned tasks-axi CLI against disposable stores. They do not launch Pi agents, call a model, acquire Treehouse leases or change a real task store. Fixture data is retained under the ignored `.investigation/` directory.
 
 - `src/runtime/contracts.ts`: provider-independent worker input and result schemas.
 - `src/runtime/records.ts`: runtime-owned input bindings, discovery and observed direct-child exit records.
@@ -39,6 +39,6 @@ Pi's executable, Node runtime, model configuration and credentials are supplied 
 - [tasks-axi owns task state](docs/adr/0001-tasks-axi-is-task-source-of-truth.md).
 - [Treehouse owns workspace leases](docs/adr/0002-treehouse-owns-workspace-leases.md).
 - [Pi Durable is deferred and continuously reconsidered](docs/adr/0003-pi-durable-for-durable-orchestration.md).
-- [TypeScript/Bun and required host platforms](docs/adr/0004-typescript-and-bun-for-switchboard-cli.md).
+- [TypeScript/Node.js and required host platforms](docs/adr/0004-typescript-and-node-for-switchboard-cli.md).
 - [Pi RPC subprocess and result file](docs/adr/0005-pi-rpc-worker-and-result-file.md).
 - [Switchboard attempt log](docs/adr/0006-switchboard-attempt-log.md).

@@ -7,7 +7,8 @@ export type RpcRecord = z.infer<typeof recordSchema>;
 export class JsonlDecoder {
   private readonly decoder = new TextDecoder("utf-8", { fatal: true });
   private buffered = "";
-  constructor(private readonly maxRecordBytes = 4 * 1024 * 1024) {}
+  private readonly maxRecordBytes: number;
+  constructor(maxRecordBytes = 4 * 1024 * 1024) { this.maxRecordBytes = maxRecordBytes; }
 
   push(bytes: Uint8Array): RpcRecord[] {
     this.buffered += this.decoder.decode(bytes, { stream: true });

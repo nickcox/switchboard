@@ -2,11 +2,11 @@
 
 Status: adapter foundation with offline protocol/fault tests and one successful real Pi run against a disposable repository (see [Real Pi run](#real-pi-run)). Full Phase 1 dispatch is not enabled.
 
-Decision: [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md). The selected baseline remains Pi coding-agent 1.2.0 and Bun 1.3.11. Pi Durable 1.3.0 is a comparison target, not an installed application dependency.
+Decision: [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md). The selected baseline is Pi coding-agent 1.2.0, with Switchboard on Node.js 26.7.0. Pi Durable 1.3.0 is a comparison target, not an installed application dependency.
 
 ## Implemented boundary
 
-`src/runtime/pi/worker.ts` runs one assigned instruction snapshot through a separately launched Pi RPC subprocess. The caller supplies an absolute executable, optional Node entrypoint, explicit provider and exact model ID, controlled environment, shell-tool selection, exact workspace, identity and delivery contract. No arbitrary caller-supplied Pi flags are appended. The intended real invocation uses Node.js plus the pinned Pi CLI entrypoint; tests use Bun plus a synthetic peer.
+`src/runtime/pi/worker.ts` runs one assigned instruction snapshot through a separately launched Pi RPC subprocess. The caller supplies an absolute executable, optional Node entrypoint, explicit provider and exact model ID, controlled environment, shell-tool selection, exact workspace, identity and delivery contract. No arbitrary caller-supplied Pi flags are appended. The intended real invocation uses Node.js plus the pinned Pi CLI entrypoint; tests use Node.js plus a synthetic peer written in TypeScript.
 
 The adapter:
 
@@ -108,9 +108,9 @@ This was one successful run only. It did not exercise interruption, model errors
 
 ## Tests and limitations
 
-Run `bun run check` and `bun run test` from the repository root. The root suite uses a synthetic RPC peer, not Pi, credentials or a model provider. Tests cover framing, response identity, startup idleness, prompt acknowledgement loss, unexpected session/response state, model errors, result-file faults, observed child exit, interruption, stale results and restart discovery from runtime files.
+Run `npm run check` and `npm test` from the repository root. The root suite uses a synthetic RPC peer, not Pi, credentials or a model provider. Tests cover framing, response identity, startup idleness, prompt acknowledgement loss, unexpected session/response state, model errors, result-file faults, observed child exit, interruption, stale results and restart discovery from runtime files.
 
-Verification on the macOS host with Bun 1.3.11: strict root type checking passed; 45 offline tests passed with 142 assertions. The separate Phase 1 investigation also passed type checking and all 20 tests with 89 assertions when rerun. Those probes use disposable task and Treehouse fixtures, not existing work or model agents.
+The root suite passes on the macOS host under Node.js 26.7.0. It was first verified under Bun 1.3.11 before the change of runtime in ADR-0004. The separate Phase 1 investigation, which still runs under Bun, also passed type checking and all 20 tests with 89 assertions when rerun. Those probes use disposable task and Treehouse fixtures, not existing work or model agents.
 
 The existing investigations remain separate; the root test script does not run their real provider probes or the opt-in Bun native-addon crash reproduction. Linux and Windows native integration has not been verified. No workspace is returned and no authoritative task store is mutated by the runtime tests.
 

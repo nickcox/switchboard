@@ -39,8 +39,10 @@ export type PiRunReport = {
 
 /** Initial RPC adapter foundation. Not safe to use as a workspace-return authority yet. */
 export class PiWorker {
+  private readonly records: RuntimeRecords;
   private readonly options: z.output<typeof optionsSchema>;
-  constructor(private readonly records: RuntimeRecords, options: PiWorkerOptions) {
+  constructor(records: RuntimeRecords, options: PiWorkerOptions) {
+    this.records = records;
     this.options = optionsSchema.parse(options);
   }
 

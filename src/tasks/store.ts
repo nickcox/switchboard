@@ -31,7 +31,13 @@ export type TaskStoreFailure =
   | "unexpected_state";
 
 export class TaskStoreError extends Error {
-  constructor(readonly reason: TaskStoreFailure, message: string, readonly detail?: string) { super(message); }
+  readonly reason: TaskStoreFailure;
+  readonly detail: string | undefined;
+  constructor(reason: TaskStoreFailure, message: string, detail?: string) {
+    super(message);
+    this.reason = reason;
+    this.detail = detail;
+  }
 }
 
 /**

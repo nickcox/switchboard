@@ -10,9 +10,9 @@ The first release runs on one host, with one dispatcher and one active worker. T
 
 ## Implementation
 
-Implement the Switchboard CLI in strict TypeScript on Bun. macOS, Linux and Windows are required host platforms for Switchboard; Phase 1 initially supports macOS only. Linux and Windows support is deferred, not optional. Support is verified separately on each native host before it is advertised.
+Implement the Switchboard CLI in strict TypeScript on Node.js. macOS, Linux and Windows are required host platforms for Switchboard; Phase 1 initially supports macOS only. Linux and Windows support is deferred, not optional. Support is verified separately on each native host before it is advertised.
 
-Bun is the application runtime, distinct from Pi as the worker runtime. Keep Bun-specific APIs and OS-specific locking, process control and path handling inside adapters and infrastructure code. Dispatch policy and safety contracts must not depend on Unix-only behaviour. Validate external data at runtime and verify equivalent locking, process-lifecycle and retention behaviour on each supported host OS. See [ADR-0004](adr/0004-typescript-and-bun-for-switchboard-cli.md) for tooling, portability and compatibility boundaries.
+Node.js runs Switchboard and its external CLIs; Pi is the worker runtime that runs on it. Keep subprocess handling and OS-specific locking, process control and path handling inside adapters and infrastructure code. Dispatch policy and safety contracts must not depend on Unix-only behaviour. Validate external data at runtime and verify equivalent locking, process-lifecycle and retention behaviour on each supported host OS. See [ADR-0004](adr/0004-typescript-and-node-for-switchboard-cli.md) for tooling, portability and compatibility boundaries.
 
 ## Components and ownership
 
@@ -118,6 +118,6 @@ Later phases are direction only; their PRDs will be written when needed. Distrib
 - [ADR-0001: tasks-axi is the task source of truth](adr/0001-tasks-axi-is-task-source-of-truth.md)
 - [ADR-0002: Treehouse owns workspace leases](adr/0002-treehouse-owns-workspace-leases.md)
 - [ADR-0003: Pi Durable for the supervisor and later durable orchestration](adr/0003-pi-durable-for-durable-orchestration.md)
-- [ADR-0004: TypeScript and Bun for the Switchboard CLI](adr/0004-typescript-and-bun-for-switchboard-cli.md)
+- [ADR-0004: TypeScript and Node.js for the Switchboard CLI](adr/0004-typescript-and-node-for-switchboard-cli.md)
 - [ADR-0005: Pi RPC subprocess and result-file contract](adr/0005-pi-rpc-worker-and-result-file.md)
 - [ADR-0006: Switchboard keeps an append-only attempt log](adr/0006-switchboard-attempt-log.md)
