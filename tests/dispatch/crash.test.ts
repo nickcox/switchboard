@@ -15,7 +15,10 @@ const child = resolve(import.meta.dirname, "../fixtures/crash-dispatch.ts");
 async function crashAt(stage: string, scenario = "commit-result") {
   const f = await fixture({ tasks: [task("crash-a1"), task("crash-b1")], scenario });
   const run = spawnSync(process.execPath, [child, f.config, stage], { env: { ...process.env, ...f.environment }, encoding: "utf8" });
-  assert.equal(run.signal, "SIGKILL", `dispatcher was not killed at ${stage}: ${run.stderr}`);
+  // Windows has no signals: Node.js ends the process at once with exit code 1 and reports no signal. An empty stderr
+  // tells that apart from an ordinary failure, which prints its error.
+  if (process.platform === "win32") assert.deepEqual([run.status, run.signal, run.stderr], [1, null, ""], `dispatcher was not killed at ${stage}`);
+  else assert.equal(run.signal, "SIGKILL", `dispatcher was not killed at ${stage}: ${run.stderr}`);
   return f;
 }
 
