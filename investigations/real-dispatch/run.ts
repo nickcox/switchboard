@@ -84,7 +84,7 @@ const branchHead = branch ? show(["rev-parse", `refs/heads/${branch}`]) : undefi
 const content = branch ? show(["show", `${branch}:hello.txt`]) : undefined;
 const task = spawnSync(process.execPath, [tasksAxi, "show", "hello-a1", "--full", "--backend", "markdown", "--file", backlog], { encoding: "utf8" }).stdout;
 const checks: [string, boolean][] = [
-  ["dispatch held the task for review", report.reason === "held_review_required"],
+  ["dispatch held the task for review", report.reason === "held" && report.nextAction?.code === "review_branch"],
   ["output branch head is the reported result commit", branchHead !== undefined && branchHead === report.attempt?.resultCommit],
   ["hello.txt on the output branch has the exact line", content === expected],
   ["main is unchanged", show(["rev-parse", "main"]) === base],
