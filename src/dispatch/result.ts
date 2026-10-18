@@ -30,6 +30,10 @@ export const reasons = {
   held_interrupted: "The operator interrupted the worker, and the task is held.",
   held_not_retained: "The worker reported completion but its work is not retained, so the task is held.",
   task_update_failed: "The final task update could not be confirmed.",
+  confirmation_required: "Resolving needs the operator's confirmation that the worker has stopped.",
+  resolved_worker_stopped: "The operator confirmed the worker has stopped. The attempt no longer blocks dispatch.",
+  nothing_to_resolve: "No worker for this lease is waiting for confirmation that it has stopped.",
+  unknown_lease: "No attempt or runtime record in this context has this lease ID.",
 } as const;
 export type Reason = keyof typeof reasons;
 
@@ -38,7 +42,9 @@ export const nextActions = {
   dispatch_again: "Run dispatch again when there is ready work.",
   review_branch: "Review the output branch, integrate it, then record the task as done in the task store. Return the lease after confirming the retention check.",
   inspect_attempt: "Inspect the attempt's task, lease and runtime records, resolve them, then dispatch again.",
-  stop_worker: "Confirm the worker has stopped, then record the task outcome and resolve the lease.",
+  stop_worker: "Confirm the worker has stopped, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
+  confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>`, then run resolve again with --worker-stopped.",
+  apply_task_outcome: "Read the task and the workspace, record the task outcome in the task store, and return the lease once the work is retained.",
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",
   fix_configuration: "Check the configuration and that the task store, Treehouse and runtime are reachable.",
   choose_another_task: "Choose a ready task without an earlier lease, or resolve the earlier attempt first.",

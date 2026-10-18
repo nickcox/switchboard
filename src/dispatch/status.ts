@@ -78,7 +78,8 @@ export function describeStatus(value: StatusResult): string {
   lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`);
   for (const a of value.attempts) {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;
-    lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; lease ${a.leaseHeld ? `held at ${a.attempt.workspace}` : "none"}${a.possiblyRunning ? "; WORKER MAY BE RUNNING" : ""}`);
+    const lease = a.attempt.leaseId ? `lease ${a.attempt.leaseId} ${a.leaseHeld ? `held at ${a.attempt.workspace ?? "an unknown path"}` : "not held"}` : "no lease";
+    lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? "; WORKER MAY BE RUNNING" : ""}`);
     if (a.nextAction.code !== "none") lines.push(`  Next: ${a.nextAction.description}`);
   }
   for (const l of value.unaccountedLeases) lines.push(`- Lease ${l.leaseId} for ${l.holder} at ${l.path} is not in the attempt log`);

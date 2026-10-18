@@ -89,3 +89,14 @@ test("symlinked JSON results are refused", posixOnly, async () => {
   await mkdir(directory);
   await assert.rejects(readJsonFile(directory), /regular/);
 });
+
+test("an operator stop is recorded once and never overrides an observed exit", async () => {
+  const f = fixture();
+  const reserved = await f.records.reserve(f.input);
+  await f.records.recordOperatorStop(reserved, "Checked by hand");
+  const confirmed = (await f.records.discover(f.input.identity.contextId))[0]?.child;
+  assert.equal(confirmed?.status, "operator_confirmed_stopped");
+  await assert.rejects(f.records.recordOperatorStop(reserved));
+  await f.records.recordChildExit(reserved, { started: true, code: 0, signal: null });
+  assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.child.status, "exited");
+});

@@ -20,6 +20,8 @@ const entrySchemas = {
   task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
   halted: z.strictObject({ stage: nonempty, reason: nonempty, detail: nonempty.optional() }),
+  /** An operator confirmed the attempt's worker had stopped although no exit was observed. */
+  operator_resolved: z.strictObject({ action: z.literal("worker_stopped"), note: nonempty.optional() }),
 } as const;
 export type EntryKind = keyof typeof entrySchemas;
 export type EntryData<K extends EntryKind> = z.infer<(typeof entrySchemas)[K]>;
@@ -134,7 +136,8 @@ export class AttemptLog {
 
   private async write<K extends EntryKind>(ref: AttemptRef, sequence: number, kind: K, data: EntryData<K>) {
     const entry = envelopeSchema.parse({
-      version: 1, ...ref, sequence, kind, recordedAt: new Date().toISOString(),
+      // Only the identity fields: callers may pass a full AttemptRecord as the reference.
+      version: 1, contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt, sequence, kind, recordedAt: new Date().toISOString(),
       data: entrySchemas[kind].parse(data),
     });
     const directory = join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));

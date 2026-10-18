@@ -25,10 +25,23 @@ const receiptSchema = z.strictObject({
   observedAt: z.iso.datetime(),
   childExit: childExitSchema,
 });
+const operatorStopSchema = z.strictObject({
+  version: z.literal(1),
+  identity: identitySchema,
+  confirmedAt: z.iso.datetime(),
+  note: z.string().max(2000).optional(),
+});
 export type RuntimeRecord = {
   directory: string;
   binding: RuntimeBinding;
-  child: { status: "exited"; exit: ChildExit } | { status: "unknown" };
+  /**
+   * `exited` is an observed direct-child exit. `operator_confirmed_stopped` means no exit was observed and an operator
+   * confirmed the worker had stopped; it is a statement by the operator, not an observation by the runtime.
+   */
+  child:
+    | { status: "exited"; exit: ChildExit }
+    | { status: "operator_confirmed_stopped"; confirmedAt: string; note?: string }
+    | { status: "unknown" };
 };
 
 export function key(value: string): string { return createHash("sha256").update(value).digest("hex"); }
@@ -113,6 +126,14 @@ export class RuntimeRecords {
     }));
   }
 
+  /** Records an operator's confirmation that a worker with no observed exit has stopped. Written once. */
+  async recordOperatorStop(record: Pick<RuntimeRecord, "directory" | "binding">, note?: string): Promise<void> {
+    await writeOnce(join(record.directory, "operator-stopped.json"), operatorStopSchema.parse({
+      version: 1, identity: record.binding.input.identity, confirmedAt: new Date().toISOString(),
+      ...(note === undefined ? {} : { note }),
+    }));
+  }
+
   async discover(contextId: string): Promise<RuntimeRecord[]> {
     let root: string;
     try { root = await realpath(this.root); }
@@ -142,6 +163,13 @@ export class RuntimeRecords {
         if (!sameIdentity(receipt.identity, binding.input.identity)) throw new Error("Stale child-exit receipt");
         child = { status: "exited", exit: receipt.childExit };
       } catch (error) { if (!isMissing(error)) throw error; }
+      if (child.status === "unknown") {
+        try {
+          const stop = operatorStopSchema.parse(await readJsonFile(join(directory, "operator-stopped.json")));
+          if (!sameIdentity(stop.identity, binding.input.identity)) throw new Error("Stale operator stop record");
+          child = { status: "operator_confirmed_stopped", confirmedAt: stop.confirmedAt, ...(stop.note === undefined ? {} : { note: stop.note }) };
+        } catch (error) { if (!isMissing(error)) throw error; }
+      }
       records.push({ directory, binding, child });
     }
     return records;

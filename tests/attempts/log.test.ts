@@ -97,3 +97,11 @@ test("attempt log and runtime records share a root without breaking runtime disc
   await new AttemptLog(root, "c").create("task-1", {}, 0);
   assert.deepEqual(await new RuntimeRecords(root).discover("c"), []);
 });
+
+test("a full attempt record can be passed as the reference when appending", async () => {
+  const log = new AttemptLog(freshRoot(), "c");
+  const ref = await log.create("task-1", {}, 0);
+  const record = await log.read(ref);
+  await log.append(record, "halted", { stage: "test", reason: "fixture" });
+  assert.equal((await log.read(ref)).entries.length, 2);
+});

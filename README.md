@@ -64,11 +64,10 @@ npm run switchboard -- status --config ./switchboard.json
 npm run switchboard -- dispatch --once --config ./switchboard.json
 ```
 
-`--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
+If `status` reports that a worker may still be running, check it has stopped and run `npm run switchboard -- resolve --lease <lease-id> --worker-stopped --config ./switchboard.json`; that attempt then stops blocking dispatch. `--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
 
 ## Not yet done
 
-- An operator command to resolve an attempt whose worker may still be running. Until then such an attempt blocks all dispatch, and resolving it means recording the worker's exit by hand.
 - Per-task delivery contracts. Every task uses the configured defaults, which hold completed code for review.
 - Fault-injection tests for every failure boundary in the PRD, and the crash tests.
 - Linux and Windows.

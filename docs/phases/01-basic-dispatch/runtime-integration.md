@@ -50,6 +50,7 @@ The worker writes `result.json` with the standard write tool, without a custom e
 | `<root>/<context-hash>/<lease-hash>/binding.json` | Runtime-owned, write-once expected identity, instruction snapshot, resolved delivery contract, exact working directory and session/result locations |
 | `sessions/` | Pi-owned native session files selected with explicit `--session-dir` |
 | `result.json` | Worker-reported outcome through the agreed runtime contract |
+| `operator-stopped.json` | Write-once operator confirmation, made with `switchboard resolve`, that a worker with no observed exit has stopped. Discovery reports it as `operator_confirmed_stopped`, never as an observed exit, and an observed exit takes precedence |
 | `child-exit.json` | Runtime-owned, write-once observation of direct-child exit or a definite no-child launch failure; not proof that all worker descendants stopped |
 
 Exclusive directory creation refuses reuse of a lease even with a different session ID or after child exit. This is an attempt-identity guard. Preventing a task from being dispatched twice is the job of exclusive attempt creation in the attempt log.

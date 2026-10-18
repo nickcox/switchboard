@@ -83,7 +83,7 @@ Supervision is expected to be done by an agent from Phase 4. Phase 1 has only a 
 
 | Supervisor alone | Operator approval |
 | --- | --- |
-| Inspect state and attempts; select and dispatch ready work; stop an attempt; record the outcome the worker reported under the delivery contract | Return a lease or otherwise discard work; record an outcome that differs from the worker's result or the delivery contract; change configuration, including authority |
+| Inspect state and attempts; select and dispatch ready work; stop an attempt; record the outcome the worker reported under the delivery contract | Return a lease or otherwise discard work; confirm that a worker with no observed exit has stopped; record an outcome that differs from the worker's result or the delivery contract; change configuration, including authority |
 
 **Events wake the supervisor.** The attempt log is the event source. A deterministic watcher reads new entries and wakes the supervisor only when judgement is needed, such as an unresolved attempt, a recorded hold or failure, or a refused operation. The supervisor does not poll owners or read terminal output. A worker's mid-run request for a decision is a later addition; the versioned result contract must allow a status channel to be added without changing finalisation.
 

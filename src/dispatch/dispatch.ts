@@ -66,7 +66,7 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
   }
   for (const attempt of attempts) {
     const kinds = attempt.entries.map(e => e.kind);
-    if (kinds.includes("launched") && !kinds.includes("worker_finished") &&
+    if (kinds.includes("launched") && !kinds.includes("worker_finished") && !kinds.includes("operator_resolved") &&
       !possiblyRunning.some(p => p.taskId === attempt.taskId && p.attempt === attempt.attempt)) {
       possiblyRunning.push(summarise(attempt));
     }

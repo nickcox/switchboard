@@ -20,10 +20,11 @@ Excluded: automatic lease return, Switchboard persistent state other than the at
 
 Phase 1 has only a human operator, but every command is designed for a later agent supervisor to call unchanged (see [Supervision](../../architecture.md#supervision)).
 
-Provide two commands:
+Provide three commands:
 
 - `switchboard dispatch --once` with optional `--task <id>` and `--request-id <id>`. Without a task ID, select the first task in tasks-axi's ready ordering, breaking unspecified ties by task ID. With an ID, require that task to be ready. Never dispatch a second task in the same invocation.
 - `switchboard status`, which is read-only. It reports the preflight result, attempts from the attempt log with each owner's current state, attempts whose workers may still be running, and tasks blocked by an earlier attempt, each with its next action.
+- `switchboard resolve --lease <lease-id> --worker-stopped`, which records the operator's confirmation that a worker with no observed exit has stopped, so its attempt stops blocking dispatch. Without `--worker-stopped` it only reports what each owner holds. The confirmation is recorded separately from an observed exit and never treated as one. It changes neither the task nor the lease.
 
 Implement the dispatch sequence as separate policy operations: select, acquire, start, launch, observe and finalise. Each enforces its own checks from the [dispatch sequence](#dispatch-sequence), so later phases can expose them as separate commands without moving a safety check. Phase 1 does not expose them separately, and has no command to stop a discovered attempt or return a lease.
 
@@ -157,7 +158,7 @@ Use adapter fault tests for boundary cases and at least one real end-to-end disp
 
 ## Operator recovery
 
-For an unresolved attempt, use the reported identifiers and the attempt log to inspect tasks-axi, Treehouse and the runtime. Confirm the worker has stopped, apply the appropriate tasks-axi outcome based on evidence, and re-run dispatch.
+For an unresolved attempt, use the reported identifiers and the attempt log to inspect tasks-axi, Treehouse and the runtime. Confirm the worker has stopped, for example by checking that no process has the workspace open, and record that with `switchboard resolve --lease <lease-id> --worker-stopped`. Then apply the appropriate tasks-axi outcome based on evidence and re-run dispatch.
 
 To return a preserved lease, first confirm from the report that the retention check passed, and that no process still has the workspace open or as its working directory. Then return it through Treehouse using its lease ID. Automated reconciliation, repair and lease return belong to later phases.
 
