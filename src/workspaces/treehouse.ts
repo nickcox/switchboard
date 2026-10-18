@@ -41,7 +41,8 @@ export class TreehouseProvider implements WorkspaceProvider {
     const parsed = optionsSchema.parse(options);
     if (await realpath(parsed.repository) !== parsed.repository) throw new Error("Repository path must be canonical");
     const provider = new TreehouseProvider(parsed);
-    const top = await provider.git(parsed.repository, ["rev-parse", "--show-toplevel"]);
+    // Git prints forward slashes on Windows, so compare the canonical form of its answer.
+    const top = await realpath(await provider.git(parsed.repository, ["rev-parse", "--show-toplevel"]));
     if (top !== parsed.repository) throw new Error("Repository path must be the top level of a Git work tree");
     return provider;
   }
