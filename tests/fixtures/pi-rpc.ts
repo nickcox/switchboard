@@ -1,4 +1,5 @@
 // Synthetic RPC peer only. No Pi agent or model is created.
+import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -35,6 +36,14 @@ function reportResult() {
     workReferences: [{ kind: "git", name: "code", branch: binding.input.delivery.outputBranch, commit: "b".repeat(40) }],
   };
   if (scenario === "missing-result") return;
+  if (scenario === "commit-result") {
+    // Makes a real commit on the output branch in the workspace, so retention checks can pass.
+    writeFileSync(join(process.cwd(), "worker-output.txt"), "synthetic worker output\n");
+    const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8" }).trim();
+    git(["add", "worker-output.txt"]);
+    git(["commit", "-q", "--no-gpg-sign", "-m", "Synthetic worker output"]);
+    result.workReferences[0]!.commit = git(["rev-parse", "HEAD"]);
+  }
   if (scenario === "hold" || scenario === "failed") {
     writeFileSync(binding.resultPath, JSON.stringify({
       ...result, outcome: scenario, reason: "Needs operator inspection", nextAction: "Inspect retained workspace",

@@ -13,9 +13,11 @@ const entrySchemas = {
     leaseId: nonempty, workspace: nonempty, baseRef: nonempty, outputBranch: nonempty, startingCommit: commit,
   }),
   task_started: z.strictObject({}),
-  launched: z.strictObject({ sessionId: z.uuid(), runtimeDirectory: nonempty }),
-  worker_finished: z.strictObject({ status: nonempty, reason: nonempty.optional(), outcome: nonempty.optional() }),
-  task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty.optional() }),
+  launched: z.strictObject({ sessionId: z.uuid() }),
+  worker_finished: z.strictObject({
+    status: nonempty, runtimeDirectory: nonempty, reason: nonempty.optional(), outcome: nonempty.optional(), resultCommit: commit.optional(),
+  }),
+  task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
   halted: z.strictObject({ stage: nonempty, reason: nonempty, detail: nonempty.optional() }),
 } as const;

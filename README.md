@@ -4,7 +4,7 @@ Foreground dispatch of one ready task to one worker in a leased workspace. The [
 
 ## Current status
 
-This repository contains the specifications, integration investigations and the first Pi RPC runtime adapter foundation. It does **not** yet provide `switchboard dispatch --once` or enable live dispatch.
+This repository contains the specifications, integration investigations and a walking skeleton of Phase 1: `switchboard dispatch --once` and `switchboard status` work end to end against tasks-axi, Treehouse and Pi. They have been tested with disposable fixtures and a synthetic Pi worker, but not yet with a real Pi worker through the CLI. Several Phase 1 requirements remain (see [Not yet done](#not-yet-done)).
 
 The runtime uses a separate Pi process, standard RPC and a worker-written `result.json`, with no custom Pi extension, external supervisor or Pi Durable dependency. It validates identity and result data, retains runtime-owned input/exit facts, and refuses same-lease relaunch. One real Pi run against a disposable repository has passed.
 
@@ -30,11 +30,47 @@ Node.js runs the TypeScript source directly, with no build step. The root tests 
 - `src/attempts/log.ts`: the append-only attempt log ([ADR-0006](docs/adr/0006-switchboard-attempt-log.md)).
 - `src/tasks/`: the task-store interface and the tasks-axi 0.2.6 adapter.
 - `src/workspaces/`: the workspace-provider interface, the Treehouse adapter (acquire and inspect only) and the read-only Git retention check.
-- `src/infra/`: shared subprocess handling.
-- `tests/`: runtime framing, lifecycle, identity, discovery and result-failure tests; attempt-log creation races; tasks-axi and Treehouse adapter behaviour.
+- `src/infra/`: shared subprocess handling and executable lookup.
+- `src/dispatch/`: the dispatch policy operations, `status`, and the structured result format with its reason and next-action codes (`result.ts`).
+- `src/config.ts` and `src/cli.ts`: the configuration file and the `switchboard` command.
+- `tests/`: runtime framing, lifecycle, identity, discovery and result-failure tests; attempt-log creation races; tasks-axi and Treehouse adapter behaviour; dispatch and the CLI end to end with the synthetic worker.
 - `investigations/`: separate provider/runtime capability probes with their own prerequisites. They are not run by the root test command.
 
-Pi's executable, Node runtime, model configuration and credentials are supplied explicitly by the eventual application configuration. The task-store and workspace adapters, the attempt log and a real end-to-end dispatch remain required before live dispatch. Do not point this unfinished foundation at real work expecting Phase 1 guarantees.
+## Running it
+
+Create a configuration file with absolute paths. For example, `switchboard.json`:
+
+```json
+{
+  "contextId": "my-project",
+  "runtimeRoot": "/Users/me/.switchboard/my-project",
+  "tasks": { "file": "/Users/me/code/my-project/TASKS-backlog.md", "repo": "my-project" },
+  "workspaces": { "repository": "/Users/me/code/my-project", "poolRoot": "/Users/me/.switchboard/my-project/pool" },
+  "delivery": { "baseRef": "main" },
+  "worker": {
+    "piEntrypoint": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+    "provider": "openai-codex",
+    "model": "gpt-6.1-sol"
+  }
+}
+```
+
+Then, in PowerShell:
+
+```powershell
+npm run switchboard -- status --config ./switchboard.json
+npm run switchboard -- dispatch --once --config ./switchboard.json
+```
+
+`--json` prints the structured result. `git` and `treehouse` must be on `PATH`. Every outcome preserves the workspace lease; return it through Treehouse after reviewing the work and confirming the report's retention check.
+
+## Not yet done
+
+- A real Pi worker run through `dispatch --once`.
+- An operator command to resolve an attempt whose worker may still be running. Until then such an attempt blocks all dispatch, and resolving it means recording the worker's exit by hand.
+- Per-task delivery contracts. Every task uses the configured defaults, which hold completed code for review.
+- Fault-injection tests for every failure boundary in the PRD, and the crash tests.
+- Linux and Windows.
 
 ## Decisions
 

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { WorkspaceError } from "../../src/workspaces/provider.ts";
 import { TreehouseProvider } from "../../src/workspaces/treehouse.ts";
-import { onPath } from "../executables.ts";
+import { onPath } from "../../src/infra/executables.ts";
 
 // Runs the real Treehouse CLI against disposable repositories and pools. Requires treehouse and git on PATH.
 const treehouse = onPath("treehouse");

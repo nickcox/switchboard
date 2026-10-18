@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkRetention } from "../../src/workspaces/retention.ts";
-import { onPath } from "../executables.ts";
+import { onPath } from "../../src/infra/executables.ts";
 
 // Uses plain Git worktrees in disposable repositories; retention does not depend on Treehouse.
 const git = onPath("git");
