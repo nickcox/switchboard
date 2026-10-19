@@ -41,6 +41,7 @@ async function workerView(record: RuntimeRecord | undefined, possiblyRunning: bo
 }
 
 export type StatusResult = {
+  version: 1;
   ok: boolean;
   /** `clear` when nothing needs the operator; `attention` when an attempt does; otherwise why state is unknown. */
   reason: "clear" | "attention" | "refused";
@@ -60,7 +61,7 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
   const state = await inspect(deps);
   if ("failed" in state) {
     return {
-      ok: false, reason: "refused", ready: [], inFlight: [], unaccountedLeases: [], attempts: [],
+      version: 1, ok: false, reason: "refused", ready: [], inFlight: [], unaccountedLeases: [], attempts: [],
       ...(state.failed.detail ? { detail: state.failed.detail } : {}), nextAction: action("fix_configuration"),
     };
   }
@@ -99,7 +100,7 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
   const unaccountedLeases = state.leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
   const attention = attempts.some(a => a.nextAction.code !== "none") || unaccountedLeases.length > 0;
   return {
-    ok: !attention, reason: attention ? "attention" : "clear", ready: state.ready, inFlight: state.inFlight, unaccountedLeases, attempts,
+    version: 1, ok: !attention, reason: attention ? "attention" : "clear", ready: state.ready, inFlight: state.inFlight, unaccountedLeases, attempts,
     nextAction: action(overall(attempts, unaccountedLeases.length > 0)),
   };
 }

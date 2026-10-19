@@ -55,6 +55,7 @@ export type AttemptSummary = {
 };
 
 export type DispatchResult = {
+  version: 1;
   ok: boolean;
   reason: Reason;
   stage?: Stage;
@@ -70,8 +71,8 @@ export type DispatchResult = {
   nextAction: { code: NextAction; description: string };
 };
 
-export function result(fields: Omit<DispatchResult, "nextAction"> & { nextAction: NextAction }): DispatchResult {
-  return { ...fields, nextAction: { code: fields.nextAction, description: nextActions[fields.nextAction] } };
+export function result(fields: Omit<DispatchResult, "version" | "nextAction"> & { nextAction: NextAction }): DispatchResult {
+  return { ...fields, version: 1, nextAction: { code: fields.nextAction, description: nextActions[fields.nextAction] } };
 }
 
 export function describe(value: DispatchResult): string {

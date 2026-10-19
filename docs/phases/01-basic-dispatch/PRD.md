@@ -37,8 +37,9 @@ A caller may pass `--request-id`. Switchboard records it in the attempt's first 
 
 ### Structured results
 
-Every command supports `--json`. Every result and every refusal contains:
+Every command supports `--json`. `watch --json` prints activity entries with their existing `v: 1` field. Every structured result and refusal from `dispatch`, `status`, `resolve`, `stop` and `steer` contains:
 
+- `version`: the result format version, currently `1`. A change that is not backwards compatible increments it.
 - `ok`: whether the command achieved its purpose.
 - `reason`: one of a small set of stable codes, each a category of behaviour: `no_ready_work`, `done`, `held`, `refused` (nothing was changed), `stopped` (some state was changed and is preserved), `existing_request`, `resolved`, and `delivered` or `undelivered` for a stop request or message. Renaming or removing a code is a breaking change.
 - `stage`: where the result was decided (`preflight`, `select`, `acquire`, `start`, `launch`, `finalise`, `resolve` or `control`).

@@ -56,11 +56,13 @@ test("dispatch --once and status report the attempt as structured JSON with docu
   const { switchboard } = fixture();
   const before = switchboard(["status", "--json"]);
   assert.equal(before.status, 0, before.stderr);
+  assert.equal(JSON.parse(before.stdout).version, 1);
   assert.equal(JSON.parse(before.stdout).reason, "clear");
 
   const dispatched = switchboard(["dispatch", "--once", "--json", "--request-id", "cli-1"]);
   assert.equal(dispatched.status, 1, dispatched.stderr);
   const report = JSON.parse(dispatched.stdout);
+  assert.equal(report.version, 1);
   assert.equal(report.reason, "held");
   assert.equal(report.attempt.taskId, "cli-a1");
   assert.equal(report.lease, "preserved");
@@ -69,12 +71,21 @@ test("dispatch --once and status report the attempt as structured JSON with docu
   const after = switchboard(["status", "--json"]);
   assert.equal(after.status, 1);
   const view = JSON.parse(after.stdout);
+  assert.equal(view.version, 1);
   assert.equal(view.reason, "attention");
   assert.equal(view.attempts[0].nextAction.code, "review_branch");
   assert.equal(view.attempts[0].leaseHeld, true);
 
   const replay = switchboard(["dispatch", "--once", "--json", "--request-id", "cli-1"]);
+  assert.equal(JSON.parse(replay.stdout).version, 1);
   assert.equal(JSON.parse(replay.stdout).reason, "existing_request");
+  for (const args of [["resolve"], ["stop"], ["steer", "Fixture message"]]) {
+    const refused = switchboard([...args, "--lease", "unknown-lease", "--json"]);
+    assert.equal(refused.status, 1, refused.stderr);
+    const refusal = JSON.parse(refused.stdout);
+    assert.equal(refusal.version, 1);
+    assert.equal(refusal.reason, "refused");
+  }
   const none = switchboard(["dispatch", "--once"]);
   assert.equal(none.status, 0);
   assert.match(none.stdout, /no_ready_work/);
