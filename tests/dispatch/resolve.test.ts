@@ -1,24 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { fixture, task } from "./fixture.ts";
+import { startHeartbeat } from "../../src/runtime/heartbeat.ts";
 
 const delivery = { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code" as const, acceptance: "review_or_integration" as const, requiredEvidence: [], requiredDeliverables: [] };
 
-test("a runtime record with no observed exit blocks dispatch until the operator confirms the worker stopped", async () => {
+for (const heartbeat of ["missing", "stale"]) test(`a runtime record with a ${heartbeat} heartbeat blocks dispatch until the operator confirms the worker stopped`, async () => {
   const { deps, runtime, dir } = await fixture({ tasks: [task("next-a1")], scenario: "commit-result" });
   const workspace = join(dir, "orphan-workspace");
   mkdirSync(workspace);
   // As left by a dispatcher that died after launching a worker.
-  await runtime.reserve({ identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-orphan", sessionId: randomUUID() }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  const reserved = await runtime.reserve({ identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-orphan", sessionId: randomUUID() }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  if (heartbeat === "stale") writeFileSync(join(reserved.directory, "heartbeat.json"), JSON.stringify({ version: 1, at: new Date(Date.now() - 60_000).toISOString(), pid: process.pid }));
 
   const view = await status(deps);
   assert.equal(view.nextAction.code, "stop_worker");
+  assert.equal(view.reason, "attention");
   assert.equal(view.attempts.find(a => a.attempt.leaseId === "lease-orphan")?.possiblyRunning, true);
 
   const unconfirmed = await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: false });
@@ -33,6 +36,24 @@ test("a runtime record with no observed exit blocks dispatch until the operator 
 
   assert.equal((await dispatchOnce(deps)).nextAction.code, "review_branch");
   assert.equal((await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true })).nextAction.code, "none");
+});
+
+test("a fresh heartbeat also protects a runtime record with no attempt log", async () => {
+  const { deps, runtime, dir } = await fixture();
+  const workspace = join(dir, "orphan-workspace");
+  mkdirSync(workspace);
+  const reserved = await runtime.reserve({ identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-orphan", sessionId: randomUUID() }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  const stop = await startHeartbeat(reserved.directory);
+  try {
+    const view = await status(deps);
+    assert.equal(view.reason, "clear");
+    assert.equal(view.attempts[0]?.nextAction.code, "watch_attempt");
+    const refused = await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true });
+    assert.equal(refused.reason, "refused");
+    assert.match(refused.detail!, /owning dispatcher appears to be running/);
+    assert.equal((await runtime.discover("fixture-context"))[0]?.child.status, "unknown");
+    assert.equal((await deps.attempts.list()).length, 0);
+  } finally { await stop(); }
 });
 
 test("an attempt logged as launched but never finished is resolved through the attempt log", async () => {

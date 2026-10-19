@@ -3,6 +3,7 @@ import { z } from "zod";
 import { bounded, RuntimeFailure } from "../async.ts";
 import { validateWorkerResult, workerResultSchema, type WorkerInput, type WorkerResult } from "../contracts.ts";
 import { ActivityWriter, shorten, type ActivityEntry } from "../activity.ts";
+import { startHeartbeat } from "../heartbeat.ts";
 import { claimRequest, recordResult, unclaimedRequests, type ControlRequest, type RequestResult } from "../requests.ts";
 import { inside, readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding } from "../records.ts";
 import type { RpcRecord } from "./jsonl.ts";
@@ -65,6 +66,12 @@ export class PiWorker {
   async execute(input: WorkerInput, operator?: AbortSignal, hooks: WorkerHooks = {}): Promise<PiRunReport> {
     if (operator?.aborted) throw new RuntimeFailure("interrupted", "Interrupted before launch");
     const reserved = await this.records.reserve(input);
+    const stopHeartbeat = await startHeartbeat(reserved.directory);
+    try { return await this.executeReserved(reserved, operator, hooks); }
+    finally { await stopHeartbeat(); }
+  }
+
+  private async executeReserved(reserved: { binding: RuntimeBinding; directory: string }, operator: AbortSignal | undefined, hooks: WorkerHooks): Promise<PiRunReport> {
     const { binding, directory } = reserved;
     const activity = new ActivityWriter(directory, hooks.onActivity);
     // Exceeding a usage limit, or a stop request, stops the worker the same way an operator interruption does.

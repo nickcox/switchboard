@@ -1,5 +1,6 @@
 import { inspect, resolvedBy, summarise, type Dependencies } from "./dispatch.ts";
 import { result, type DispatchResult } from "./result.ts";
+import { dispatcherRunning } from "../runtime/heartbeat.ts";
 
 /**
  * Operator-only: records that a worker with no observed exit has stopped, so its attempt stops blocking dispatch.
@@ -25,6 +26,9 @@ export async function resolveStopped(
 
   if (!state.possiblyRunning.some(p => p.leaseId === options.leaseId)) {
     return result({ ok: false, reason: "refused", ...common, detail: "No worker for this lease is waiting for confirmation that it has stopped", nextAction: "none" });
+  }
+  if (runtime && await dispatcherRunning(runtime.directory)) {
+    return result({ ok: false, reason: "refused", ...common, detail: "The owning dispatcher appears to be running; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
   }
   if (!options.confirmed) return result({ ok: false, reason: "refused", ...common, detail: "Resolving needs the operator's confirmation that the worker has stopped", nextAction: "confirm_worker_stopped" });
 

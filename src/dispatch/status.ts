@@ -1,4 +1,5 @@
 import { readActivity } from "../runtime/activity.ts";
+import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Task } from "../tasks/store.ts";
 import { inspect, summarise, type Dependencies } from "./dispatch.ts";
@@ -77,12 +78,13 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     } catch { task = "unreadable"; }
     const reviewHold = typeof task === "object" && task.held && (task.holdReason ?? "").endsWith("review required");
     const otherPool = state.leasesInOtherPools.find(a => a.taskId === summary.taskId && a.attempt === summary.attempt)?.pool;
-    const code: NextAction = possiblyRunning ? "stop_worker"
+    const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
+    const running = possiblyRunning && runtime !== undefined && await dispatcherRunning(runtime.directory);
+    const code: NextAction = possiblyRunning ? (running ? "watch_attempt" : "stop_worker")
       : otherPool !== undefined ? "confirm_lease_returned"
       : !leaseHeld ? (typeof task === "object" && task.state === "in_flight" ? "inspect_attempt" : "none")
       : reviewHold ? "review_branch"
       : typeof task === "object" && task.state === "done" ? "return_lease" : "inspect_attempt";
-    const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
     attempts.push({
       attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, ...(otherPool === undefined ? {} : { leaseInOtherPool: otherPool }), task,
       ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs), nextAction: action(code),
@@ -93,21 +95,22 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === p.leaseId);
     attempts.push({
       attempt: p, lastEntry: "none", possiblyRunning: true, leaseHeld: state.leases.some(l => l.leaseId === p.leaseId), task: "unreadable",
-      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs), nextAction: action("stop_worker"),
+      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs),
+      nextAction: action(runtime && await dispatcherRunning(runtime.directory) ? "watch_attempt" : "stop_worker"),
     });
   }
   const known = new Set(attempts.map(a => a.attempt.leaseId).filter(Boolean));
   const unaccountedLeases = state.leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
-  const attention = attempts.some(a => a.nextAction.code !== "none") || unaccountedLeases.length > 0;
+  const attention = attempts.some(a => a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt") || unaccountedLeases.length > 0;
   return {
     version: 1, ok: !attention, reason: attention ? "attention" : "clear", ready: state.ready, inFlight: state.inFlight, unaccountedLeases, attempts,
     nextAction: action(overall(attempts, unaccountedLeases.length > 0)),
   };
 }
 
-/** Stop a possibly running worker first; otherwise repeat the attempts' shared next action, or ask for inspection. */
+/** Prioritise stop confirmation when no dispatcher heartbeat is fresh; otherwise use the shared next action. */
 function overall(attempts: AttemptStatus[], unaccounted: boolean): NextAction {
-  if (attempts.some(a => a.possiblyRunning)) return "stop_worker";
+  if (attempts.some(a => a.nextAction.code === "stop_worker")) return "stop_worker";
   const pending = new Set(attempts.map(a => a.nextAction.code).filter(code => code !== "none"));
   if (pending.size === 0 && !unaccounted) return "dispatch_again";
   return pending.size === 1 && !unaccounted ? [...pending][0]! : "inspect_attempt";
@@ -124,7 +127,7 @@ export function describeStatus(value: StatusResult): string {
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
       : a.leaseInOtherPool !== undefined ? `lease ${a.attempt.leaseId} at ${where} UNKNOWN: its workspace pool is no longer listed`
       : `lease ${a.attempt.leaseId} not held`;
-    lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? "; WORKER MAY BE RUNNING" : ""}`);
+    lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
     if (a.activity?.lastActivity) {
       const usage = a.activity.tokens === null ? "" : `; ${a.activity.tokens} tokens, $${(a.activity.cost ?? 0).toFixed(2)}`;
       lines.push(`  Last activity ${a.activity.lastActivity}${a.activity.currentTool ? `, running ${a.activity.currentTool}` : ""}${usage}${a.activity.stale ? "; NO RECENT ACTIVITY" : ""}`);

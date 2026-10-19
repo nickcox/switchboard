@@ -50,6 +50,7 @@ The worker writes `result.json` with the standard write tool, without a custom e
 | `<root>/<context-hash>/<lease-hash>/binding.json` | Runtime-owned, write-once expected identity, instruction snapshot, resolved delivery contract, exact working directory and session/result locations |
 | `sessions/` | Pi-owned native session files selected with explicit `--session-dir` |
 | `requests/` | Stop requests and operator messages (`<id>.request.json`), each with a claim file created exclusively by the owning dispatcher or, if undelivered, by its sender (`<id>.claim.json`), and the outcome Pi reported (`<id>.result.json`) |
+| `heartbeat.json` | Diagnostic dispatcher heartbeat, atomically refreshed every five seconds while it owns the worker, with `version: 1`, `at` (UTC timestamp) and `pid`. A timestamp less than 30 seconds old makes `status` offer `watch` and refuses operator stop confirmation. Removed when the dispatcher finishes; missing, invalid or stale heartbeats never prove worker termination or permit dispatch. The PID is informational, never checked for liveness |
 | `activity.jsonl` | Diagnostic record of the worker's tool calls, assistant messages, queue changes and usage snapshots, with size limits. Read by `watch` and `status`; never used to decide task, lease or liveness state |
 | `artefacts/` | Where the worker writes reports and other non-code deliverables, so they survive workspace recycling. The worker prompt gives its path |
 | `result.json` | Worker-reported outcome through the agreed runtime contract |
