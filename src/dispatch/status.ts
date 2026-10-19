@@ -10,6 +10,11 @@ export type AttemptStatus = {
   lastEntry: string;
   possiblyRunning: boolean;
   leaseHeld: boolean;
+  /**
+   * The workspace pool the attempt's lease was acquired in, when the provider no longer lists that pool. Whether the
+   * lease is still held is then unknown, and `leaseHeld` is false only because it is not listed.
+   */
+  leaseInOtherPool?: string;
   task: { state: string; held: boolean; holdReason: string | null } | "missing" | "unreadable";
   /** From the attempt's activity log, when the worker was launched. Diagnostic only. */
   activity?: ActivitySummary & { stale: boolean };
@@ -70,13 +75,15 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
       task = read ? { state: read.state, held: read.held, holdReason: read.holdReason } : "missing";
     } catch { task = "unreadable"; }
     const reviewHold = typeof task === "object" && task.held && (task.holdReason ?? "").endsWith("review required");
+    const otherPool = state.leasesInOtherPools.find(a => a.taskId === summary.taskId && a.attempt === summary.attempt)?.pool;
     const code: NextAction = possiblyRunning ? "stop_worker"
+      : otherPool !== undefined ? "confirm_lease_returned"
       : !leaseHeld ? (typeof task === "object" && task.state === "in_flight" ? "inspect_attempt" : "none")
       : reviewHold ? "review_branch"
       : typeof task === "object" && task.state === "done" ? "return_lease" : "inspect_attempt";
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
     attempts.push({
-      attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, task,
+      attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, ...(otherPool === undefined ? {} : { leaseInOtherPool: otherPool }), task,
       ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs), nextAction: action(code),
     });
   }
@@ -111,7 +118,11 @@ export function describeStatus(value: StatusResult): string {
   lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`);
   for (const a of value.attempts) {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;
-    const lease = a.attempt.leaseId ? `lease ${a.attempt.leaseId} ${a.leaseHeld ? `held at ${a.attempt.workspace ?? "an unknown path"}` : "not held"}` : "no lease";
+    const where = a.attempt.workspace ?? "an unknown path";
+    const lease = !a.attempt.leaseId ? "no lease"
+      : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
+      : a.leaseInOtherPool !== undefined ? `lease ${a.attempt.leaseId} at ${where} UNKNOWN: its workspace pool is no longer listed`
+      : `lease ${a.attempt.leaseId} not held`;
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? "; WORKER MAY BE RUNNING" : ""}`);
     if (a.activity?.lastActivity) {
       const usage = a.activity.tokens === null ? "" : `; ${a.activity.tokens} tokens, $${(a.activity.cost ?? 0).toFixed(2)}`;

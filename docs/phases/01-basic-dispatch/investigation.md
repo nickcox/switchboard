@@ -95,6 +95,8 @@ Return resets the workspace and removes inventoried seeds. A modified ignored se
 
 Treehouse 3.1.3 allows several leases with the same holder and refuses an output branch that already exists (found while building the adapter on 18 October 2026). The holder is therefore not an exclusive claim on a task: Switchboard must check for an existing lease before acquiring, and relies on the attempt log to stop two invocations acquiring for the same task.
 
+Treehouse 3.1.3 names a repository's pool directory after the first six hexadecimal digits of the SHA-256 of its origin remote's URL, or of its path when it has no origin (`ResolvePoolDir` in `internal/config/config.go`; found on 19 October 2026 after adding a GitHub remote to this repository). Adding or changing the origin therefore moves the repository to a new, empty pool, and `status` stops listing leases in the old one. `return <path>` still finds the old pool from the workspace path. The adapter records each lease's pool so Switchboard reports such leases as unknown rather than absent (see the [PRD](PRD.md#workspace-pool-changes)).
+
 Wrong lease identities were refused without touching the replacement allocation. Source inspection confirms the conditions are rechecked while holding the pool state lock before destructive effects. Treehouse process listings remain non-authoritative for Pi liveness, even when empty.
 
 ## Pi runtime boundary

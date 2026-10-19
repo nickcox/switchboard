@@ -17,6 +17,8 @@ export type Allocation = {
   branch: string;
   /** The commit the workspace started from, read from the workspace itself. */
   startingCommit: string;
+  /** The pool the lease was acquired in, as `pool()` identified it. */
+  pool: string;
 };
 
 export type WorkspaceFailure =
@@ -44,4 +46,9 @@ export interface WorkspaceProvider {
   acquire(request: { holder: string; baseRef: string; branch: string }): Promise<Allocation>;
   /** Current leases in this context's workspace pool. */
   leases(): Promise<Lease[]>;
+  /**
+   * Identifies the pool that `leases()` currently lists. A lease acquired under a different identifier is not listed,
+   * so whether it is still held is unknown.
+   */
+  pool(): Promise<string>;
 }

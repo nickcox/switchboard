@@ -51,6 +51,7 @@ export class TreehouseProvider implements WorkspaceProvider {
     const holder = argument.parse(request.holder);
     const baseRef = argument.parse(request.baseRef);
     const branch = argument.parse(request.branch);
+    const pool = await this.pool();
     const args = ["get", "--lease", "--json", "--lease-holder", holder, "--base", baseRef, "--branch", branch];
     const result = await this.treehouse([...args, ...(this.options.fetch ? [] : ["--no-fetch"])]);
     if (result.timedOut || result.exitCode === null) {
@@ -65,7 +66,7 @@ export class TreehouseProvider implements WorkspaceProvider {
     let acquired: z.infer<typeof acquiredSchema>;
     try { acquired = acquiredSchema.parse(JSON.parse(result.stdout)); }
     catch { throw new WorkspaceError("outcome_unknown", `Unreadable Treehouse result for ${holder}`, describeCommand(result)); }
-    return this.verify(acquired, holder, branch);
+    return { ...await this.verify(acquired, holder, branch), pool };
   }
 
   async leases(): Promise<Lease[]> {
@@ -81,8 +82,21 @@ export class TreehouseProvider implements WorkspaceProvider {
     }));
   }
 
+  /**
+   * Treehouse names a repository's pool after its origin remote's URL, or after its path when it has no origin
+   * (ResolvePoolDir in Treehouse 3.1.3), under the pool root. Adding or changing the origin therefore moves the
+   * repository to a new, empty pool, and leases in the old pool stop being listed. This identifier is made from the
+   * same inputs, so it changes whenever Treehouse's pool does.
+   */
+  async pool(): Promise<string> {
+    const { git, repository, environment, poolRoot } = this.options;
+    const origin = await runCommand(git, ["remote", "get-url", "origin"], { cwd: repository, env: environment, timeoutMs: gitTimeoutMs });
+    if (origin.timedOut || origin.exitCode === null) throw new WorkspaceError("unreadable", "The repository's origin remote could not be read", describeCommand(origin));
+    return JSON.stringify(origin.exitCode === 0 ? { root: poolRoot, origin: origin.stdout.trim() } : { root: poolRoot, repository });
+  }
+
   /** A lease now exists, so any mismatch is unexpected state to preserve, never a reason to acquire again. */
-  private async verify(acquired: z.infer<typeof acquiredSchema>, holder: string, branch: string): Promise<Allocation> {
+  private async verify(acquired: z.infer<typeof acquiredSchema>, holder: string, branch: string): Promise<Omit<Allocation, "pool">> {
     const unexpected = (message: string) => new WorkspaceError("unexpected_state", `${message} (lease ${acquired.lease_id})`);
     if (acquired.lease_holder !== holder) throw unexpected("Lease holder does not match the task");
     if (!isAbsolute(acquired.path)) throw unexpected("Workspace path is not absolute");

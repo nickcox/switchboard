@@ -13,7 +13,7 @@ export const reasons = {
   refused: "Nothing was changed. The detail says why the request could not go ahead.",
   stopped: "The attempt stopped after changing some state, which is preserved. The detail says where and why.",
   existing_request: "An attempt with this request ID already exists; its current state is reported instead.",
-  resolved: "The operator's confirmation that the worker stopped was recorded. The attempt no longer blocks dispatch.",
+  resolved: "The operator's confirmation was recorded. The attempt no longer blocks dispatch.",
   delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",
   undelivered: "No running dispatcher took the request in time, so it was withdrawn. It will never be forwarded.",
 } as const;
@@ -28,6 +28,7 @@ export const nextActions = {
   review_branch: "Review the output branch, integrate it, then record the task as done in the task store. Return the lease after confirming the retention check.",
   inspect_attempt: "Inspect the attempt's task, lease and runtime records, resolve them, then dispatch again.",
   stop_worker: "Confirm the worker has stopped, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
+  confirm_lease_returned: "The lease is in a workspace pool the provider no longer lists, for example because the repository's origin remote was added or changed. Inspect the workspace at its recorded path and return the lease through Treehouse by that path, then run `switchboard resolve --lease <lease-id> --lease-returned`.",
   confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>` on macOS or Linux, or Resource Monitor on Windows, then run resolve again with --worker-stopped.",
   apply_task_outcome: "Read the task and the workspace, record the task outcome in the task store, and return the lease once the work is retained.",
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",

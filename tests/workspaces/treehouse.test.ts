@@ -34,6 +34,17 @@ function fixture() {
   return { dir, repository, options, run, base: run(["rev-parse", "HEAD"]) };
 }
 
+test("adding an origin remote moves Treehouse to a new pool, so earlier leases stop being listed", async () => {
+  const f = fixture();
+  const provider = await TreehouseProvider.open(f.options);
+  const before = await provider.pool();
+  const allocation = await provider.acquire({ holder: "task-a1", baseRef: "main", branch: "switchboard/task-a1/1" });
+  assert.equal(allocation.pool, before);
+  f.run(["remote", "add", "origin", "https://example.invalid/fixture.git"]);
+  assert.notEqual(await provider.pool(), before);
+  assert.deepEqual(await provider.leases(), []);
+});
+
 test("acquire returns a verified allocation on the requested branch and starting commit", async () => {
   const f = fixture();
   const provider = await TreehouseProvider.open(f.options);

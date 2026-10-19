@@ -24,7 +24,7 @@ Provide these commands:
 
 - `switchboard dispatch --once` with optional `--task <id>` and `--request-id <id>`. Without a task ID, select the first task in tasks-axi's ready ordering, breaking unspecified ties by task ID. With an ID, require that task to be ready. Never dispatch a second task in the same invocation.
 - `switchboard status`, which is read-only. It reports the preflight result, attempts from the attempt log with each owner's current state, attempts whose workers may still be running, and tasks blocked by an earlier attempt, each with its next action.
-- `switchboard resolve --lease <lease-id> --worker-stopped`, which records the operator's confirmation that a worker with no observed exit has stopped, so its attempt stops blocking dispatch. Without `--worker-stopped` it only reports what each owner holds. The confirmation is recorded separately from an observed exit and never treated as one. It changes neither the task nor the lease.
+- `switchboard resolve --lease <lease-id> --worker-stopped`, which records the operator's confirmation that a worker with no observed exit has stopped, so its attempt stops blocking dispatch. Without `--worker-stopped` it only reports what each owner holds. The confirmation is recorded separately from an observed exit and never treated as one. With `--lease-returned` instead, it records the operator's confirmation that a lease in a workspace pool Switchboard no longer lists has been returned (see [Workspace pool changes](#workspace-pool-changes)). It changes neither the task nor the lease.
 - `switchboard watch`, `switchboard stop` and `switchboard steer`, described in [Watching and controlling a running attempt](#watching-and-controlling-a-running-attempt).
 
 Implement the dispatch sequence as separate policy operations: select, acquire, start, launch, observe and finalise. Each enforces its own checks from the [dispatch sequence](#dispatch-sequence), so later phases can expose them as separate commands without moving a safety check. Phase 1 does not expose them separately, and has no command to return a lease.
@@ -91,6 +91,10 @@ Use a separate Pi CLI process with built-in RPC and a worker-written, schema-val
 Phase 1 finalises an attempt once Pi's direct child process has exited, even though tool subprocesses may still be running (see [Objective and scope](#objective-and-scope)). The recorded result commit is identified by its full commit ID, so later changes in the workspace cannot alter the recorded deliverable.
 
 Runtime observations and results must be structured and identity-bound. Agent idleness is not process termination, and neither proves task completion. Terminal text and an empty Treehouse process list are not authoritative runtime evidence. Keep required retained evidence outside recyclable workspaces. An unresolved lookup causes refusal, not a replacement launch.
+
+### Workspace pool changes
+
+Treehouse names a repository's pool after its origin remote's URL, or its path when it has no origin, so adding or changing the origin moves the repository to a new, empty pool, and leases in the old pool stop being listed. Each attempt records the pool its lease was acquired in. A lease in a pool that is no longer listed is unknown, not absent: `status` reports it, and its task is not dispatched again until the operator returns the lease through Treehouse by its workspace path and confirms that with `switchboard resolve --lease <lease-id> --lease-returned`. Other tasks are dispatched as normal in the new pool.
 
 ## Attempt log
 

@@ -44,6 +44,13 @@ export type Inspection = {
   ready: string[];
   /** Attempts whose worker may still be running: no observed child exit, or launched without a recorded finish. */
   possiblyRunning: AttemptSummary[];
+  /** The workspace pool the provider currently lists. */
+  pool: string;
+  /**
+   * Attempts whose lease was acquired in a different pool, so the provider no longer lists it and whether it is still
+   * held is unknown. Each blocks its own task until the operator confirms the lease was returned.
+   */
+  leasesInOtherPools: (AttemptSummary & { pool: string })[];
 };
 
 type Failure = { failed: DispatchResult };
@@ -61,6 +68,8 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
   if (isFailure(runtime)) return runtime;
   const leases = await read("Workspace leases", () => deps.workspaces.leases());
   if (isFailure(leases)) return leases;
+  const pool = await read("The workspace pool", () => deps.workspaces.pool());
+  if (isFailure(pool)) return pool;
   const inFlight = await read("The task store", () => deps.tasks.inFlight());
   if (isFailure(inFlight)) return inFlight;
   const ready = await read("The task store", () => deps.tasks.ready());
@@ -75,12 +84,19 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
   }
   for (const attempt of attempts) {
     const kinds = attempt.entries.map(e => e.kind);
-    if (kinds.includes("launched") && !kinds.includes("worker_finished") && !kinds.includes("operator_resolved") &&
+    if (kinds.includes("launched") && !kinds.includes("worker_finished") && !resolvedBy(attempt, "worker_stopped") &&
       !possiblyRunning.some(p => p.taskId === attempt.taskId && p.attempt === attempt.attempt)) {
       possiblyRunning.push(summarise(attempt));
     }
   }
-  return { attempts, runtime, leases, inFlight, ready, possiblyRunning };
+  const leasesInOtherPools: Inspection["leasesInOtherPools"] = [];
+  for (const attempt of attempts) {
+    const leased = attempt.entries.find(e => e.kind === "leased")?.data.pool;
+    if (typeof leased === "string" && leased !== pool && !resolvedBy(attempt, "lease_returned")) {
+      leasesInOtherPools.push({ ...summarise(attempt), pool: leased });
+    }
+  }
+  return { attempts, runtime, leases, inFlight, ready, possiblyRunning, pool, leasesInOtherPools };
 }
 
 /** Runs one dispatch: steps 1–8 of the Phase 1 PRD dispatch sequence. Never starts a second task. */
@@ -99,10 +115,14 @@ export async function dispatchOnce(
   }
 
   // Step 2: select one ready task with no lease and no in-flight state.
-  const blocked = (id: string) => state.leases.some(l => l.holder === id) || state.inFlight.includes(id);
+  const unknownLease = (id: string) => state.leasesInOtherPools.some(a => a.taskId === id);
+  const blocked = (id: string) => state.leases.some(l => l.holder === id) || unknownLease(id) || state.inFlight.includes(id);
   let taskId = options.taskId;
   if (taskId !== undefined) {
     if (state.leases.some(l => l.holder === taskId)) return refusal("select", "choose_another_task", `Task ${taskId} already has a workspace lease from an earlier attempt`, observed);
+    if (unknownLease(taskId)) {
+      return refusal("select", "confirm_lease_returned", `Task ${taskId} has a lease from an earlier attempt in a workspace pool that is no longer listed, so whether it is still held is unknown`, observed);
+    }
     if (state.inFlight.includes(taskId)) return refusal("select", "choose_another_task", `Task ${taskId} is already in flight`, observed);
     if (!state.ready.includes(taskId)) return refusal("select", "choose_another_task", `Task ${taskId} is not ready`, observed);
   } else {
@@ -155,6 +175,7 @@ export async function dispatchOnce(
   Object.assign(summary, { leaseId: allocation.leaseId, workspace: allocation.path, outputBranch, startingCommit: allocation.startingCommit });
   await deps.attempts.append(ref, "leased", {
     leaseId: allocation.leaseId, workspace: allocation.path, baseRef: deps.delivery.baseRef, outputBranch, startingCommit: allocation.startingCommit,
+    pool: allocation.pool,
   });
   deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
 
@@ -281,6 +302,11 @@ async function existingRequest(deps: Dependencies, attempt: AttemptRecord): Prom
     ...(task ? { task: { id: task.id, state: task.state, held: task.held, holdReason: task.holdReason } } : {}),
     nextAction: "inspect_attempt",
   });
+}
+
+/** Whether the operator recorded this confirmation for the attempt with `resolve`. */
+export function resolvedBy(attempt: AttemptRecord, action: "worker_stopped" | "lease_returned"): boolean {
+  return attempt.entries.some(e => e.kind === "operator_resolved" && e.data.action === action);
 }
 
 export function summarise(attempt: AttemptRecord): AttemptSummary {

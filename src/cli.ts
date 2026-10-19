@@ -5,7 +5,7 @@ import { createDependencies, loadConfig } from "./config.ts";
 import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
-import { resolveStopped } from "./dispatch/resolve.ts";
+import { resolveLeaseReturned, resolveStopped } from "./dispatch/resolve.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
@@ -13,7 +13,7 @@ import { describeEntry } from "./runtime/activity.ts";
 const usage = `Usage:
   switchboard dispatch --once [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
-  switchboard resolve --lease <lease-id> [--worker-stopped] [--note <text>] [--json] [--config <path>]
+  switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
   switchboard stop --lease <lease-id> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
   switchboard steer --lease <lease-id> [--after] [--as <sender>] [--wait <seconds>] [--json] [--config <path>] "<message>"
@@ -26,7 +26,9 @@ once it finishes its current work). A request no dispatcher takes within --wait 
 and never forwarded. --as names the sender recorded with the request; the default is operator:<your user name>.
 
 resolve records the operator's confirmation that a worker with no observed exit has stopped. Without
---worker-stopped it only reports what each owner holds. It never changes the task or the lease.
+--worker-stopped it only reports what each owner holds. --lease-returned records the operator's confirmation that a
+lease in a workspace pool Switchboard no longer lists, for example after the origin remote changed, was returned.
+resolve never changes the task or the lease.
 
 The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
 Exit status: 0 when no work was ready or the task was recorded as done (dispatch), nothing needs attention (status),
@@ -39,7 +41,7 @@ async function main(argv: string[]): Promise<number> {
     options: {
       once: { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
-      lease: { type: "string" }, "worker-stopped": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
+      lease: { type: "string" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" },
     },
   });
@@ -56,6 +58,10 @@ async function main(argv: string[]): Promise<number> {
   const wait = Number(values.wait ?? "10");
   if (!Number.isFinite(wait) || wait <= 0) {
     console.error("--wait must be a positive number of seconds.");
+    return 2;
+  }
+  if (values["worker-stopped"] && values["lease-returned"]) {
+    console.error("resolve takes either --worker-stopped or --lease-returned, not both.");
     return 2;
   }
   if (["resolve", "watch", "stop", "steer"].includes(command) && !values.lease) {
@@ -99,9 +105,10 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === "resolve") {
-    const value = await resolveStopped(deps, {
-      leaseId: values.lease!, confirmed: values["worker-stopped"] === true, ...(values.note ? { note: values.note } : {}),
-    });
+    const note = values.note ? { note: values.note } : {};
+    const value = values["lease-returned"]
+      ? await resolveLeaseReturned(deps, { leaseId: values.lease!, ...note })
+      : await resolveStopped(deps, { leaseId: values.lease!, confirmed: values["worker-stopped"] === true, ...note });
     console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
     return value.ok ? 0 : 1;
   }

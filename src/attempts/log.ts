@@ -19,6 +19,8 @@ const entrySchemas = {
   }),
   leased: z.strictObject({
     leaseId: nonempty, workspace: nonempty, baseRef: nonempty, outputBranch: nonempty, startingCommit: commit,
+    /** The workspace pool the lease was acquired in. Absent in entries written before it was recorded. */
+    pool: nonempty.optional(),
   }),
   task_started: z.strictObject({}),
   launched: z.strictObject({ sessionId: z.uuid() }),
@@ -33,8 +35,11 @@ const entrySchemas = {
     id: z.uuid(), kind: z.enum(["stop", "steer", "follow_up"]), sender: nonempty, outcome: nonempty,
     message: nonempty.optional(), error: nonempty.optional(),
   }),
-  /** An operator confirmed the attempt's worker had stopped although no exit was observed. */
-  operator_resolved: z.strictObject({ action: z.literal("worker_stopped"), note: nonempty.optional() }),
+  /**
+   * An operator confirmed the attempt's worker had stopped although no exit was observed, or that its lease, which
+   * is in a workspace pool the provider no longer lists, has been returned.
+   */
+  operator_resolved: z.strictObject({ action: z.enum(["worker_stopped", "lease_returned"]), note: nonempty.optional() }),
 } as const;
 export type EntryKind = keyof typeof entrySchemas;
 export type EntryData<K extends EntryKind> = z.infer<(typeof entrySchemas)[K]>;
