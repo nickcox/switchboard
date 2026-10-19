@@ -90,3 +90,7 @@ npm run switchboard -- dispatch --once --config ./switchboard.json
 - [TypeScript/Node.js and required host platforms](docs/adr/0004-typescript-and-node-for-switchboard-cli.md).
 - [Pi RPC subprocess and result file](docs/adr/0005-pi-rpc-worker-and-result-file.md).
 - [Switchboard attempt log](docs/adr/0006-switchboard-attempt-log.md).
+
+## Licence
+
+[MIT](LICENSE).

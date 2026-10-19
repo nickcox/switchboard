@@ -1,6 +1,7 @@
 {
   "name": "switchboard",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "bin": {
     "switchboard": "src/cli.ts"
