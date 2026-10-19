@@ -97,9 +97,28 @@ export async function writeOnce(path: string, value: unknown): Promise<void> {
 /** Runtime-owned identity/input and observed child-exit facts, not dispatcher lifecycle state. */
 export class RuntimeRecords {
   private readonly root: string;
-  constructor(root: string) {
+  private readonly write: typeof writeOnce;
+  constructor(root: string, write: typeof writeOnce = writeOnce) {
     if (!isAbsolute(root)) throw new Error("Runtime storage root must be absolute");
     this.root = root;
+    this.write = write;
+  }
+
+  /** Check the configured filesystem, not just the host OS, before dispatch can select work. */
+  async probeExclusiveCreation(): Promise<void> {
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    const path = join(this.root, `.exclusive-probe-${randomUUID()}.json`);
+    try {
+      await this.write(path, { probe: 1 });
+      try { await this.write(path, { probe: 2 }); }
+      catch (error) {
+        if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") return;
+        throw error;
+      }
+      throw new Error("Exclusive creation did not fail with EEXIST when the probe already existed");
+    } finally {
+      await unlink(path).catch(error => { if (!isMissing(error)) throw error; });
+    }
   }
 
   async reserve(value: WorkerInput): Promise<{ directory: string; binding: RuntimeBinding }> {
@@ -127,12 +146,12 @@ export class RuntimeRecords {
       version: 1, createdAt: new Date().toISOString(),
       input: { ...input, workspace }, sessionDirectory, artefactDirectory, resultPath: join(directory, "result.json"),
     });
-    await writeOnce(join(directory, "binding.json"), binding);
+    await this.write(join(directory, "binding.json"), binding);
     return { directory, binding };
   }
 
   async recordChildExit(record: Pick<RuntimeRecord, "directory" | "binding">, exit: ChildExit): Promise<void> {
-    await writeOnce(join(record.directory, "child-exit.json"), receiptSchema.parse({
+    await this.write(join(record.directory, "child-exit.json"), receiptSchema.parse({
       version: 1, identity: record.binding.input.identity,
       observedAt: new Date().toISOString(), childExit: exit,
     }));
@@ -140,7 +159,7 @@ export class RuntimeRecords {
 
   /** Records an operator's confirmation that a worker with no observed exit has stopped. Written once. */
   async recordOperatorStop(record: Pick<RuntimeRecord, "directory" | "binding">, note?: string): Promise<void> {
-    await writeOnce(join(record.directory, "operator-stopped.json"), operatorStopSchema.parse({
+    await this.write(join(record.directory, "operator-stopped.json"), operatorStopSchema.parse({
       version: 1, identity: record.binding.input.identity, confirmedAt: new Date().toISOString(),
       ...(note === undefined ? {} : { note }),
     }));

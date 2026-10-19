@@ -114,6 +114,11 @@ export async function dispatchOnce(
     return refusal("preflight", "stop_worker", "An earlier attempt's worker may still be running", { ...observed, possiblyRunning: state.possiblyRunning });
   }
 
+  try { await deps.runtime.probeExclusiveCreation(); }
+  catch (error) {
+    return refusal("preflight", "fix_configuration", `Runtime storage exclusive-creation check failed: ${message(error)}. Configure a writable runtime directory that enforces exclusive creation`, observed);
+  }
+
   // Step 2: select one ready task with no lease and no in-flight state.
   const unknownLease = (id: string) => state.leasesInOtherPools.some(a => a.taskId === id);
   const blocked = (id: string) => state.leases.some(l => l.holder === id) || unknownLease(id) || state.inFlight.includes(id);
