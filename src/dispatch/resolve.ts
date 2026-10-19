@@ -50,7 +50,7 @@ export async function resolveStopped(
 export async function resolveLeaseReturned(deps: Dependencies, options: { leaseId: string; note?: string }): Promise<DispatchResult> {
   const state = await inspect(deps);
   if ("failed" in state) return state.failed;
-  const attempt = state.attempts.find(a => a.entries.some(e => e.kind === "leased" && e.data.leaseId === options.leaseId));
+  const attempt = state.attempts.find(a => summarise(a).leaseId === options.leaseId);
   if (!attempt) {
     return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: { leaseId: options.leaseId }, detail: "No attempt in this context has this lease ID", nextAction: "inspect_attempt" });
   }

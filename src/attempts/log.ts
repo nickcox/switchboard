@@ -11,6 +11,8 @@ const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 const entrySchemas = {
   requested: z.strictObject({
     requestId: nonempty.optional(),
+    /** The workspace pool acquisition will use. Absent in older entries. */
+    pool: nonempty.optional(),
     /** The delivery contract resolved before acquisition: "default" or the task kind that selected it. */
     contract: z.strictObject({
       name: nonempty, kind: z.enum(["code", "artefact"]), acceptance: z.enum(["review_or_integration", "independent_deliverable"]),
@@ -29,7 +31,10 @@ const entrySchemas = {
   }),
   task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
-  halted: z.strictObject({ stage: nonempty, reason: nonempty, detail: nonempty.optional() }),
+  halted: z.strictObject({
+    stage: nonempty, reason: nonempty, detail: nonempty.optional(),
+    leaseId: nonempty.optional(), workspace: nonempty.optional(), outputBranch: nonempty.optional(),
+  }),
   /** A stop request or operator message the dispatcher forwarded to the running worker, with what happened. */
   operator_request: z.strictObject({
     id: z.uuid(), kind: z.enum(["stop", "steer", "follow_up"]), sender: nonempty, outcome: nonempty,

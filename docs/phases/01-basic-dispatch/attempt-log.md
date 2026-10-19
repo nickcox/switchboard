@@ -33,7 +33,7 @@ Each entry is one JSON file:
 
 | Kind | Written by | `data` |
 | --- | --- | --- |
-| `requested` | `dispatch`, always first | Optional `requestId`; the resolved delivery `contract` (its name, which is `default` or the selecting task kind, plus kind, acceptance, required evidence and deliverables) |
+| `requested` | `dispatch`, always first | Optional `requestId`; the workspace `pool` acquisition will use (absent in older entries); the resolved delivery `contract` (its name, which is `default` or the selecting task kind, plus kind, acceptance, required evidence and deliverables) |
 | `leased` | `dispatch` | `leaseId`, `workspace`, `baseRef`, `outputBranch`, `startingCommit`, and the workspace `pool` the lease was acquired in (absent in older entries) |
 | `task_started` | `dispatch` | None. The task was confirmed in flight |
 | `launched` | `dispatch` | `sessionId` |
@@ -41,7 +41,7 @@ Each entry is one JSON file:
 | `worker_finished` | `dispatch` | Runtime `status`, `runtimeDirectory`, and when known the failure `reason`, worker `outcome` and `resultCommit` |
 | `task_recorded` | `dispatch` | `outcome` (`done` or `hold`) and the recorded `reason` |
 | `retention_checked` | `dispatch` | `retained`, plus `findings` that prevent retention and `notes` that do not |
-| `halted` | `dispatch` | The `stage`, `reason` and optional `detail` of a dispatch that stopped before finishing |
+| `halted` | `dispatch` | The `stage`, `reason` and optional `detail` of a dispatch that stopped before finishing; optional `leaseId`, `workspace` and `outputBranch` recovered from inspection. An uncertain acquisition records `reason: outcome_unknown`, so the `requested` pool identifies a lease that may still be held even without a `leased` entry |
 | `operator_resolved` | `resolve` | `action` (`worker_stopped`, or `lease_returned` for a lease in a pool that is no longer listed) and an optional `note` |
 
 The runtime records hold the launch input and the observed child exit ([runtime notes](runtime-integration.md#runtime-owned-records)). The log links to them through the lease and session IDs and the runtime directory, rather than copying them.

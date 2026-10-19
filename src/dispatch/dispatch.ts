@@ -91,9 +91,11 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
   }
   const leasesInOtherPools: Inspection["leasesInOtherPools"] = [];
   for (const attempt of attempts) {
-    const leased = attempt.entries.find(e => e.kind === "leased")?.data.pool;
-    if (typeof leased === "string" && leased !== pool && !resolvedBy(attempt, "lease_returned")) {
-      leasesInOtherPools.push({ ...summarise(attempt), pool: leased });
+    const leased = attempt.entries.find(e => e.kind === "leased");
+    const unknownAcquisition = attempt.entries.some(e => e.kind === "halted" && e.data.stage === "acquire" && e.data.reason === "outcome_unknown");
+    const leasePool = leased?.data.pool ?? (unknownAcquisition ? attempt.entries[0]?.data.pool : undefined);
+    if (typeof leasePool === "string" && leasePool !== pool && !resolvedBy(attempt, "lease_returned")) {
+      leasesInOtherPools.push({ ...summarise(attempt), pool: leasePool });
     }
   }
   return { attempts, runtime, leases, inFlight, ready, possiblyRunning, pool, leasesInOtherPools };
@@ -156,7 +158,7 @@ export async function dispatchOnce(
   let ref: AttemptRef;
   try {
     ref = await deps.attempts.create(taskId, {
-      ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract },
+      ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
     }, previous);
   } catch (error) {
     if (error instanceof AttemptConflict) return refusal("select", "inspect_attempt", `Another invocation created an attempt for task ${taskId} first`, observed);
@@ -165,8 +167,11 @@ export async function dispatchOnce(
   const summary: AttemptSummary = { contextId: deps.contextId, taskId, attempt: ref.attempt, ...(options.requestId ? { requestId: options.requestId } : {}) };
   deps.progress?.(`Task ${taskId}, attempt ${ref.attempt}`);
   // Stopped after a change: record why in the attempt log and preserve whatever exists.
-  const halt = async (stage: Stage, nextAction: NextAction, detail: string) => {
-    await deps.attempts.append(ref, "halted", { stage, reason: "stopped", detail: detail.slice(0, 4000) }).catch(() => {});
+  const halt = async (stage: Stage, nextAction: NextAction, detail: string, reason = "stopped") => {
+    await deps.attempts.append(ref, "halted", {
+      stage, reason, detail: detail.slice(0, 4000),
+      ...(summary.leaseId ? { leaseId: summary.leaseId, workspace: summary.workspace, outputBranch: summary.outputBranch } : {}),
+    }).catch(() => {});
     return result({ ok: false, reason: "stopped", stage, lease: summary.leaseId ? "preserved" : "none", observed, attempt: summary, detail, nextAction });
   };
 
@@ -181,7 +186,7 @@ export async function dispatchOnce(
     const found = await deps.workspaces.leases().then(all => all.filter(l => l.holder === taskId && l.branch === outputBranch), () => undefined);
     const lease = found === undefined ? "unknown" : found.length > 0 ? "preserved" : "none";
     if (found?.[0]) Object.assign(summary, { leaseId: found[0].leaseId, workspace: found[0].path, outputBranch });
-    const stopped = await halt("acquire", "inspect_attempt", `The lease outcome is unknown or unexpected: ${message(error)}`);
+    const stopped = await halt("acquire", "inspect_attempt", `The lease outcome is unknown or unexpected: ${message(error)}`, "outcome_unknown");
     return { ...stopped, lease, attempt: summary };
   }
   Object.assign(summary, { leaseId: allocation.leaseId, workspace: allocation.path, outputBranch, startingCommit: allocation.startingCommit });
@@ -327,6 +332,7 @@ export function summarise(attempt: AttemptRecord): AttemptSummary {
     const d = entry.data as Record<string, string | undefined>;
     if (entry.kind === "requested" && d.requestId) summary.requestId = d.requestId;
     if (entry.kind === "leased") Object.assign(summary, { leaseId: d.leaseId, workspace: d.workspace, outputBranch: d.outputBranch, startingCommit: d.startingCommit });
+    if (entry.kind === "halted" && d.leaseId) Object.assign(summary, { leaseId: d.leaseId, workspace: d.workspace, outputBranch: d.outputBranch });
     if (entry.kind === "launched" && d.sessionId) summary.sessionId = d.sessionId;
     if (entry.kind === "worker_finished" && d.resultCommit) summary.resultCommit = d.resultCommit;
   }

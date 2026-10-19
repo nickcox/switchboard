@@ -123,9 +123,9 @@ export function describeStatus(value: StatusResult): string {
   for (const a of value.attempts) {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;
     const where = a.attempt.workspace ?? "an unknown path";
-    const lease = !a.attempt.leaseId ? "no lease"
+    const lease = a.leaseInOtherPool !== undefined ? `lease ${a.attempt.leaseId ?? "with unknown ID"} at ${where} UNKNOWN: its workspace pool is no longer listed`
+      : !a.attempt.leaseId ? "no lease"
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
-      : a.leaseInOtherPool !== undefined ? `lease ${a.attempt.leaseId} at ${where} UNKNOWN: its workspace pool is no longer listed`
       : `lease ${a.attempt.leaseId} not held`;
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
     if (a.activity?.lastActivity) {
