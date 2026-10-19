@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { onPath } from "../src/infra/executables.ts";
 
@@ -51,6 +51,22 @@ function fixture() {
   });
   return { switchboard };
 }
+
+test("--version prints the package version without loading configuration", () => {
+  const dir = mkdtempSync(join(evidence, "version-"));
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  for (const args of [["--version"], ["--version", "--config", join(dir, "missing.json")]]) {
+    const result = spawnSync(process.execPath, [cli, ...args], {
+      cwd: dir, env: { ...process.env, SWITCHBOARD_CONFIG: join(dir, "missing.json") }, encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `${pkg.version}\n`);
+    assert.equal(result.stderr, "");
+  }
+  const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stderr, /switchboard --version/);
+});
 
 test("dispatch --once --dry-run supports JSON, explicit selection and readable output", () => {
   const { switchboard } = fixture();

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createDependencies, loadConfig } from "./config.ts";
@@ -11,6 +12,7 @@ import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
 
 const usage = `Usage:
+  switchboard --version
   switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
@@ -42,11 +44,16 @@ async function main(argv: string[]): Promise<number> {
     args: argv, allowPositionals: true, strict: true,
     options: {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
-      json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
+      json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
       lease: { type: "string" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" },
     },
   });
+  if (values.version) {
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    console.log(pkg.version);
+    return 0;
+  }
   const command = positionals[0];
   const commands = ["dispatch", "status", "resolve", "watch", "stop", "steer"];
   if (values.help || !command || !commands.includes(command) || positionals.length !== (command === "steer" ? 2 : 1)) {
