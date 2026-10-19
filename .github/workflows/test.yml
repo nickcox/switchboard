@@ -19,16 +19,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            treehouse-asset: darwin-arm64.tar.gz
-            treehouse-sha256: 1c05cf2ac3f28c65550e5bbf62c7545380e3a1f81ab1b844888fd481e7dcdca2
-          - os: ubuntu-latest
-            treehouse-asset: linux-amd64.tar.gz
-            treehouse-sha256: 78c820c5872bf9d9d3eb19bbedd75e4804b9258c862238993fa160cf9d215ed8
-          - os: windows-latest
-            treehouse-asset: windows-amd64.zip
-            treehouse-sha256: ac215dad8e8a48e6511b3f55d45e75a76cf67e2a98d22b4500999983da686dde
+        # Windows runs take several times longer, so they run only for main, pull requests and manual runs, not for
+        # every push to another branch.
+        os: ${{ fromJSON((github.event_name != 'push' || github.ref == 'refs/heads/main') && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["macos-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,9 +35,13 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          name="treehouse-${TREEHOUSE_VERSION}-${{ matrix.treehouse-asset }}"
+          case "$RUNNER_OS" in
+            macOS) asset=darwin-arm64.tar.gz; sha256=1c05cf2ac3f28c65550e5bbf62c7545380e3a1f81ab1b844888fd481e7dcdca2 ;;
+            Linux) asset=linux-amd64.tar.gz; sha256=78c820c5872bf9d9d3eb19bbedd75e4804b9258c862238993fa160cf9d215ed8 ;;
+          esac
+          name="treehouse-${TREEHOUSE_VERSION}-${asset}"
           curl -fsSL -o "$RUNNER_TEMP/$name" "https://github.com/kunchenguid/treehouse/releases/download/${TREEHOUSE_VERSION}/$name"
-          echo "${{ matrix.treehouse-sha256 }}  $RUNNER_TEMP/$name" | shasum -a 256 -c -
+          echo "${sha256}  $RUNNER_TEMP/$name" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/treehouse"
           tar -xzf "$RUNNER_TEMP/$name" -C "$RUNNER_TEMP/treehouse"
           echo "$RUNNER_TEMP/treehouse" >> "$GITHUB_PATH"
@@ -53,11 +50,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "treehouse-$env:TREEHOUSE_VERSION-${{ matrix.treehouse-asset }}"
+          $name = "treehouse-$env:TREEHOUSE_VERSION-windows-amd64.zip"
+          $sha256 = "ac215dad8e8a48e6511b3f55d45e75a76cf67e2a98d22b4500999983da686dde"
           $archive = Join-Path $env:RUNNER_TEMP $name
           Invoke-WebRequest -Uri "https://github.com/kunchenguid/treehouse/releases/download/$env:TREEHOUSE_VERSION/$name" -OutFile $archive
           $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -ne "${{ matrix.treehouse-sha256 }}") { throw "Checksum mismatch for ${name}: $actual" }
+          if ($actual -ne $sha256) { throw "Checksum mismatch for ${name}: $actual" }
           $destination = Join-Path $env:RUNNER_TEMP "treehouse"
           Expand-Archive -Path $archive -DestinationPath $destination
           Add-Content -Path $env:GITHUB_PATH -Value $destination
