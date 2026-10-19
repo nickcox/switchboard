@@ -11,12 +11,14 @@ import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
 
 const usage = `Usage:
-  switchboard dispatch --once [--task <id>] [--request-id <id>] [--json] [--config <path>]
+  switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
   switchboard stop --lease <lease-id> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
   switchboard steer --lease <lease-id> [--after] [--as <sender>] [--wait <seconds>] [--json] [--config <path>] "<message>"
+
+dispatch --once --dry-run reports the selected task and delivery contract without changing anything or launching a worker.
 
 watch prints an attempt's worker activity and follows it until the worker's exit is recorded. It reads files
 only, so it works from any terminal and after the dispatcher has stopped. status shows each attempt's lease ID.
@@ -31,7 +33,7 @@ lease in a workspace pool Switchboard no longer lists, for example after the ori
 resolve never changes the task or the lease.
 
 The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
-Exit status: 0 when no work was ready or the task was recorded as done (dispatch), nothing needs attention (status),
+Exit status: 0 when no work was ready, a dry run selected a task or the task was recorded as done (dispatch), nothing needs attention (status),
 the confirmation was recorded (resolve), Pi accepted the request (stop, steer) or the attempt was found (watch);
 1 for any other outcome, described by the report's reason; 2 for usage or configuration errors.`;
 
@@ -39,7 +41,7 @@ async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv, allowPositionals: true, strict: true,
     options: {
-      once: { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
+      once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
       lease: { type: "string" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" },
@@ -122,6 +124,7 @@ async function main(argv: string[]): Promise<number> {
   });
   const value = await dispatchOnce(deps, {
     ...(values.task ? { taskId: values.task } : {}), ...(values["request-id"] ? { requestId: values["request-id"] } : {}), signal: controller.signal,
+    dryRun: values["dry-run"] === true,
   });
   console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
   return value.ok ? 0 : 1;

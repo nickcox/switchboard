@@ -70,6 +70,7 @@ npm run switchboard -- status --config ./switchboard.json
 npm run switchboard -- dispatch --once --config ./switchboard.json
 ```
 
+- **Dry runs.** `dispatch --once --dry-run` runs the same preflight and selection checks, including `--task <id>`, and reports the selected task and resolved delivery contract, or the same refusal as dispatch. It creates no attempt, acquires no lease, changes no task and launches no worker. Add `--json` for a structured result.
 - **Delivery contracts.** A task's tasks-axi `kind` selects its delivery contract from `byTaskKind`. A task with no kind uses the default, which holds completed code for review.
 - **Long runs.** `dispatch --once` prints each tool call as the worker makes it and stays in the foreground until the worker finishes. Run it under tmux or `nohup` for long tasks, because closing its terminal ends the dispatcher.
 - **Watching.** From another terminal, `watch --lease <lease-id>` follows a worker's activity, and `status` shows its last activity, usage, transcript path and whether it has gone quiet. `maxCost` and `maxTokens` stop a worker that exceeds them.

@@ -101,7 +101,7 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
 
 /** Runs one dispatch: steps 1–8 of the Phase 1 PRD dispatch sequence. Never starts a second task. */
 export async function dispatchOnce(
-  deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal } = {},
+  deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean } = {},
 ): Promise<DispatchResult> {
   if (options.requestId !== undefined) {
     const existing = await deps.attempts.findByRequest(options.requestId).catch(() => undefined);
@@ -138,6 +138,13 @@ export async function dispatchOnce(
   const contract = selected.kind === null ? deps.delivery.default : deps.delivery.byTaskKind[selected.kind];
   if (!contract) {
     return refusal("select", "fix_configuration", `Task ${taskId} has kind "${selected.kind}", which has no delivery contract in the configuration`, observed);
+  }
+
+  if (options.dryRun) {
+    return result({
+      ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
+      selection: { taskId, contract: { name: contractName, ...contract } }, nextAction: "none",
+    });
   }
 
   const previous = state.attempts.filter(a => a.taskId === taskId).map(a => a.attempt).at(-1) ?? 0;

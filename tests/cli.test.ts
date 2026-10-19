@@ -52,6 +52,23 @@ function fixture() {
   return { switchboard };
 }
 
+test("dispatch --once --dry-run supports JSON, explicit selection and readable output", () => {
+  const { switchboard } = fixture();
+  const preview = switchboard(["dispatch", "--once", "--dry-run", "--task", "cli-a1", "--json"]);
+  assert.equal(preview.status, 0, preview.stderr);
+  const report = JSON.parse(preview.stdout);
+  assert.equal(report.reason, "dry_run");
+  assert.equal(report.selection.taskId, "cli-a1");
+  assert.equal(report.selection.contract.name, "default");
+  const readable = switchboard(["dispatch", "--once", "--dry-run"]);
+  assert.equal(readable.status, 0, readable.stderr);
+  assert.match(readable.stdout, /Task cli-a1, delivery contract default/);
+  const refused = switchboard(["dispatch", "--once", "--dry-run", "--task", "missing-a1", "--json"]);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.equal(JSON.parse(refused.stdout).reason, "refused");
+  assert.equal(switchboard(["dispatch", "--dry-run"]).status, 2);
+});
+
 test("dispatch --once and status report the attempt as structured JSON with documented exit codes", async () => {
   const { switchboard } = fixture();
   const before = switchboard(["status", "--json"]);

@@ -1,3 +1,4 @@
+import type { ContractSpec } from "./dispatch.ts";
 import type { RetentionResult } from "../workspaces/retention.ts";
 
 /**
@@ -7,6 +8,7 @@ import type { RetentionResult } from "../workspaces/retention.ts";
  * supervisor.
  */
 export const reasons = {
+  dry_run: "A ready task and its delivery contract were selected. Nothing was changed or launched.",
   no_ready_work: "No task is ready in the configured repository.",
   done: "The worker's result satisfied the completion contract and the task is recorded as done.",
   held: "The attempt finished and the task is recorded as held. Its hold reason and the next action say why.",
@@ -60,6 +62,8 @@ export type DispatchResult = {
   reason: Reason;
   stage?: Stage;
   attempt?: AttemptSummary;
+  /** Read-only dispatch selection, before an attempt or workspace exists. */
+  selection?: { taskId: string; contract: ContractSpec & { name: string } };
   worker?: { status: string; outcome?: string; summary?: string; reason?: string; nextAction?: string };
   task?: { id: string; state: string; held: boolean; holdReason: string | null };
   retention?: RetentionResult;
@@ -77,6 +81,7 @@ export function result(fields: Omit<DispatchResult, "version" | "nextAction"> & 
 
 export function describe(value: DispatchResult): string {
   const lines = [`${value.ok ? "OK" : "NOT OK"}: ${value.reason}${value.stage ? ` at ${value.stage}` : ""} – ${reasons[value.reason]}`];
+  if (value.selection) lines.push(`Task ${value.selection.taskId}, delivery contract ${value.selection.contract.name}`);
   const a = value.attempt;
   if (a) {
     lines.push(`Task ${a.taskId}, attempt ${a.attempt}${a.requestId ? ` (request ${a.requestId})` : ""}`);
