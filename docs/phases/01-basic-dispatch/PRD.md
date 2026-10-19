@@ -22,7 +22,7 @@ Phase 1 has only a human operator, but every command is designed for a later age
 
 Provide these commands:
 
-- `switchboard dispatch --once` with optional `--task <id>` and `--request-id <id>`. Without a task ID, select the first task in tasks-axi's ready ordering, breaking unspecified ties by task ID. With an ID, require that task to be ready. Never dispatch a second task in the same invocation.
+- `switchboard dispatch --once` with optional `--task <id>` and `--request-id <id>`. Without a task ID, select the first task in tasks-axi's ready ordering, breaking unspecified ties by task ID. With an ID, require that task to be ready. Never dispatch a second task in the same invocation. With `--dry-run`, stop after selecting the task and resolving its delivery contract, and report them without creating an attempt, acquiring a lease, changing the task or launching a worker.
 - `switchboard status`, which is read-only. It reports the preflight result, attempts from the attempt log with each owner's current state, attempts whose workers may still be running, and tasks blocked by an earlier attempt, each with its next action.
 - `switchboard resolve --lease <lease-id> --worker-stopped`, which records the operator's confirmation that a worker with no observed exit has stopped, so its attempt stops blocking dispatch. Without `--worker-stopped` it only reports what each owner holds. The confirmation is recorded separately from an observed exit and never treated as one. With `--lease-returned` instead, it records the operator's confirmation that a lease in a workspace pool Switchboard no longer lists has been returned (see [Workspace pool changes](#workspace-pool-changes)). It changes neither the task nor the lease.
 - `switchboard watch`, `switchboard stop` and `switchboard steer`, described in [Watching and controlling a running attempt](#watching-and-controlling-a-running-attempt).
@@ -41,7 +41,7 @@ Every command supports `--json`. `watch --json` prints activity entries with the
 
 - `version`: the result format version, currently `1`. A change that is not backwards compatible increments it.
 - `ok`: whether the command achieved its purpose.
-- `reason`: one of a small set of stable codes, each a category of behaviour: `no_ready_work`, `done`, `held`, `refused` (nothing was changed), `stopped` (some state was changed and is preserved), `existing_request`, `resolved`, and `delivered` or `undelivered` for a stop request or message. Renaming or removing a code is a breaking change.
+- `reason`: one of a small set of stable codes, each a category of behaviour: `no_ready_work`, `done`, `held`, `refused` (nothing was changed), `stopped` (some state was changed and is preserved), `existing_request`, `resolved`, `dry_run` (a task was selected and nothing was changed), and `delivered` or `undelivered` for a stop request or message. Renaming or removing a code is a breaking change.
 - `stage`: where the result was decided (`preflight`, `select`, `acquire`, `start`, `launch`, `finalise`, `resolve` or `control`).
 - `detail`: the specific cause in prose. It is for people and logs, not a stable interface.
 - `lease`: `none`, `preserved`, or `unknown` when leases could not be listed.
