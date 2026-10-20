@@ -1,6 +1,7 @@
 import { readActivity } from "../runtime/activity.ts";
 import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
+import type { Lease } from "../workspaces/provider.ts";
 import type { Task } from "../tasks/store.ts";
 import { inspect, isOpen, summarise, type Dependencies } from "./dispatch.ts";
 import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch.ts";
@@ -29,7 +30,12 @@ export type AttemptStatus = {
 
 const defaultStaleMs = 20 * 60 * 1000;
 
-async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, staleMs: number): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover" | "thinkingLevel">> {
+/** Quotes a path for the operator's shell: POSIX shells on macOS and Linux, PowerShell on Windows. */
+function quote(path: string): string {
+  return process.platform === "win32" ? `"${path.replace(/["`$]/g, "`$&")}"` : `'${path.replace(/'/g, "'\\''")}'`;
+}
+
+async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, staleMs: number, leases: Lease[]): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover" | "thinkingLevel">> {
   if (!record) return {};
   const activity = summariseActivity(await readActivity(record.directory));
   const stale = possiblyRunning && (activity.lastActivity === null || Date.now() - Date.parse(activity.lastActivity) > staleMs);
@@ -39,7 +45,11 @@ async function workerView(record: RuntimeRecord | undefined, possiblyRunning: bo
     activity: { ...activity, stale },
     ...(record.thinkingLevel === undefined ? {} : { thinkingLevel: record.thinkingLevel }),
     ...(transcript ? { transcript } : {}),
-    ...(possiblyRunning ? {} : { takeover: `In ${record.binding.input.workspace}, run: pi --session-id ${sessionId} --session-dir ${record.binding.sessionDirectory}` }),
+    // Only while the worker has stopped and its own lease still holds the same workspace: once the lease is returned,
+    // the path may belong to another task.
+    ...(possiblyRunning || !leases.some(l => l.leaseId === record.binding.input.identity.leaseId && l.path === record.binding.input.workspace) ? {} : {
+      takeover: `cd ${quote(record.binding.input.workspace)} && pi --session-id ${sessionId} --session-dir ${quote(record.binding.sessionDirectory)}`,
+    }),
   };
 }
 
@@ -52,6 +62,8 @@ export type StatusResult = {
   inFlight: string[];
   /** Leases in this context's pool that no attempt in the log accounts for. */
   unaccountedLeases: { leaseId: string; holder: string; path: string }[];
+  /** Tasks in flight with no attempt in the log, no runtime record and no lease, so nothing accounts for them. */
+  orphanedInFlight: string[];
   attempts: AttemptStatus[];
   detail?: string;
   nextAction: { code: NextAction; description: string };
@@ -64,7 +76,7 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
   const state = await inspect(deps);
   if ("failed" in state) {
     return {
-      version: 1, ok: false, reason: "refused", ready: [], inFlight: [], unaccountedLeases: [], attempts: [],
+      version: 1, ok: false, reason: "refused", ready: [], inFlight: [], unaccountedLeases: [], orphanedInFlight: [], attempts: [],
       ...(state.failed.detail ? { detail: state.failed.detail } : {}), nextAction: action("fix_configuration"),
     };
   }
@@ -86,12 +98,13 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     const code: NextAction = possiblyRunning ? (running ? "watch_attempt" : "stop_worker")
       : otherPool !== undefined ? "confirm_lease_returned"
       : unfinished && !leaseHeld ? "confirm_attempt_stopped"
-      : !leaseHeld ? (typeof task === "object" && task.state === "in_flight" ? "inspect_attempt" : "none")
+      : typeof task !== "object" ? "inspect_attempt"
+      : !leaseHeld ? (task.state === "in_flight" ? "inspect_attempt" : "none")
       : reviewHold ? "review_branch"
       : typeof task === "object" && task.state === "done" ? "return_lease" : "inspect_attempt";
     attempts.push({
       attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, ...(otherPool === undefined ? {} : { leaseInOtherPool: otherPool }), task,
-      ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs), nextAction: action(code),
+      ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs, state.leases), nextAction: action(code),
     });
   }
   // Runtime records with no matching attempt, for example after a crash before the attempt was logged.
@@ -99,16 +112,19 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === p.leaseId);
     attempts.push({
       attempt: p, lastEntry: "none", possiblyRunning: true, leaseHeld: state.leases.some(l => l.leaseId === p.leaseId), task: "unreadable",
-      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs),
+      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs, state.leases),
       nextAction: action(runtime && await dispatcherRunning(runtime.directory) ? "watch_attempt" : "stop_worker"),
     });
   }
   const known = new Set(attempts.map(a => a.attempt.leaseId).filter(Boolean));
   const unaccountedLeases = state.leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
-  const attention = attempts.some(a => a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt") || unaccountedLeases.length > 0;
+  const orphanedInFlight = state.inFlight.filter(id => !state.attempts.some(a => a.taskId === id) &&
+    !state.runtime.some(r => r.binding.input.identity.taskId === id) && !state.leases.some(l => l.holder === id));
+  const unaccounted = unaccountedLeases.length > 0 || orphanedInFlight.length > 0;
+  const attention = attempts.some(a => a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt") || unaccounted;
   return {
-    version: 1, ok: !attention, reason: attention ? "attention" : "clear", ready: state.ready, inFlight: state.inFlight, unaccountedLeases, attempts,
-    nextAction: action(overall(attempts, unaccountedLeases.length > 0)),
+    version: 1, ok: !attention, reason: attention ? "attention" : "clear", ready: state.ready, inFlight: state.inFlight, unaccountedLeases, orphanedInFlight, attempts,
+    nextAction: action(overall(attempts, unaccounted)),
   };
 }
 
@@ -142,6 +158,7 @@ export function describeStatus(value: StatusResult): string {
     if (a.nextAction.code !== "none") lines.push(`  Next: ${a.nextAction.description}`);
   }
   for (const l of value.unaccountedLeases) lines.push(`- Lease ${l.leaseId} for ${l.holder} at ${l.path} is not in the attempt log`);
+  for (const id of value.orphanedInFlight) lines.push(`- Task ${id} is in flight, but no attempt, worker or lease accounts for it`);
   lines.push(`Next: ${value.nextAction.description}`);
   return lines.join("\n");
 }

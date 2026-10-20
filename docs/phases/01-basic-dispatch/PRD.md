@@ -23,7 +23,7 @@ Phase 1 has only a human operator, but every command is designed for a later age
 Provide these commands:
 
 - `switchboard dispatch --once` with optional `--task <id>` and `--request-id <id>`. Without a task ID, select the first task in tasks-axi's ready ordering, breaking unspecified ties by task ID. With an ID, require that task to be ready. Never dispatch a second task in the same invocation. With `--dry-run`, stop after selecting the task and resolving its delivery contract, and report them without creating an attempt, acquiring a lease, changing the task or launching a worker.
-- `switchboard status`, which is read-only. It reports the preflight result, attempts from the attempt log with each owner's current state, attempts whose workers may still be running, and tasks blocked by an earlier attempt, each with its next action.
+- `switchboard status`, which is read-only. It reports the preflight result, attempts from the attempt log with each owner's current state, attempts whose workers may still be running, tasks blocked by an earlier attempt, leases no attempt accounts for, and tasks in flight with no attempt, worker or lease, each with its next action. An attempt whose task cannot be read asks for attention rather than being treated as settled.
 - `switchboard resolve --lease <lease-id> --worker-stopped`, which records the operator's confirmation that a worker with no observed exit has stopped, so its attempt stops blocking dispatch. Without `--worker-stopped` it only reports what each owner holds. The confirmation is recorded separately from an observed exit and never treated as one. With `--lease-returned` instead, it records the operator's confirmation that any lease the attempt holds has been returned, for a lease in a workspace pool Switchboard no longer lists (see [Workspace pool changes](#workspace-pool-changes)) or an unfinished attempt whose dispatcher has stopped (see [Unfinished attempts](#unfinished-attempts)). When an attempt is logged as launched but has no runtime records yet, `--worker-stopped` first claims the worker's runtime directory, so a dispatcher that has not yet started the worker can no longer start it; if the directory already exists, the dispatcher is starting the worker and the confirmation is refused. It changes neither the task nor the lease. Lease-return confirmation accepts exactly one of `--lease <lease-id>` or `--task <task-id>`. With `--task`, optional `--attempt <n>` selects a specific attempt, defaulting to that task's latest attempt. Unknown tasks or attempts, finished attempts whose lease is in the current pool, unfinished attempts whose lease is still listed or whose worker may be running, and confirmations already recorded are refused. `--task` is only accepted with `--lease-returned`; worker-stop confirmation still requires `--lease`. Invalid selector combinations are usage errors (exit 2).
 - `switchboard watch`, `switchboard stop` and `switchboard steer`, described in [Watching and controlling a running attempt](#watching-and-controlling-a-running-attempt).
 
@@ -49,7 +49,7 @@ Every command supports `--json`. `watch --json` prints activity entries with the
 - The owner state the decision was based on, including any state that was unknown.
 - `nextAction`: a stable code and a plain description of what should happen next and who must do it.
 
-Human-readable output is generated from the same result. Consumers must never need to parse prose. The reason and next-action codes are documented in `src/dispatch/result.ts`.
+Human-readable output is generated from the same result. Consumers must never need to parse prose. A failure after an attempt has been created, such as an attempt-log write failing, still produces a `stopped` result naming the stage, with the lease reported as preserved or unknown, rather than an error without a result. The reason and next-action codes are documented in `src/dispatch/result.ts`.
 
 ## Watching and controlling a running attempt
 
@@ -71,7 +71,7 @@ Workers can run for minutes or hours, so the operator must be able to see what a
 
 **Long runs.** `dispatch --once` stays in the foreground until the worker finishes. Run it under a terminal multiplexer such as tmux, or with `nohup`: closing its terminal ends the dispatcher, which counts as a crash. A dispatcher that runs in the background is Phase 3 work.
 
-**Taking over by hand.** After a worker has stopped, `status` prints the command that opens its Pi session interactively in the workspace, so the operator can continue the work by hand. This is never offered while the worker may still be running.
+**Taking over by hand.** After a worker has stopped, `status` prints the command that opens its Pi session interactively in the workspace, with its paths quoted for the operator's shell, so the operator can continue the work by hand. This is never offered while the worker may still be running, or once the attempt's own lease no longer holds that workspace, because a returned workspace may belong to another task.
 
 ## Required integration contracts
 
@@ -131,7 +131,7 @@ Evidence is worker-reported unless Switchboard actually performs an independent 
 
 ## Dispatch sequence
 
-1. Validate configuration and adapter availability. Inspect in-flight tasks, leases, runtime sessions and the attempt log in the configured context. Refuse dispatch if an attempt's worker may still be running, or if owner state cannot be inspected. Attempts whose workers have stopped do not block dispatch, even while their tasks are held or their leases are preserved; they block only their own task (step 2).
+1. Validate configuration and adapter availability, including that the Pi entrypoint is a readable file. Inspect in-flight tasks, leases, runtime sessions and the attempt log in the configured context. Refuse dispatch if an attempt's worker may still be running, or if owner state cannot be inspected. Attempts whose workers have stopped do not block dispatch, even while their tasks are held or their leases are preserved; they block only their own task (step 2).
 2. If a request ID was given and the attempt log already holds it, return that attempt's current result and stop. Otherwise select one ready task. Confirm it belongs to the configured repository and has no existing lease, worker or unresolved attempt. A task with a preserved lease from an earlier attempt is not dispatched again until the operator resolves it. Create the attempt's first entry exclusively; if another invocation created it first, refuse.
 3. Acquire a Treehouse lease with the exact task ID as `lease_holder`. Validate the returned lease identity, workspace path, output branch and actual starting commit against the delivery contract. Append the lease identity to the attempt record and emit the identifiers in the run report.
 4. Re-read the task and readiness before starting it. Use a conditional transition if supported; otherwise the supported operating mode requires exclusive status mutation during this sequence. If readiness changed, do not launch.
@@ -173,7 +173,7 @@ Three rules hold at every boundary:
 Two boundaries need more than the general rule:
 
 - **Launch outcome unknown.** Treat the worker as possibly running. Record no task outcome, and refuse further dispatch until the worker's exit is observed or the operator confirms it stopped with `switchboard resolve`.
-- **Final task update unknown.** Read the task back. If the outcome applied, record it as normal. If not, leave the task as it is and report the exact remaining update.
+- **Final task update unknown.** Read the task back. If the outcome applied, including the note or body carrying the attempt's evidence, record it as normal; a state change without that evidence does not count. If not, leave the task as it is and report the exact remaining update.
 
 A dispatcher or host crash runs no compensation. The next invocation finds the attempt in the attempt log and applies the dispatch sequence's first two steps.
 

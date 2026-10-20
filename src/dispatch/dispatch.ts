@@ -91,7 +91,10 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
   }
   for (const attempt of attempts) {
     const kinds = attempt.entries.map(e => e.kind);
-    if (kinds.includes("launched") && !kinds.includes("worker_finished") && !resolvedBy(attempt, "worker_stopped") &&
+    // The runtime owns liveness: an observed or confirmed exit settles it even if the log never recorded the finish.
+    const leaseId = summarise(attempt).leaseId;
+    const settled = runtime.some(r => r.binding.input.identity.leaseId === leaseId && r.child.status !== "unknown");
+    if (kinds.includes("launched") && !kinds.includes("worker_finished") && !resolvedBy(attempt, "worker_stopped") && !settled &&
       !possiblyRunning.some(p => p.taskId === attempt.taskId && p.attempt === attempt.attempt)) {
       possiblyRunning.push(summarise(attempt));
     }
@@ -205,86 +208,99 @@ export async function dispatchOnce(
     return result({ ok: false, reason: "stopped", stage, lease: summary.leaseId ? "preserved" : "none", observed, attempt: summary, detail, nextAction });
   };
 
-  // The operator may have resolved this attempt while it was waiting; never acquire for a resolved attempt.
-  if (resolvedBy(await deps.attempts.read(ref), "lease_returned")) {
-    return halt("acquire", "inspect_attempt", "The operator resolved this attempt before its lease was acquired");
-  }
-
-  // Step 3: acquire a lease for the exact task ID on a unique output branch.
-  const outputBranch = `${deps.delivery.branchPrefix}${taskId}/attempt-${ref.attempt}`;
-  let allocation: Allocation;
+  // A failure after the attempt exists, such as an attempt-log write failing, still produces a structured result that
+  // names the stage and preserves whatever exists.
+  let stage: Stage = "acquire";
   try {
-    allocation = await deps.workspaces.acquire({ holder: taskId, baseRef: deps.delivery.baseRef, branch: outputBranch });
-  } catch (error) {
-    if (error instanceof WorkspaceError && error.reason === "rejected") return halt("acquire", "fix_configuration", `The workspace provider refused the lease: ${message(error)}`);
-    // Inspect by holder and branch instead of acquiring again, and report whatever lease exists.
-    const found = await deps.workspaces.leases().then(all => all.filter(l => l.holder === taskId && l.branch === outputBranch), () => undefined);
-    const lease = found === undefined ? "unknown" : found.length > 0 ? "preserved" : "none";
-    if (found?.[0]) Object.assign(summary, { leaseId: found[0].leaseId, workspace: found[0].path, outputBranch });
-    const stopped = await halt("acquire", "inspect_attempt", `The lease outcome is unknown or unexpected: ${message(error)}`, "outcome_unknown");
-    return { ...stopped, lease, attempt: summary };
-  }
-  Object.assign(summary, { leaseId: allocation.leaseId, workspace: allocation.path, outputBranch, startingCommit: allocation.startingCommit });
-  await deps.attempts.append(ref, "leased", {
-    leaseId: allocation.leaseId, workspace: allocation.path, baseRef: deps.delivery.baseRef, outputBranch, startingCommit: allocation.startingCommit,
-    pool: allocation.pool,
-  });
-  deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
+    // The operator may have resolved this attempt while it was waiting; never acquire for a resolved attempt.
+    if (resolvedBy(await deps.attempts.read(ref), "lease_returned")) {
+      return halt("acquire", "inspect_attempt", "The operator resolved this attempt before its lease was acquired");
+    }
 
-  // Steps 4–5: re-read readiness, then mark in flight and confirm it before launching.
-  let task: Task | undefined;
-  try {
-    if (!(await deps.tasks.ready()).includes(taskId)) return halt("start", "return_unused_lease", "The task stopped being ready after the lease was acquired");
-    task = await deps.tasks.start(taskId);
-  } catch (error) {
-    if (error instanceof TaskStoreError && error.reason === "rejected") return halt("start", "return_unused_lease", `The task store refused to mark the task in flight: ${message(error)}`);
-    // Read back: the change may have applied even though it was not confirmed.
-    task = await deps.tasks.read(taskId).catch(() => undefined);
-    if (task?.state !== "in_flight") return halt("start", "inspect_attempt", `The task store did not confirm the task is in flight: ${message(error)}`);
-  }
-  await deps.attempts.append(ref, "task_started", {});
+    stage = "acquire";
+    // Step 3: acquire a lease for the exact task ID on a unique output branch.
+    const outputBranch = `${deps.delivery.branchPrefix}${taskId}/attempt-${ref.attempt}`;
+    let allocation: Allocation;
+    try {
+      allocation = await deps.workspaces.acquire({ holder: taskId, baseRef: deps.delivery.baseRef, branch: outputBranch });
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.reason === "rejected") return halt("acquire", "fix_configuration", `The workspace provider refused the lease: ${message(error)}`);
+      // Inspect by holder and branch instead of acquiring again, and report whatever lease exists.
+      const found = await deps.workspaces.leases().then(all => all.filter(l => l.holder === taskId && l.branch === outputBranch), () => undefined);
+      const lease = found === undefined ? "unknown" : found.length > 0 ? "preserved" : "none";
+      if (found?.[0]) Object.assign(summary, { leaseId: found[0].leaseId, workspace: found[0].path, outputBranch });
+      const stopped = await halt("acquire", "inspect_attempt", `The lease outcome is unknown or unexpected: ${message(error)}`, "outcome_unknown");
+      return { ...stopped, lease, attempt: summary };
+    }
+    Object.assign(summary, { leaseId: allocation.leaseId, workspace: allocation.path, outputBranch, startingCommit: allocation.startingCommit });
+    await deps.attempts.append(ref, "leased", {
+      leaseId: allocation.leaseId, workspace: allocation.path, baseRef: deps.delivery.baseRef, outputBranch, startingCommit: allocation.startingCommit,
+      pool: allocation.pool,
+    });
+    deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
 
-  // Steps 6–7: launch exactly one worker and observe it until its direct child exits.
-  const delivery: DeliveryContract = {
-    baseRef: deps.delivery.baseRef, startingCommit: allocation.startingCommit, outputBranch, kind: contract.kind,
-    acceptance: contract.acceptance, requiredEvidence: contract.requiredEvidence, requiredDeliverables: contract.requiredDeliverables,
-  };
-  const sessionId = randomUUID();
-  summary.sessionId = sessionId;
-  await deps.attempts.append(ref, "launched", { sessionId });
-  deps.progress?.(`Session ${sessionId}`);
-  const input: WorkerInput = {
-    identity: { contextId: deps.contextId, taskId, leaseId: allocation.leaseId, sessionId },
-    workspace: allocation.path, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], delivery,
-  };
-  let report: PiRunReport;
-  // Each stop request or operator message the worker forwards is recorded with its sender (ADR-0005).
-  let requests = Promise.resolve();
-  const onRequest: WorkerHooks["onRequest"] = (request, outcome) => {
-    requests = requests.then(() => deps.attempts.append(ref, "operator_request", {
-      id: request.id, kind: request.kind, sender: request.sender, outcome: outcome.outcome,
-      ...(request.message ? { message: request.message.slice(0, 4000) } : {}), ...(outcome.error ? { error: outcome.error.slice(0, 500) } : {}),
-    })).catch(() => {});
-  };
-  try { report = await deps.launch(input, options.signal, onRequest); }
-  catch (error) {
-    // The runtime refused before starting a worker; nothing was launched.
-    await deps.attempts.append(ref, "worker_finished", { status: "not_started", runtimeDirectory: "-", reason: message(error).slice(0, 500) });
-    return finalise(deps, ref, summary, observed, task, delivery, undefined, `Worker not started: ${message(error)}`);
+    stage = "start";
+    // Steps 4–5: re-read readiness, then mark in flight and confirm it before launching.
+    let task: Task | undefined;
+    try {
+      if (!(await deps.tasks.ready()).includes(taskId)) return halt("start", "return_unused_lease", "The task stopped being ready after the lease was acquired");
+      task = await deps.tasks.start(taskId);
+    } catch (error) {
+      if (error instanceof TaskStoreError && error.reason === "rejected") return halt("start", "return_unused_lease", `The task store refused to mark the task in flight: ${message(error)}`);
+      // Read back: the change may have applied even though it was not confirmed.
+      task = await deps.tasks.read(taskId).catch(() => undefined);
+      if (task?.state !== "in_flight") return halt("start", "inspect_attempt", `The task store did not confirm the task is in flight: ${message(error)}`);
+    }
+    await deps.attempts.append(ref, "task_started", {});
+
+    stage = "launch";
+    // Steps 6–7: launch exactly one worker and observe it until its direct child exits.
+    const delivery: DeliveryContract = {
+      baseRef: deps.delivery.baseRef, startingCommit: allocation.startingCommit, outputBranch, kind: contract.kind,
+      acceptance: contract.acceptance, requiredEvidence: contract.requiredEvidence, requiredDeliverables: contract.requiredDeliverables,
+    };
+    const sessionId = randomUUID();
+    summary.sessionId = sessionId;
+    await deps.attempts.append(ref, "launched", { sessionId });
+    deps.progress?.(`Session ${sessionId}`);
+    const input: WorkerInput = {
+      identity: { contextId: deps.contextId, taskId, leaseId: allocation.leaseId, sessionId },
+      workspace: allocation.path, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], delivery,
+    };
+    let report: PiRunReport;
+    // Each stop request or operator message the worker forwards is recorded with its sender (ADR-0005).
+    let requests = Promise.resolve();
+    const onRequest: WorkerHooks["onRequest"] = (request, outcome) => {
+      requests = requests.then(() => deps.attempts.append(ref, "operator_request", {
+        id: request.id, kind: request.kind, sender: request.sender, outcome: outcome.outcome,
+        ...(request.message ? { message: request.message.slice(0, 4000) } : {}), ...(outcome.error ? { error: outcome.error.slice(0, 500) } : {}),
+      })).catch(() => {});
+    };
+    try { report = await deps.launch(input, options.signal, onRequest); }
+    catch (error) {
+      // The runtime refused before starting a worker; nothing was launched.
+      await deps.attempts.append(ref, "worker_finished", { status: "not_started", runtimeDirectory: "-", reason: message(error).slice(0, 500) });
+      return finalise(deps, ref, summary, observed, task, delivery, undefined, `Worker not started: ${message(error)}`);
+    }
+    await requests;
+    const resultCommit = codeCommit(report.result, outputBranch);
+    if (resultCommit) summary.resultCommit = resultCommit;
+    await deps.attempts.append(ref, "worker_finished", {
+      status: report.status, runtimeDirectory: report.directory,
+      ...(report.reason ? { reason: report.reason } : {}), ...(report.detail ? { detail: report.detail.slice(0, 500) } : {}),
+      ...(report.result ? { outcome: report.result.outcome } : {}),
+      ...(resultCommit ? { resultCommit } : {}),
+    });
+    if (report.status === "unresolved") {
+      return result({ ok: false, reason: "stopped", stage: "launch", lease: "preserved", observed, attempt: summary, worker: { status: report.status }, detail: "The worker's exit was not observed, so it may still be running", nextAction: "stop_worker" });
+    }
+    stage = "finalise";
+    return finalise(deps, ref, summary, observed, task, delivery, report);
+  } catch (error) {
+    const detail = `The attempt stopped at ${stage} because a step failed: ${message(error)}`;
+    await deps.attempts.append(ref, "halted", { stage, reason: "error", detail: detail.slice(0, 4000) }).catch(() => {});
+    return result({ ok: false, reason: "stopped", stage, lease: summary.leaseId ? "preserved" : "unknown", observed, attempt: summary, detail, nextAction: "inspect_attempt" });
   }
-  await requests;
-  const resultCommit = codeCommit(report.result, outputBranch);
-  if (resultCommit) summary.resultCommit = resultCommit;
-  await deps.attempts.append(ref, "worker_finished", {
-    status: report.status, runtimeDirectory: report.directory,
-    ...(report.reason ? { reason: report.reason } : {}), ...(report.detail ? { detail: report.detail.slice(0, 500) } : {}),
-    ...(report.result ? { outcome: report.result.outcome } : {}),
-    ...(resultCommit ? { resultCommit } : {}),
-  });
-  if (report.status === "unresolved") {
-    return result({ ok: false, reason: "stopped", stage: "launch", lease: "preserved", observed, attempt: summary, worker: { status: report.status }, detail: "The worker's exit was not observed, so it may still be running", nextAction: "stop_worker" });
-  }
-  return finalise(deps, ref, summary, observed, task, delivery, report);
 }
 
 /** Step 8: decide the task outcome, check retention, record it and read it back. The lease is always preserved. */
@@ -311,15 +327,19 @@ async function finalise(
     evidence: report?.result?.validationEvidence ?? [], workReferences: report?.result?.workReferences ?? [],
   };
   const holdReason = `Switchboard attempt ${ref.attempt} ${outcome.label}`;
+  const note = JSON.stringify(record);
+  const holdBody = `${task.body}\n\n## Switchboard attempt ${ref.attempt}\n\n${JSON.stringify(record, null, 2)}`;
   let recorded: Task | undefined;
   try {
     recorded = outcome.done
-      ? await deps.tasks.recordDone(task.id, JSON.stringify(record))
-      : await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## Switchboard attempt ${ref.attempt}\n\n${JSON.stringify(record, null, 2)}` });
+      ? await deps.tasks.recordDone(task.id, note)
+      : await deps.tasks.recordHold(task.id, { reason: holdReason, body: holdBody });
   } catch (error) {
-    // Read back before deciding: the update may have applied even though it was not confirmed.
+    // Read back before deciding: the update may have applied even though it was not confirmed. It counts only if the
+    // attempt's evidence was recorded too, as the adapter's own readback requires.
     const now = await deps.tasks.read(task.id).catch(() => undefined);
-    const applied = outcome.done ? now?.state === "done" : now?.held === true && now.holdReason === holdReason && now.state === "queued";
+    const applied = outcome.done ? now?.state === "done" && now.body.includes(note)
+      : now?.held === true && now.holdReason === holdReason && now.state === "queued" && now.body === holdBody;
     if (!applied) {
       await deps.attempts.append(ref, "halted", { stage: "finalise", reason: "task_update_failed", detail: message(error).slice(0, 4000) }).catch(() => {});
       return result({ ok: false, reason: "stopped", stage: "finalise", lease: "preserved", observed, attempt: summary, worker, retention, detail: `The final task update could not be confirmed: ${message(error)}`, nextAction: "complete_task_update" });
@@ -355,15 +375,28 @@ async function requestTaken(deps: Dependencies, requestId: string, observed: Rec
   return refusal("select", "inspect_attempt", `Request ${requestId} is reserved by another invocation that has not created its attempt; it may still be running, or it stopped before creating one`, observed);
 }
 
+/** Reports an existing attempt from each owner's current state, as `status` does, not from the log alone. */
 async function existingRequest(deps: Dependencies, attempt: AttemptRecord): Promise<DispatchResult> {
   const summary = summarise(attempt);
   const task = await deps.tasks.read(attempt.taskId).catch(() => undefined);
-  const leased = summary.leaseId !== undefined;
+  const state = await inspect(deps);
+  let lease: DispatchResult["lease"] = "unknown";
+  let running = false;
+  if (!isFailure(state)) {
+    running = state.possiblyRunning.some(p => p.taskId === attempt.taskId && p.attempt === attempt.attempt);
+    const outputBranch = summary.outputBranch ?? `${deps.delivery.branchPrefix}${attempt.taskId}/attempt-${attempt.attempt}`;
+    const listed = state.leases.some(l => l.leaseId === summary.leaseId || (l.holder === attempt.taskId && l.branch === outputBranch));
+    const elsewhere = state.leasesInOtherPools.some(a => a.taskId === attempt.taskId && a.attempt === attempt.attempt);
+    lease = listed ? "preserved" : elsewhere ? "unknown" : "none";
+  }
   return result({
-    ok: false, reason: "existing_request", attempt: summary, lease: leased ? "preserved" : "none",
-    observed: { lastEntry: attempt.entries.at(-1)?.kind, ...(task ? {} : { task: "unreadable" }) },
+    ok: false, reason: "existing_request", attempt: summary, lease,
+    observed: {
+      lastEntry: attempt.entries.at(-1)?.kind, ...(task ? {} : { task: "unreadable" }),
+      ...(isFailure(state) ? { owners: "unreadable" } : { possiblyRunning: running }),
+    },
     ...(task ? { task: { id: task.id, state: task.state, held: task.held, holdReason: task.holdReason } } : {}),
-    nextAction: "inspect_attempt",
+    nextAction: running ? "stop_worker" : "inspect_attempt",
   });
 }
 

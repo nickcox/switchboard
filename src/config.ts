@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
@@ -77,6 +78,11 @@ function inherited(names: string[]): Record<string, string> {
 
 /** Opens and validates every adapter. Fails before any dispatch if a store, repository or executable is unusable. */
 export async function createDependencies(config: Config, progress?: (message: string) => void): Promise<Dependencies> {
+  // The worker is started later with this Node.js binary, so a missing Pi entrypoint would otherwise be found only
+  // after a lease was acquired and the task marked in flight.
+  const entrypoint = await stat(config.worker.piEntrypoint).catch(() => undefined);
+  if (!entrypoint?.isFile()) throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`);
+  await access(config.worker.piEntrypoint, constants.R_OK).catch(() => { throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`); });
   await requireRetainedStorage(config.runtimeRoot, [config.workspaces.poolRoot]);
   const git = onPath("git");
   // Git and Treehouse use the operator's own environment, including their Git identity and credentials.
