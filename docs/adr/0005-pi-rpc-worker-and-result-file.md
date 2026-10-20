@@ -41,7 +41,14 @@ The second comparison, after the first real Pi runs in October 2026, used the Pi
 - Its storage is owned by one process with no locking across processes, so the attempt log stays separate ([ADR-0006](0006-switchboard-attempt-log.md)).
 - Since the first comparison this adapter gained the attempt log and, by this revision, forwarded control requests. Neither adds a queue, replay or automatic restart: a request is forwarded once and never replayed.
 
-The next comparison checkpoint is subprocess ownership: assess Pi Durable's execution-environment cleanup alongside the native process-ownership mechanism, rather than assuming either confirms all descendants have terminated.
+The third comparison, on 20 October 2026, was made before implementing the [Phase 2 PRD](../phases/02-reconciliation-and-recovery/PRD.md), as that PRD requires:
+
+- Phase 2 classifies each attempt's state by reading the attempt log and each owner's current state, and adds operator commands to finish, discard and prune attempts. None of it runs in the background, retries, replays or starts work without an operator command.
+- `finish` can be run again after a failure, but it does so by reading each owner's state and doing the steps not yet done, as the Phase 1 hold update already does. That is not a replay journal: nothing is re-executed from a record of past steps.
+- The new attempt-log entries record facts about each attempt, such as an integration or a returned lease. They are not a task queue or checkpointed execution state, which is what Pi Durable would supply.
+- Starting a new attempt automatically after a temporary error, the one candidate that would have started work without an operator command, is deferred to the Phase 4 supervisor.
+
+So Phase 2 gives no reason to adopt Pi Durable. The next checkpoints are the Phase 3 background dispatcher, a long-running process that owns workers, and the Phase 4 supervisor, which ADR-0003 already assigns to Pi Durable. Subprocess ownership, the checkpoint named in the second comparison, is deferred together with automatic lease return.
 
 ## Alternatives considered
 
