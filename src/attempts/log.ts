@@ -84,6 +84,7 @@ export class AttemptConflict extends Error {
 }
 
 const entryName = /^(\d{4,})(?:-([a-z_]+))?\.json$/;
+const readBatch = 32;
 
 function sequenceOf(name: string): number {
   const match = entryName.exec(name);
@@ -234,11 +235,19 @@ export class AttemptLog {
     // Names starting with "." are temporary files from an entry still being written.
     const names = (await readdir(directory)).filter(name => !name.startsWith("."));
     names.sort((a, b) => sequenceOf(a) - sequenceOf(b));
-    const entries: AttemptEntry[] = [];
-    for (const [index, name] of names.entries()) {
+    const matches = names.map((name, index) => {
       const match = entryName.exec(name);
       if (!match || sequenceOf(name) !== index) throw new Error("Uninspectable attempt entry sequence");
-      const entry = envelopeSchema.parse(await readJsonFile(join(directory, name)));
+      return match;
+    });
+    // Read several files at a time, because a long attempt can have thousands of entries; validate them in order below.
+    const values: unknown[] = [];
+    for (let start = 0; start < names.length; start += readBatch) {
+      values.push(...await Promise.all(names.slice(start, start + readBatch).map(name => readJsonFile(join(directory, name)))));
+    }
+    const entries: AttemptEntry[] = [];
+    for (const [index, match] of matches.entries()) {
+      const entry = envelopeSchema.parse(values[index]);
       const data = entrySchemas[entry.kind].parse(entry.data);
       if ((match[2] !== undefined && entry.kind !== match[2]) || entry.sequence !== index || entry.contextId !== ref.contextId ||
         entry.taskId !== ref.taskId || entry.attempt !== ref.attempt) {

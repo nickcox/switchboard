@@ -124,3 +124,15 @@ test("an operator stop is recorded once and never overrides an observed exit", a
   await f.records.recordChildExit(reserved, { started: true, code: 0, signal: null });
   assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.child.status, "exited");
 });
+
+test("a JSON read accepts a file at the byte limit and refuses one over it", async () => {
+  const f = fixture();
+  const path = join(f.dir, "limit.json");
+  const value = { text: "x".repeat(5000) };
+  await writeFile(path, JSON.stringify(value));
+  const size = JSON.stringify(value).length;
+  assert.deepEqual(await readJsonFile(path, size), value);
+  await assert.rejects(readJsonFile(path, size - 1), /exceeds byte limit/);
+  await writeFile(path, "");
+  await assert.rejects(readJsonFile(path), SyntaxError);
+});

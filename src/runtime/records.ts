@@ -68,9 +68,16 @@ export async function readJsonFile(path: string, maxBytes = maxRecordBytes): Pro
     if (!actual.isFile() || actual.ino !== before.ino || actual.dev !== before.dev) {
       throw new Error("JSON file identity changed during open");
     }
-    const bytes = Buffer.alloc(maxBytes + 1);
+    // Size the buffer from the file, not the limit, and grow it if the file is longer than its size said.
+    let bytes = Buffer.allocUnsafe(Math.min(actual.size, maxBytes) + 1);
     let length = 0;
-    while (length < bytes.length) {
+    while (true) {
+      if (length === bytes.length) {
+        if (length > maxBytes) break;
+        const grown = Buffer.allocUnsafe(Math.min(bytes.length * 2, maxBytes + 1));
+        bytes.copy(grown, 0, 0, length);
+        bytes = grown;
+      }
       const read = await handle.read(bytes, length, bytes.length - length, length);
       if (read.bytesRead === 0) break;
       length += read.bytesRead;

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { writeFile } from "node:fs/promises";
 import { mkdtempSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AttemptConflict, AttemptLog } from "../../src/attempts/log.ts";
@@ -70,17 +71,19 @@ test("legacy entries can be read and extended without accepting duplicate sequen
   await assert.rejects(log.read(ref), /sequence/);
 });
 
-test("sequence 10000 remains readable and sorts after 9999", async () => {
+// Creating ten thousand files is slow on Windows runners, so this test has a longer limit than the default.
+test("sequence 10000 remains readable and sorts after 9999", { timeout: 120_000 }, async () => {
   const root = freshRoot();
   const log = new AttemptLog(root, "c");
   const ref = await log.create("task-1", {}, 0);
   const directory = join(root, "attempts", key("c"), key("task-1"), "1");
   // Seed the preceding observations without thousands of append readbacks.
-  for (let sequence = 1; sequence < 10000; sequence += 1) {
-    writeFileSync(join(directory, `${String(sequence).padStart(4, "0")}-halted.json`), JSON.stringify({
-      version: 1, ...ref, sequence, kind: "halted", recordedAt: new Date().toISOString(),
-      data: { stage: "test", reason: "fixture" },
-    }));
+  for (let first = 1; first < 10000; first += 100) {
+    await Promise.all(Array.from({ length: Math.min(100, 10000 - first) }, (_, offset) => first + offset).map(sequence =>
+      writeFile(join(directory, `${String(sequence).padStart(4, "0")}-halted.json`), JSON.stringify({
+        version: 1, ...ref, sequence, kind: "halted", recordedAt: new Date().toISOString(),
+        data: { stage: "test", reason: "fixture" },
+      }))));
   }
   await log.append(ref, "operator_resolved", { action: "worker_stopped" });
   const record = await log.read(ref);
