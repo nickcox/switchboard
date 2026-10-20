@@ -1,6 +1,6 @@
 # Phase 2 verification
 
-Status: Phase 2 is complete on macOS, as of 21 October 2026. Linux and Windows are covered by CI once these changes are pushed; until then they have not run there.
+Status: Phase 2 is **not yet complete**. This record was first written on 21 October 2026. The independent [Phase 2 review](review-2026-10-21.md) on the same day found 18 defects, including one critical and five high-severity ones, and showed that some evidence below is overstated: removing the conditional arguments from the Treehouse return leaves every test passing (finding 15), and two accept-output tests refuse for a different reason than their names say (finding 16). Phase 2 is complete once the critical and high-severity findings are fixed and this record is corrected.
 
 This record maps each [PRD](PRD.md) acceptance criterion to its evidence. Unless stated otherwise the evidence is a test in `tests/`, and each safety check was also disabled in turn to confirm that a test fails without it.
 
