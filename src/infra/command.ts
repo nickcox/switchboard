@@ -6,10 +6,12 @@ export type CommandResult = {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** True when either stream exceeded the output limit and only its end was kept. */
+  truncated: boolean;
 };
 
-/** Each stream keeps at most this many characters, from its end. */
-const outputLimit = 1024 * 1024;
+/** Each stream keeps at most this many characters, from its end: far more than any expected output, including task bodies. */
+const outputLimit = 16 * 1024 * 1024;
 /** How long to keep reading output after the command exits, for output still in its pipes. */
 const drainMs = 500;
 
@@ -28,7 +30,12 @@ export async function runCommand(
   });
   let stdout = "";
   let stderr = "";
-  const keep = (text: string) => (text.length > outputLimit ? text.slice(-outputLimit) : text);
+  let truncated = false;
+  const keep = (text: string) => {
+    if (text.length <= outputLimit) return text;
+    truncated = true;
+    return text.slice(-outputLimit);
+  };
   child.stdout.setEncoding("utf8").on("data", (text: string) => { stdout = keep(stdout + text); });
   child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr = keep(stderr + text); });
   let timedOut = false;
@@ -45,7 +52,7 @@ export async function runCommand(
       });
       child.once("close", (code, signal) => resolve(signal ? null : code));
     });
-    return { exitCode, stdout, stderr, timedOut };
+    return { exitCode, stdout, stderr, timedOut, truncated };
   } finally {
     clearTimeout(timer);
     clearTimeout(drain);
@@ -54,7 +61,7 @@ export async function runCommand(
 
 export function describeCommand(result: CommandResult): string {
   return JSON.stringify({
-    exitCode: result.exitCode, timedOut: result.timedOut,
+    exitCode: result.exitCode, timedOut: result.timedOut, ...(result.truncated ? { truncated: true } : {}),
     stdout: result.stdout.slice(-2000), stderr: result.stderr.slice(-2000),
   });
 }

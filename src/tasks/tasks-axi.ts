@@ -1,6 +1,7 @@
 import { decode } from "@toon-format/toon";
-import { lstat, realpath } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { describeCommand as describe, runCommand, type CommandResult as Run } from "../infra/command.ts";
 import { TaskStoreError, type Hold, type Task, type TaskStore } from "./store.ts";
@@ -112,7 +113,8 @@ export class TasksAxiStore implements TaskStore {
       task = await this.expect(id, t => t.held && t.holdReason === reason, "held with the given reason");
     }
     if (task.body !== hold.body) {
-      await this.mutate(id, "update", ["update", id, "--body", hold.body]);
+      // Through a file: a body can be longer than an operating system allows in one command-line argument.
+      await this.withFile(hold.body, path => this.mutate(id, "update", ["update", id, "--body-file", path]));
       task = await this.expect(id, t => t.body === hold.body, "holding the given body");
     }
     if (task.state !== "queued") {
@@ -138,12 +140,24 @@ export class TasksAxiStore implements TaskStore {
     return rows.map(row => row.id);
   }
 
+  /** Runs `use` with a private temporary file holding `text`, outside every workspace, and removes it afterwards. */
+  private async withFile<T>(text: string, use: (path: string) => Promise<T>): Promise<T> {
+    const directory = await mkdtemp(join(tmpdir(), "switchboard-tasks-"));
+    try {
+      const path = join(directory, "body.md");
+      await writeFile(path, text, { mode: 0o600 });
+      return await use(path);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+
   private async mutate(id: string, action: string, args: string[]): Promise<void> {
     const run = await this.run([...args, "--json"]);
     if (run.timedOut || run.exitCode === null) {
       throw new TaskStoreError("outcome_unknown", `tasks-axi ${action} for ${id} did not report a result`, describe(run));
     }
     if (run.exitCode !== 0) throw new TaskStoreError("rejected", `tasks-axi refused ${action} for ${id}`, describe(run));
+    // Output cut short cannot confirm what happened; the caller reads the task back instead.
+    if (run.truncated) throw new TaskStoreError("outcome_unknown", `tasks-axi ${action} output for ${id} was too long to read`, describe(run));
     let output: unknown;
     try { output = JSON.parse(run.stdout); }
     catch { throw new TaskStoreError("outcome_unknown", `Unreadable ${action} result for ${id}`, describe(run)); }
@@ -168,6 +182,7 @@ export class TasksAxiStore implements TaskStore {
   }
 
   private decodeToon(run: Run, label: string): unknown {
+    if (run.truncated) throw new TaskStoreError("unreadable", `${label} output was too long to read`, describe(run));
     try { return decode(run.stdout); }
     catch { throw new TaskStoreError("unreadable", `Unreadable ${label} output`, describe(run)); }
   }

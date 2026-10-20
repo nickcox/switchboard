@@ -339,7 +339,9 @@ async function finalise(
     evidence: report?.result?.validationEvidence ?? [], workReferences: report?.result?.workReferences ?? [],
   };
   const holdReason = `Switchboard attempt ${ref.attempt} ${outcome.label}`;
-  const note = JSON.stringify(record);
+  // The done note is passed as one command-line argument, which tasks-axi offers no file option for, so it is kept
+  // short enough for every supported platform. The worker's full result stays in its runtime records.
+  const note = doneNote(record, report);
   const holdBody = `${task.body}\n\n## Switchboard attempt ${ref.attempt}\n\n${JSON.stringify(record, null, 2)}`;
   let recorded: Task | undefined;
   try {
@@ -365,6 +367,18 @@ async function finalise(
     ...(outcome.done ? {} : { detail: holdReason }),
     nextAction: outcome.done ? "return_lease" : outcome.review ? "review_branch" : "inspect_attempt",
   });
+}
+
+const doneNoteLimit = 8000;
+
+function doneNote(record: { attempt: AttemptSummary; worker: NonNullable<DispatchResult["worker"]>; retention: RetentionResult; workReferences: WorkerResult["workReferences"] }, report: PiRunReport | undefined): string {
+  const full = JSON.stringify({
+    attempt: record.attempt, worker: { ...record.worker, ...(record.worker.summary ? { summary: record.worker.summary.slice(0, 1000) } : {}) },
+    retained: record.retention.retained, workReferences: record.workReferences, ...(report ? { result: report.binding.resultPath } : {}),
+  });
+  if (full.length <= doneNoteLimit) return full;
+  // Still too long, for example with many references: keep the identity, outcome and where to find the rest.
+  return JSON.stringify({ attempt: record.attempt, worker: { status: record.worker.status, outcome: record.worker.outcome }, retained: record.retention.retained, ...(report ? { result: report.binding.resultPath } : {}) });
 }
 
 /** The outcome table in the Phase 1 PRD. Only a valid, retained completion with an independent contract is done. */

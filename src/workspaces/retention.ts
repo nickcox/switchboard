@@ -48,7 +48,7 @@ export async function checkRetention(git: string, environment: Record<string, st
   const workspaceFinding = (text: string) => (request.scratchWorkspace ? notes.push(`Scratch workspace: ${text}`) : findings.push(text));
   // A command that cannot even start (for example a missing workspace) is a check that could not run.
   const run = (cwd: string, args: string[]) => runCommand(git, args, { cwd, env: environment, timeoutMs: gitTimeoutMs })
-    .catch((error: unknown) => ({ exitCode: null, stdout: "", stderr: String(error), timedOut: false }));
+    .catch((error: unknown) => ({ exitCode: null, stdout: "", stderr: String(error), timedOut: false, truncated: false }));
   const unable = (what: string, result?: Awaited<ReturnType<typeof run>>) =>
     findings.push(`Could not check ${what}${result ? `: ${describeCommand(result)}` : ""}`);
 

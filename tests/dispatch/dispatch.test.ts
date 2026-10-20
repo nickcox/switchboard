@@ -119,3 +119,22 @@ test("a refused lease leaves the task unchanged and records why the attempt stop
   assert.equal(unchanged?.held, false);
   assert.deepEqual((await deps.attempts.forTask("refused-a1"))[0]!.entries.map(e => e.kind), ["requested", "halted"]);
 });
+
+for (const done of [true, false]) {
+  test(`a ${done ? "done" : "hold"} update with a worker record longer than any command-line limit succeeds and reads back`, async () => {
+    const f = await fixture({ tasks: [task("long-a1")], scenario: "commit-result", acceptance: done ? "independent_deliverable" : "review_or_integration" });
+    const launch = f.deps.launch;
+    f.deps.launch = async (...args) => {
+      const report = await launch(...args);
+      assert.ok(report.result);
+      // Longer than Windows' whole command line, Linux's per-argument limit and macOS's total argument space.
+      report.result.summary = "s".repeat(1_500_000);
+      return report;
+    };
+    const outcome = await dispatchOnce(f.deps);
+    assert.equal(outcome.reason, done ? "done" : "held", String(outcome.detail).slice(0, 1500));
+    const recorded = await f.tasks.read("long-a1");
+    assert.equal(recorded?.state, done ? "done" : "queued");
+    if (!done) assert.ok(recorded!.body.includes("s".repeat(1000)));
+  });
+}

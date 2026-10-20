@@ -14,10 +14,13 @@ test("a command whose descendant keeps its output pipes open still returns soon 
   assert.ok(Date.now() - started < 3000, `returned after ${Date.now() - started}ms`);
 });
 
-test("captured output is bounded, keeping the end of each stream", async () => {
-  const script = "process.stdout.write('x'.repeat(8 * 1024 * 1024)); process.stdout.write('END')";
+test("captured output is bounded, keeping the end of each stream and saying it was cut", async () => {
+  const script = "process.stdout.write('x'.repeat(20 * 1024 * 1024)); process.stdout.write('END')";
   const result = await runCommand(process.execPath, ["-e", script], { cwd: process.cwd(), env: { PATH: process.env.PATH ?? "" }, timeoutMs: 20000 });
   assert.equal(result.exitCode, 0);
-  assert.ok(result.stdout.length <= 1024 * 1024, `kept ${result.stdout.length} characters`);
+  assert.equal(result.truncated, true);
+  assert.ok(result.stdout.length <= 16 * 1024 * 1024, `kept ${result.stdout.length} characters`);
   assert.ok(result.stdout.endsWith("END"));
+  const small = await runCommand(process.execPath, ["-e", "console.log('small')"], { cwd: process.cwd(), env: { PATH: process.env.PATH ?? "" }, timeoutMs: 20000 });
+  assert.equal(small.truncated, false);
 });

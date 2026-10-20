@@ -65,6 +65,8 @@ Workers can run for minutes or hours, so the operator must be able to see what a
 
 **Stopping.** `switchboard stop --lease <lease-id>` writes a write-once stop request in the attempt's runtime directory. The dispatcher that owns the worker forwards it as Pi's `abort` and follows the interruption path, so the task is held as interrupted once the worker's exit is observed. If no running dispatcher forwards the request within a short period, `stop` reports it as undelivered; the operator then stops the worker another way and uses `resolve`.
 
+**At shutdown.** Once the worker starts finishing, the dispatcher claims no further requests, and it waits for any request it is already forwarding, so every claimed request is forwarded or answered and has a result before the attempt is finalised. A request that could not be added to the attempt log is listed in the dispatch result.
+
 **Redirecting.** `switchboard steer --lease <lease-id> "<message>"` writes a write-once request with a unique ID. The owning dispatcher forwards it once, as Pi's `steer`, or as `follow_up` when `--after` is given, and records it in the attempt log with who sent it and Pi's response. An undelivered request is reported in the same way as a stop request and never retried automatically. Messages are part of the attempt record reviewers see. They do not change the delivery contract or the result requirements ([ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md)).
 
 **Authority.** Stopping is allowed without operator approval. Sending a message that changes a running worker's instructions needs operator approval by default (see [Supervision](../../architecture.md#supervision)).
@@ -150,7 +152,7 @@ Every outcome preserves the lease.
 
 | Observed outcome | Task action |
 | --- | --- |
-| Valid completion satisfying the task's completion contract, with required evidence, retained deliverables and observed direct-child exit | Record done with summary, evidence and retained work references |
+| Valid completion satisfying the task's completion contract, with required evidence, retained deliverables and observed direct-child exit | Record done with a short note: the attempt's identity, outcome, shortened summary, retained work references and the path of the worker's full result, kept within every platform's command-line limit |
 | Valid worker completion, but required review or integration remains | Record hold with completed-work summary, retained work references and next action; do not unblock dependants through done |
 | Worker requests hold and its direct child has exited | Record hold with reason and next action |
 | Worker fails, exits without a valid result, or gives inconsistent identity/evidence | Record hold with failure reason once direct-child exit is observed |
