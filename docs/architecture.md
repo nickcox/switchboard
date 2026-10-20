@@ -115,7 +115,7 @@ Pi Durable will support the supervisor and durable orchestration. A Pi Durable c
 | 6 – Scheduling | Add one-off and recurring triggers through existing dispatch and messaging paths |
 | 7 – External events | Translate external events into work or messages, initially through polling where suitable |
 
-Later phases are direction only; their PRDs will be written when needed. Distributed dispatch, a replacement task tracker, a replacement workspace manager and a custom durable agent harness are outside the current scope.
+Later phases are direction only; their PRDs will be written when needed. Each later phase's PRD begins with a comparison with Pi Durable, recorded in ADR-0005's "Continuing comparison" section before anything in that phase is implemented, as the [Phase 2 PRD](phases/02-reconciliation-and-recovery/PRD.md#pi-durable-checkpoint) did. Phase 3, whose background dispatcher would be a long-running process owning workers, and Phase 4, whose supervisor [ADR-0003](adr/0003-pi-durable-for-durable-orchestration.md) assigns to Pi Durable, are where it is most likely to change the design. Distributed dispatch, a replacement task tracker, a replacement workspace manager and a custom durable agent harness are outside the current scope.
 
 ### Notes for later phases
 
