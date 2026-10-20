@@ -48,9 +48,10 @@ Every attempt is classified from its attempt-log entries and each owner's curren
 | Not retained | Retention check failed; lease preserved | Fix the output, or `discard` with confirmation |
 | Lease in another pool | Lease recorded in a pool Treehouse no longer lists | Return it by path, then `resolve --lease-returned` |
 | Task update unconfirmed | Final task update not confirmed | Complete the update, then `finish` |
+| Stopped | Halted after acquiring its lease, or its task is still in flight with no lease | Inspect the attempt |
 | Finished | Task outcome recorded and lease returned or never acquired | Nothing |
 
-Unaccounted leases and orphaned in-flight tasks remain separate findings, as in Phase 1. A state that cannot be determined because an owner is unreadable is reported as unknown and blocks every command that would change that attempt.
+`status` shows each attempt's state, in its text output and as the `state` and `changeable` fields of its JSON. Unaccounted leases and orphaned in-flight tasks remain separate findings, as in Phase 1. A state that cannot be determined because an owner is unreadable is reported as unknown and blocks every command that would change that attempt.
 
 ## Finishing an attempt
 

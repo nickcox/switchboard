@@ -4,11 +4,16 @@ import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Lease } from "../workspaces/provider.ts";
 import type { Task } from "../tasks/store.ts";
 import { inspect, isOpen, summarise, type Dependencies } from "./dispatch.ts";
+import { classify, type AttemptState } from "./state.ts";
 import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch.ts";
 import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
 export type AttemptStatus = {
   attempt: AttemptSummary;
+  /** The attempt's state across every owner (Phase 2 PRD, attempt states). */
+  state: AttemptState;
+  /** Whether a command may change this attempt: false while its worker may be running or any owner state is unknown. */
+  changeable: boolean;
   lastEntry: string;
   possiblyRunning: boolean;
   leaseHeld: boolean;
@@ -90,30 +95,27 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
       const read: Task | undefined = await deps.tasks.read(summary.taskId);
       task = read ? { state: read.state, held: read.held, holdReason: read.holdReason } : "missing";
     } catch { task = "unreadable"; }
-    const reviewHold = typeof task === "object" && task.held && (task.holdReason ?? "").endsWith("review required");
     const otherPool = state.leasesInOtherPools.find(a => a.taskId === summary.taskId && a.attempt === summary.attempt)?.pool;
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
     const running = possiblyRunning && runtime !== undefined && await dispatcherRunning(runtime.directory);
     const unfinished = isOpen(record) && state.openTasks.includes(summary.taskId);
-    const code: NextAction = possiblyRunning ? (running ? "watch_attempt" : "stop_worker")
-      : otherPool !== undefined ? "confirm_lease_returned"
-      : unfinished && !leaseHeld ? "confirm_attempt_stopped"
-      : typeof task !== "object" ? "inspect_attempt"
-      : !leaseHeld ? (task.state === "in_flight" ? "inspect_attempt" : "none")
-      : reviewHold ? "review_branch"
-      : typeof task === "object" && task.state === "done" ? "return_lease" : "inspect_attempt";
+    const classified = classify({ record, possiblyRunning, dispatcherRunning: running, leaseHeld, leaseInOtherPool: otherPool !== undefined, unfinished, task });
     attempts.push({
-      attempt: summary, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, ...(otherPool === undefined ? {} : { leaseInOtherPool: otherPool }), task,
-      ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs, state.leases), nextAction: action(code),
+      attempt: summary, state: classified.state, changeable: classified.changeable, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, ...(otherPool === undefined ? {} : { leaseInOtherPool: otherPool }), task,
+      ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs, state.leases), nextAction: action(classified.nextAction),
     });
   }
   // Runtime records with no matching attempt, for example after a crash before the attempt was logged.
   for (const p of state.possiblyRunning.filter(p => p.attempt === 0)) {
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === p.leaseId);
+    const leaseHeld = state.leases.some(l => l.leaseId === p.leaseId);
+    const classified = classify({
+      record: undefined, possiblyRunning: true, dispatcherRunning: runtime !== undefined && await dispatcherRunning(runtime.directory),
+      leaseHeld, leaseInOtherPool: false, unfinished: false, task: "unreadable",
+    });
     attempts.push({
-      attempt: p, lastEntry: "none", possiblyRunning: true, leaseHeld: state.leases.some(l => l.leaseId === p.leaseId), task: "unreadable",
-      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs, state.leases),
-      nextAction: action(runtime && await dispatcherRunning(runtime.directory) ? "watch_attempt" : "stop_worker"),
+      attempt: p, state: classified.state, changeable: classified.changeable, lastEntry: "none", possiblyRunning: true, leaseHeld, task: "unreadable",
+      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs, state.leases), nextAction: action(classified.nextAction),
     });
   }
   const known = new Set(attempts.map(a => a.attempt.leaseId).filter(Boolean));
@@ -147,7 +149,7 @@ export function describeStatus(value: StatusResult): string {
       : !a.attempt.leaseId ? "no lease"
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
       : `lease ${a.attempt.leaseId} not held`;
-    lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
+    lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: ${a.state.replaceAll("_", " ")}; last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;
     if (a.activity?.lastActivity) {
       const usage = a.activity.tokens === null ? "" : `; ${a.activity.tokens} tokens, $${(a.activity.cost ?? 0).toFixed(2)}`;
