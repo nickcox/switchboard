@@ -116,7 +116,7 @@ function handle(request: Record<string, unknown>) {
     send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Received: ${String(request.message)}` }], stopReason: "stop" } });
     send({ type: "agent_settled", aborted: false });
   } else if (request.type === "get_session_stats") {
-    respond(request, { tokens: { total: 1200 }, cost: scenario === "expensive" ? 9.99 : 0.01 });
+    respond(request, { tokens: { total: 1200 }, cost: scenario === "expensive" ? 9.99 : scenario === "free" ? 0 : 0.01 });
   } else if (request.type === "clear_queue") respond(request, { steering: [], followUp: [] });
   else if (request.type === "abort") {
     if (scenario !== "ignore-stop") respond(request);

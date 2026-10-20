@@ -1,8 +1,8 @@
 # Phase 1 integration investigation
 
-Status: initial capability investigation completed on 17 October 2026. Dispatch is not implemented or enabled. This report separates executable observations from source inspection and proposed adapter behaviour.
+Status: historical. This is the initial capability investigation, completed on 17 October 2026 before dispatch was implemented, and its versions (for example Treehouse 3.1.3) are the ones tested then. For the current implementation and its evidence, see the [runtime notes](runtime-integration.md) and the [verification record](verification.md); CI installs the Treehouse version pinned in `.github/workflows/test.yml`. This report separates executable observations from source inspection and proposed adapter behaviour.
 
-Implementation update: [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md) selects built-in Pi RPC and a result file instead of the custom result-tool proposal below. The [runtime foundation](runtime-integration.md) has offline tests; whole-worker termination and a real Pi dispatch remain unverified. The PRD has since deferred the dispatcher lock in favour of exclusive attempt creation, so the locking finding below no longer blocks Phase 1. The original provider-probe results in this report are unchanged.
+Implementation update: [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md) selects built-in Pi RPC and a result file instead of the custom result-tool proposal below. Real Pi dispatches have since passed (see the [runtime notes](runtime-integration.md#real-pi-run)); whole-worker termination remains unverified. The PRD has since deferred the dispatcher lock in favour of exclusive attempt creation, so the locking finding below no longer blocks Phase 1. The original provider-probe results in this report are unchanged.
 
 ## Conclusion
 

@@ -2,7 +2,10 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readActivity, type ActivityEntry } from "../runtime/activity.ts";
+import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
+
+const isFinalNote = (entry: ActivityEntry) => entry.kind === "note" && entry.text.startsWith("Worker finished");
 import type { Dependencies } from "./dispatch.ts";
 
 export type ActivitySummary = {
@@ -35,7 +38,8 @@ export async function transcriptPath(record: RuntimeRecord): Promise<string | un
 
 /**
  * Prints an attempt's activity and, when following, new entries as they arrive. Works without a running dispatcher:
- * it only reads the runtime records. Following ends once the worker's exit is recorded or confirmed.
+ * it only reads the runtime records. Following ends once the worker's exit is recorded or confirmed and its dispatcher
+ * has finished writing activity: the worker's final note has been written, or no dispatcher heartbeat is fresh.
  */
 export async function watch(
   deps: Dependencies, options: { leaseId: string; follow: boolean; print: (entry: ActivityEntry) => void; signal?: AbortSignal; pollMs?: number },
@@ -49,7 +53,12 @@ export async function watch(
     for (const entry of entries.slice(printed)) options.print(entry);
     printed = Math.max(printed, entries.length);
     const finished = record.child.status !== "unknown";
-    if (!options.follow || finished || options.signal?.aborted) return { found: true, finished };
+    const settled = finished && (entries.some(isFinalNote) || !await dispatcherRunning(record.directory));
+    if (!options.follow || settled || options.signal?.aborted) {
+      // Print anything written between the last read and the decision to stop.
+      if (options.follow && settled) for (const entry of (await readActivity(record.directory)).slice(printed)) options.print(entry);
+      return { found: true, finished };
+    }
     await sleep(options.pollMs ?? 1000, undefined, { signal: options.signal }).catch(() => {});
     record = (await find()) ?? record;
   }

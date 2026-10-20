@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, resolve } from "node:path";
 
 /**
  * Windows looks up an executable by its extension. Only .com and .exe are tried, because Node.js cannot start a .cmd or
@@ -11,7 +11,8 @@ const extensions = process.platform === "win32" ? [".com", ".exe"] : [""];
 export function onPath(name: string): string {
   for (const directory of (process.env.PATH ?? "").split(delimiter)) {
     for (const extension of extensions) {
-      const candidate = join(directory, name + extension);
+      // A relative entry, including an empty one, is resolved against the current directory, so the result is absolute.
+      const candidate = resolve(directory, name + extension);
       // On Windows the execute check only tests that the path exists, so also require a regular file.
       try { accessSync(candidate, constants.X_OK); if (statSync(candidate).isFile()) return candidate; } catch { /* Keep searching. */ }
     }

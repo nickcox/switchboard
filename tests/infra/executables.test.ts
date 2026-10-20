@@ -41,6 +41,16 @@ test("onPath ignores a .cmd file, which cannot be started without a shell", { sk
   assert.throws(() => withPath([first], () => onPath("tool")), /tool was not found on PATH/);
 });
 
+test("onPath returns an absolute path for a relative PATH entry", () => {
+  // Review finding 21.
+  const { first } = directories();
+  writeFileSync(join(first, executable), "", { mode: 0o755 });
+  const saved = process.cwd();
+  process.chdir(first);
+  try { assert.equal(withPath(["."], () => onPath("tool")), join(first, executable)); }
+  finally { process.chdir(saved); }
+});
+
 test("onPath reports a missing executable", () => {
   const { first } = directories();
   assert.throws(() => withPath([first], () => onPath("tool")), /tool was not found on PATH/);

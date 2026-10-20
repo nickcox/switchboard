@@ -80,6 +80,20 @@ test("--version prints the package version without loading configuration", () =>
   assert.match(help.stderr, /switchboard --version/);
 });
 
+test("an option that does not apply to the command is refused before loading configuration", () => {
+  // Review finding 16: in particular, --dry-run on a command that changes something must not be ignored.
+  for (const args of [
+    ["stop", "--lease", "lease-1", "--dry-run"], ["steer", "--lease", "lease-1", "--dry-run", "Message"],
+    ["resolve", "--lease", "lease-1", "--worker-stopped", "--dry-run"], ["status", "--task", "cli-a1"],
+    ["dispatch", "--once", "--lease", "lease-1"], ["watch", "--lease", "lease-1", "--as", "someone"],
+  ]) {
+    const result = spawnSync(process.execPath, [cli, ...args, "--config", "missing.json"], { encoding: "utf8" });
+    assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
+    assert.match(result.stderr, /does not take/);
+    assert.doesNotMatch(result.stderr, /Configuration error/);
+  }
+});
+
 test("invalid options print a one-line error and usage without a stack trace", () => {
   const invalid = [
     { args: ["--no-such-option"], problem: /Unknown option '--no-such-option'/ },

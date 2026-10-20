@@ -91,6 +91,13 @@ export class PiRpcClient {
 
   endInput(): void { this.child.stdin.end(); }
 
+  /** Releases the pipes after the child has exited but a process it started still holds them open. */
+  releaseStreams(): void {
+    this.child.stdin.destroy();
+    this.child.stdout.destroy();
+    this.child.stderr.destroy();
+  }
+
   /** Platform-specific process control stays here. A kill request is not an exit observation. */
   terminateChild(force: boolean): void {
     if (!this.observedExit) this.child.kill(force ? "SIGKILL" : "SIGTERM");

@@ -62,6 +62,16 @@ async function main(argv: string[]): Promise<number> {
     console.error(usage);
     return values.help ? 0 : 2;
   }
+  // An option that a command does not use is refused, so that, for example, `stop --dry-run` cannot send a real stop.
+  const allowed: Record<string, string[]> = {
+    dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "note"],
+    watch: ["lease", "no-follow"], stop: ["lease", "as", "wait"], steer: ["lease", "after", "as", "wait"],
+  };
+  const misplaced = Object.keys(values).filter(name => !["json", "config", ...allowed[command]!].includes(name));
+  if (misplaced.length > 0) {
+    console.error(`${command} does not take ${misplaced.map(name => `--${name}`).join(", ")}.\n\n${usage}`);
+    return 2;
+  }
   if (command === "dispatch" && !values.once) {
     console.error("dispatch requires --once: Phase 1 dispatches exactly one task per invocation.\n\n" + usage);
     return 2;

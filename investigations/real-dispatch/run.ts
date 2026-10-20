@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeF
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { onPath } from "../../src/infra/executables.ts";
+import { isArtefactPath } from "./paths.ts";
 
 const usage = `Usage: node investigations/real-dispatch/run.ts --provider <provider> --model <model> [--kind code|scout] [--pi-entrypoint <path>] [--setup-only]
 
@@ -95,7 +96,7 @@ const task = spawnSync(process.execPath, [tasksAxi, "show", taskId, "--full", "-
 const nextAction = JSON.parse(switchboard(["status"]).stdout).attempts?.[0]?.nextAction?.code;
 // Reports written by the worker into any attempt's artefacts directory, outside the workspace.
 const reports = (readdirSync(join(demo, "runtime"), { recursive: true }) as string[])
-  .filter(path => /(^|\/)artefacts\/[^/]+$/.test(path)).map(path => join(demo, "runtime", path));
+  .filter(isArtefactPath).map(path => join(demo, "runtime", path));
 const checks: [string, boolean][] = scout ? [
   ["dispatch recorded the task as done", report.reason === "done"],
   ["task store shows the task done", /state: done/.test(task)],

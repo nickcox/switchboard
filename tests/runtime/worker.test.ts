@@ -27,8 +27,11 @@ test("RPC worker uses exact cwd/session and standard tools, retains result, and 
   assert.equal(report.workerTermination, "unverified");
   const launch = JSON.parse(await readFile(join(report.directory, "fixture-launch.json"), "utf8"));
   assert.equal(launch.cwd, f.input.workspace);
-  assert.ok(launch.argv.includes("--no-extensions"));
-  assert.ok(launch.argv.includes("--no-mcp"));
+  // Review finding 18: every flag that keeps the operator's own Pi configuration out of the worker.
+  for (const flag of ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve"]) {
+    assert.ok(launch.argv.includes(flag), `missing ${flag}`);
+  }
+  assert.equal(launch.argv[launch.argv.indexOf("--tools") + 1], "read,edit,write,bash");
   assert.ok(launch.argv.includes("--session-id"));
   assert.ok(launch.argv.includes(f.input.identity.sessionId));
   assert.ok(launch.argv.includes("read,edit,write,bash"));
@@ -250,7 +253,10 @@ test("exceeding the cost limit stops the worker and reports it as over budget", 
 });
 
 test("a token limit stops the worker even when the provider reports no cost", async () => {
-  const f = fixture("normal", { maxTokens: 100 });
+  // Review finding 20: the provider reports exactly zero cost, and the cost limit is never reached.
+  const f = fixture("free", { maxTokens: 100, maxCost: 1 });
   const report = await f.worker.execute(f.input);
   assert.equal(report.reason, "over_budget");
+  const usage = (await readFile(join(report.directory, "activity.jsonl"), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(entry => entry.kind === "stats");
+  assert.ok(usage.length > 0 && usage.every(entry => entry.cost === 0));
 });

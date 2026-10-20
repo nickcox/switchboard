@@ -188,7 +188,7 @@ export class PiWorker {
       await this.shutdown(client, failure !== undefined);
       if (client.childExit) {
         try {
-          await bounded(client.closed, this.options.requestMs, "stream_close_timeout");
+          await bounded(client.closed, this.options.requestMs, "stream_close_timeout").catch(error => { client!.releaseStreams(); throw error; });
           await bounded(receipt!, this.options.requestMs, "exit_receipt_timeout");
           if (client.failure) throw client.failure;
         } catch (error) { failure ??= asError(error); }

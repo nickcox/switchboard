@@ -8,9 +8,17 @@ export type CommandResult = {
   timedOut: boolean;
 };
 
+/** Each stream keeps at most this many characters, from its end. */
+const outputLimit = 1024 * 1024;
+/** How long to keep reading output after the command exits, for output still in its pipes. */
+const drainMs = 500;
+
 /**
  * Runs an external command without a shell and with closed stdin. A command that exceeds its timeout is killed and
  * reported as `timedOut`, which callers treat as an unknown outcome rather than a failure.
+ *
+ * The result is returned soon after the command itself exits, even if a process it started still holds its output
+ * pipes open; that process is not waited for, killed or claimed to have stopped.
  */
 export async function runCommand(
   executable: string, args: string[], options: { cwd: string; env: Record<string, string>; timeoutMs: number },
@@ -20,17 +28,28 @@ export async function runCommand(
   });
   let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8").on("data", (text: string) => { stdout += text; });
-  child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr += text; });
+  const keep = (text: string) => (text.length > outputLimit ? text.slice(-outputLimit) : text);
+  child.stdout.setEncoding("utf8").on("data", (text: string) => { stdout = keep(stdout + text); });
+  child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr = keep(stderr + text); });
   let timedOut = false;
+  let drain: NodeJS.Timeout | undefined;
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, options.timeoutMs);
   try {
     const exitCode = await new Promise<number | null>((resolve, reject) => {
+      let exit: number | null = null;
       child.once("error", reject);
+      child.once("exit", (code, signal) => {
+        exit = signal ? null : code;
+        // Stop waiting for the pipes to close once the drain period ends, and release them.
+        drain = setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); resolve(exit); }, drainMs);
+      });
       child.once("close", (code, signal) => resolve(signal ? null : code));
     });
     return { exitCode, stdout, stderr, timedOut };
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    clearTimeout(drain);
+  }
 }
 
 export function describeCommand(result: CommandResult): string {
