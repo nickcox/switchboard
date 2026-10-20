@@ -21,11 +21,12 @@ export const reasons = {
   finished: "The attempt was finished under the context's finalisation policy: its task is recorded as done and its lease returned.",
   discarded: "The attempt's work was discarded and its lease returned. Its task is held.",
   planned: "Nothing was changed. The detail lists what the command would do.",
+  pruned: "Eligible finished attempts were archived and their records removed.",
 } as const;
 export type Reason = keyof typeof reasons;
 
 /** Where a result was decided, matching the Phase 1 PRD dispatch sequence. */
-export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "finalise" | "resolve" | "control" | "finish";
+export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "finalise" | "resolve" | "control" | "finish" | "prune";
 
 export const nextActions = {
   none: "Nothing further is needed.",

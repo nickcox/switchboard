@@ -8,6 +8,7 @@ import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
 import { resolveLeaseReturned, resolveStopped } from "./dispatch/resolve.ts";
 import { discard, finish } from "./dispatch/finish.ts";
+import { prune } from "./dispatch/prune.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
@@ -16,6 +17,7 @@ const usage = `Usage:
   switchboard --version
   switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
+  switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
   switchboard finish --lease <lease-id> --no-processes [--dry-run] [--json] [--config <path>]
@@ -45,10 +47,13 @@ discard returns the lease of an attempt whose work is not wanted, removing the w
 task. Both return a lease only with --no-processes, your confirmation that no worker process remains; discard
 also needs --confirm. --dry-run shows what would be done.
 
+prune archives summaries and removes records only for finished attempts older than --older-than days.
+It preserves unfinished, leased, possibly running and unknown attempts. --dry-run lists removals without writing.
+
 The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
 Exit status: 0 when no work was ready, a dry run selected a task or the task was recorded as done (dispatch), nothing needs attention (status),
 the confirmation was recorded (resolve), Pi accepted the request (stop, steer), the attempt was found (watch), or the
-attempt was finished, discarded or its dry run planned (finish, discard);
+attempt was finished, discarded or its dry run planned (finish, discard), or pruning completed (prune);
 1 for any other outcome, described by the report's reason; 2 for usage or configuration errors.`;
 
 async function main(argv: string[]): Promise<number> {
@@ -58,7 +63,7 @@ async function main(argv: string[]): Promise<number> {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
       lease: { type: "string" }, "no-processes": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
-      after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" },
+      after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" }, "older-than": { type: "string" },
     },
   });
   if (values.version) {
@@ -67,7 +72,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const command = positionals[0];
-  const commands = ["dispatch", "status", "resolve", "watch", "stop", "steer", "finish", "discard"];
+  const commands = ["dispatch", "status", "resolve", "watch", "stop", "steer", "finish", "discard", "prune"];
   if (values.help || !command || !commands.includes(command) || positionals.length !== (command === "steer" ? 2 : 1)) {
     console.error(usage);
     return values.help ? 0 : 2;
@@ -76,7 +81,7 @@ async function main(argv: string[]): Promise<number> {
   const allowed: Record<string, string[]> = {
     dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "note"],
     watch: ["lease", "no-follow"], stop: ["lease", "as", "wait"], steer: ["lease", "after", "as", "wait"],
-    finish: ["lease", "no-processes", "dry-run"], discard: ["lease", "no-processes", "confirm", "note", "dry-run"],
+    prune: ["older-than", "dry-run"], finish: ["lease", "no-processes", "dry-run"], discard: ["lease", "no-processes", "confirm", "note", "dry-run"],
   };
   const misplaced = Object.keys(values).filter(name => !["json", "config", ...allowed[command]!].includes(name));
   if (misplaced.length > 0) {
@@ -85,6 +90,11 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "dispatch" && !values.once) {
     console.error("dispatch requires --once: Phase 1 dispatches exactly one task per invocation.\n\n" + usage);
+    return 2;
+  }
+  const olderThan = Number(values["older-than"]);
+  if (command === "prune" && (!Number.isFinite(olderThan) || olderThan <= 0)) {
+    console.error("prune requires --older-than <days>, a positive number of days.");
     return 2;
   }
   const wait = Number(values.wait ?? "10");
@@ -121,6 +131,12 @@ async function main(argv: string[]): Promise<number> {
   } catch (error) {
     console.error(`Configuration error (${configPath}): ${error instanceof Error ? error.message : String(error)}`);
     return 2;
+  }
+
+  if (command === "prune") {
+    const value = await prune(deps, { olderThan, dryRun: values["dry-run"] === true });
+    console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+    return value.ok ? 0 : 1;
   }
 
   if (command === "status") {

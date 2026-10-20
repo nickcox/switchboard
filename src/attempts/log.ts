@@ -95,7 +95,7 @@ function sequenceOf(name: string): number {
  * It is not authoritative for task, lease or liveness state. Unreadable or inconsistent entries cause refusal.
  */
 export class AttemptLog {
-  private readonly root: string;
+  readonly root: string;
   readonly contextId: string;
   constructor(root: string, contextId: string) {
     if (!isAbsolute(root)) throw new Error("Attempt log root must be absolute");
@@ -116,7 +116,12 @@ export class AttemptLog {
     nonempty.parse(taskId);
     z.number().int().nonnegative().parse(previous);
     const directory = await this.taskDirectory(taskId, true);
-    const ref = { contextId: this.contextId, taskId, attempt: previous + 1 };
+    // Pruned directory markers keep attempt numbers from being reused after retention cleanup.
+    const pruned = (await readdir(directory)).flatMap(name => {
+      const match = /^\.(\d+)\.pruned$/.exec(name);
+      return match ? [Number(match[1])] : [];
+    });
+    const ref = { contextId: this.contextId, taskId, attempt: Math.max(previous, ...pruned) + 1 };
     if (((await this.attemptNumbers(directory)).at(-1) ?? 0) !== previous) throw new AttemptConflict(ref);
     // Build the attempt with its first entry under a temporary name, then rename it into place. Readers never see an
     // attempt without entries, and the rename fails if another invocation created this attempt first.
