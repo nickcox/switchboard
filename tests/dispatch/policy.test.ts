@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolvePolicy, type ForgeFact, type PolicySources } from "../../src/dispatch/policy.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
@@ -111,4 +111,29 @@ test("status shows the resolved policy, and asks for attention when it cannot be
   const broken = await status({ ...f.deps, policy: sources(f) });
   assert.equal(broken.reason, "attention");
   assert.ok(broken.policy && "error" in broken.policy);
+});
+
+test("Phase 2 review finding 3: a tag with the base branch's name cannot supply the repository policy", async () => {
+  const f = await fixture();
+  commitPolicy(f, { kind: "manual" });
+  commitPolicy(f, { kind: "local-merge" }, "switchboard/policy-a1/attempt-1");
+  f.run(["tag", "main", "switchboard/policy-a1/attempt-1"]);
+  const resolved = await resolvePolicy(sources(f, { globalFile: join(f.dir, "none.json") }));
+  assert.deepEqual([resolved.kind, resolved.sources.kind], ["manual", "repository"]);
+});
+
+test("Phase 2 review finding 7: a committed policy file that cannot be read is an error, not an absent layer", async () => {
+  const f = await fixture();
+  commitPolicy(f, { kind: "local-merge" });
+  const blob = f.run(["rev-parse", "main:.switchboard/policy.json"]);
+  rmSync(join(repository(f), ".git", "objects", blob.slice(0, 2), blob.slice(2)), { force: true });
+  await assert.rejects(resolvePolicy(sources(f, { globalFile: join(f.dir, "none.json") })), /cannot be read|Could not read/);
+});
+
+test("Phase 2 review finding 7: a base commit whose policy directory cannot be read is an error, not an absent layer", async () => {
+  const f = await fixture();
+  commitPolicy(f, { kind: "local-merge" });
+  const tree = f.run(["rev-parse", "main:.switchboard"]);
+  rmSync(join(repository(f), ".git", "objects", tree.slice(0, 2), tree.slice(2)), { force: true });
+  await assert.rejects(resolvePolicy(sources(f, { globalFile: join(f.dir, "none.json") })), /cannot be read/);
 });

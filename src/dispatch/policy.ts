@@ -87,20 +87,26 @@ async function readGlobal(path: string): Promise<OperatorPolicy | undefined> {
   return parseLayer("global", path, text, operatorPolicySchema);
 }
 
-/** Reads the repository's policy file from the base branch in the backing repository, never from a workspace. */
+/**
+ * Reads the repository's policy file from the base branch in the backing repository, never from a workspace. The branch
+ * is named in full (`refs/heads/<baseRef>`), so a tag or other reference with the same short name cannot stand in for it,
+ * and the file is read from the commit it points to. A file listed in that commit's tree that cannot be read is an error,
+ * not an absent layer.
+ */
 async function readRepository(sources: PolicySources): Promise<z.infer<typeof repositoryPolicySchema> | undefined> {
-  const object = `${sources.baseRef}:${repositoryPolicyPath}`;
-  const exists = await runCommand(sources.git, ["cat-file", "-e", object], { cwd: sources.repository, env: sources.environment, timeoutMs: 15000 });
-  if (exists.timedOut || exists.exitCode === null) throw new Error(`Could not check for ${repositoryPolicyPath} on ${sources.baseRef}`);
-  if (exists.exitCode !== 0) {
-    // Distinguish a missing file from a base branch that cannot be read.
-    const base = await runCommand(sources.git, ["rev-parse", "--verify", "--quiet", `${sources.baseRef}^{commit}`], { cwd: sources.repository, env: sources.environment, timeoutMs: 15000 });
-    if (base.exitCode !== 0) throw new Error(`Base branch ${sources.baseRef} cannot be read in the backing repository`);
-    return undefined;
-  }
-  const shown = await runCommand(sources.git, ["show", object], { cwd: sources.repository, env: sources.environment, timeoutMs: 15000 });
-  if (shown.exitCode !== 0 || shown.truncated) throw new Error(`Could not read ${repositoryPolicyPath} from ${sources.baseRef}`);
-  return parseLayer("repository", `${object}`, shown.stdout, repositoryPolicySchema);
+  const run = (args: string[]) => runCommand(sources.git, args, { cwd: sources.repository, env: sources.environment, timeoutMs: 15000 });
+  const ref = sources.baseRef.startsWith("refs/heads/") ? sources.baseRef : `refs/heads/${sources.baseRef}`;
+  const base = await run(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  if (base.exitCode !== 0 || base.timedOut) throw new Error(`Base branch ${sources.baseRef} cannot be read in the backing repository`);
+  const commit = base.stdout.trim();
+  const listed = await run(["ls-tree", "-z", commit, "--", repositoryPolicyPath]);
+  if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new Error(`Could not check for ${repositoryPolicyPath} on ${sources.baseRef}: its tree cannot be read`);
+  if (listed.stdout === "") return undefined;
+  const entry = /^\d+ blob ([0-9a-f]+)\t/.exec(listed.stdout);
+  if (!entry) throw new Error(`${repositoryPolicyPath} on ${sources.baseRef} is not a regular file`);
+  const shown = await run(["cat-file", "blob", entry[1]!]);
+  if (shown.exitCode !== 0 || shown.timedOut || shown.truncated) throw new Error(`${repositoryPolicyPath} on ${sources.baseRef} cannot be read`);
+  return parseLayer("repository", `${sources.baseRef}:${repositoryPolicyPath} (commit ${commit})`, shown.stdout, repositoryPolicySchema);
 }
 
 function parseLayer<T>(layer: string, where: string, text: string, schema: z.ZodType<T>): T {

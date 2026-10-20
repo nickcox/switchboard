@@ -6,6 +6,20 @@ async function git(options: Git, args: string[], cwd = options.repository) {
   return runCommand(options.git, args, { cwd, env: options.environment, timeoutMs: 30000 });
 }
 
+/**
+ * The worktree that has `branch` checked out, if any. Without a complete inventory it is unknown whether the branch is
+ * checked out, so a failed, timed-out, truncated or malformed listing is an error, never "not checked out". The listing
+ * is NUL-separated, so worktree paths may contain newlines.
+ */
+async function checkoutOf(options: Git, branch: string): Promise<string | undefined> {
+  const listed = await git(options, ["worktree", "list", "--porcelain", "-z"]);
+  if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new Error(`The repository's worktrees could not be listed: ${(listed.stderr || listed.stdout).trim().slice(0, 300)}`);
+  // Each record is a run of NUL-terminated lines, ended by an empty line.
+  const records = listed.stdout.split("\0\0").filter(record => record !== "").map(record => record.split("\0").filter(line => line !== ""));
+  if (records.length === 0 || records.some(lines => !lines[0]?.startsWith("worktree "))) throw new Error("The repository's worktree list is not in the expected format");
+  return records.find(lines => lines.includes(`branch refs/heads/${branch}`))?.[0]!.slice("worktree ".length);
+}
+
 /** The commit a branch points to in the backing repository, or undefined if it does not exist. */
 export async function branchHead(options: Git, branch: string): Promise<string | undefined> {
   const result = await git(options, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
@@ -26,8 +40,7 @@ export async function isAncestor(options: Git, ancestor: string, descendant: str
  * still points to `expected`. Never creates a merge commit.
  */
 export async function fastForward(options: Git, branch: string, expected: string, commit: string): Promise<void> {
-  const worktrees = (await git(options, ["worktree", "list", "--porcelain"])).stdout.split("\n\n");
-  const checkedOut = worktrees.find(block => block.split("\n").includes(`branch refs/heads/${branch}`))?.split("\n").find(line => line.startsWith("worktree "))?.slice("worktree ".length);
+  const checkedOut = await checkoutOf(options, branch);
   const result = checkedOut
     ? await git(options, ["merge", "--ff-only", "--quiet", commit], checkedOut)
     : await git(options, ["update-ref", `refs/heads/${branch}`, commit, expected]);
