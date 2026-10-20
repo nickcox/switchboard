@@ -99,6 +99,31 @@ for (const scenario of ["wrong-session", "wrong-model", "bad-json", "wrong-respo
   });
 }
 
+for (const [scenario, detail] of [
+  ["model-error", "The model request ended with stop reason error: WebSocket error"],
+  ["model-error-no-message", "The model request ended with stop reason error"],
+  ["model-length", "The model request ended with stop reason length"],
+]) {
+  test(`worker reports the final assistant ending for ${scenario}`, async () => {
+    const f = fixture(scenario);
+    const report = await f.worker.execute(f.input);
+    assert.equal(report.status, "failed");
+    assert.equal(report.reason, "invalid_model_end");
+    assert.equal(report.detail, detail);
+    assert.equal(report.result, undefined);
+  });
+}
+
+test("model error details are shortened to a single bounded line", async () => {
+  const f = fixture("model-error-long");
+  const report = await f.worker.execute(f.input);
+  assert.equal(report.reason, "invalid_model_end");
+  assert.equal(report.detail?.length, 500);
+  assert.ok(report.detail?.startsWith("The model request ended with stop reason error: WebSocket error connection dropped"));
+  assert.ok(report.detail?.endsWith("…"));
+  assert.equal(report.detail?.includes("\n"), false);
+});
+
 for (const outcome of ["hold", "failed"] as const) {
   test(`a valid ${outcome} report is preserved as a worker outcome, not relabelled as success`, async () => {
     const f = fixture(outcome);

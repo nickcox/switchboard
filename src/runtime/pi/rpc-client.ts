@@ -3,7 +3,7 @@ import { bounded, deferred, RuntimeFailure } from "../async.ts";
 import type { ChildExit } from "../records.ts";
 import { JsonlDecoder, type RpcRecord } from "./jsonl.ts";
 
-export type RunSettled = { aborted: boolean; lastAssistantStop: string | undefined };
+export type RunSettled = { aborted: boolean; lastAssistantStop: string | undefined; lastAssistantError: string | undefined };
 type Pending = { command: string; resolve: (value: unknown) => void; reject: (reason: unknown) => void };
 
 /** Narrow Pi RPC transport. It observes the direct child only, not its descendants. */
@@ -19,6 +19,7 @@ export class PiRpcClient {
   private armed = false;
   private agentStarted = false;
   private lastAssistantStop: string | undefined;
+  private lastAssistantError: string | undefined;
   private observedExit: ChildExit | undefined;
   private transportFailure: Error | undefined;
   private stderr = "";
@@ -129,10 +130,11 @@ export class PiRpcClient {
     if (record.type === "message_end" && isObject(record.message) && record.message.role === "assistant") {
       if (typeof record.message.stopReason !== "string") throw new Error("Missing assistant stop reason");
       this.lastAssistantStop = record.message.stopReason;
+      this.lastAssistantError = typeof record.message.errorMessage === "string" ? record.message.errorMessage : undefined;
     }
     if (record.type === "agent_settled" && this.agentStarted) {
       if (typeof record.aborted !== "boolean") throw new Error("Missing settled abort flag");
-      this.settled.resolve({ aborted: record.aborted, lastAssistantStop: this.lastAssistantStop });
+      this.settled.resolve({ aborted: record.aborted, lastAssistantStop: this.lastAssistantStop, lastAssistantError: this.lastAssistantError });
     }
   }
 }

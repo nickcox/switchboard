@@ -171,7 +171,11 @@ export class PiWorker {
       const ending = await bounded(settled, this.options.runMs, "worker_timeout", signal);
       await snapshot(client);
       if (ending.aborted) throw new RuntimeFailure("worker_aborted", "Pi reported an aborted run");
-      if (ending.lastAssistantStop !== "stop") throw new RuntimeFailure("invalid_model_end", "Missing successful terminal assistant response");
+      if (ending.lastAssistantStop !== "stop") {
+        const detail = ending.lastAssistantStop === undefined ? "Missing successful terminal assistant response"
+          : `The model request ended with stop reason ${ending.lastAssistantStop}${ending.lastAssistantError ? `: ${ending.lastAssistantError}` : ""}`;
+        throw new RuntimeFailure("invalid_model_end", shorten(detail, 500));
+      }
       this.validateState(stateSchema.parse(await this.rpc(client, "get_state", {}, signal)), binding);
     } catch (error) { failure = asError(error); }
     if (statsTimer) clearInterval(statsTimer);

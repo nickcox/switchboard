@@ -27,7 +27,7 @@ const entrySchemas = {
   task_started: z.strictObject({}),
   launched: z.strictObject({ sessionId: z.uuid() }),
   worker_finished: z.strictObject({
-    status: nonempty, runtimeDirectory: nonempty, reason: nonempty.optional(), outcome: nonempty.optional(), resultCommit: commit.optional(),
+    status: nonempty, runtimeDirectory: nonempty, reason: nonempty.optional(), detail: nonempty.optional(), outcome: nonempty.optional(), resultCommit: commit.optional(),
   }),
   task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),

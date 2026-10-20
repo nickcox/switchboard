@@ -100,7 +100,12 @@ function handle(request: Record<string, unknown>) {
     if (scenario === "ignore-stop" || scenario === "await-steer") return;
     send({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "echo synthetic" } });
     send({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: {}, isError: false, durationMs: 12 });
-    send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Synthetic worker finished" }], stopReason: scenario === "model-error" ? "error" : "stop" } });
+    send({ type: "message_end", message: {
+      role: "assistant", content: [{ type: "text", text: "Synthetic worker finished" }],
+      stopReason: scenario?.startsWith("model-error") ? "error" : scenario === "model-length" ? "length" : "stop",
+      ...(scenario === "model-error" ? { errorMessage: "WebSocket error" } : {}),
+      ...(scenario === "model-error-long" ? { errorMessage: `WebSocket error\n${"connection dropped ".repeat(100)}` } : {}),
+    } });
     send({ type: "agent_settled", aborted: false });
     if (scenario === "fast-events") respond(request, { disposition: "started" });
     if (scenario === "trailing-json") process.stdout.write('{"type":');

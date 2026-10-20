@@ -60,6 +60,22 @@ test("a worker with no valid result is held as failed", async () => {
   assert.equal((await tasks.read("fail-a1"))?.holdReason, "Switchboard attempt 1 failed");
 });
 
+test("a provider error reaches the dispatch report, attempt log and task hold body", async () => {
+  const { deps, tasks } = await fixture({ tasks: [task("error-a1")], scenario: "model-error" });
+  const outcome = await dispatchOnce(deps);
+  const detail = "The model request ended with stop reason error: WebSocket error";
+  assert.equal(outcome.reason, "held");
+  assert.equal(outcome.worker?.status, "failed");
+  assert.equal(outcome.worker?.reason, detail);
+  const entries = (await deps.attempts.forTask("error-a1"))[0]!.entries;
+  const finished = entries.find(entry => entry.kind === "worker_finished")!;
+  assert.equal(finished.data.reason, "invalid_model_end");
+  assert.equal(finished.data.detail, detail);
+  const held = await tasks.read("error-a1");
+  assert.equal(held?.held, true);
+  assert.ok(held?.body.includes(detail));
+});
+
 test("a held task is not dispatched again, and naming it explicitly is refused because of its lease", async () => {
   const { deps } = await fixture({ tasks: [task("again-a1")], scenario: "commit-result" });
   await dispatchOnce(deps);

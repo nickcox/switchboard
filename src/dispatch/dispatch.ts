@@ -242,7 +242,8 @@ export async function dispatchOnce(
   if (resultCommit) summary.resultCommit = resultCommit;
   await deps.attempts.append(ref, "worker_finished", {
     status: report.status, runtimeDirectory: report.directory,
-    ...(report.reason ? { reason: report.reason } : {}), ...(report.result ? { outcome: report.result.outcome } : {}),
+    ...(report.reason ? { reason: report.reason } : {}), ...(report.detail ? { detail: report.detail.slice(0, 500) } : {}),
+    ...(report.result ? { outcome: report.result.outcome } : {}),
     ...(resultCommit ? { resultCommit } : {}),
   });
   if (report.status === "unresolved") {

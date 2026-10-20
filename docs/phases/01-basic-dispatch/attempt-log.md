@@ -38,7 +38,7 @@ Each entry is one JSON file:
 | `task_started` | `dispatch` | None. The task was confirmed in flight |
 | `launched` | `dispatch` | `sessionId` |
 | `operator_request` | `dispatch` | A forwarded stop request or message: `id`, `kind` (`stop`, `steer` or `follow_up`), `sender`, Pi's `outcome`, and optional `message` and `error` |
-| `worker_finished` | `dispatch` | Runtime `status`, `runtimeDirectory`, and when known the failure `reason`, worker `outcome` and `resultCommit` |
+| `worker_finished` | `dispatch` | Runtime `status`, `runtimeDirectory`, and when known the failure `reason` and shortened `detail`, worker `outcome` and `resultCommit` |
 | `task_recorded` | `dispatch` | `outcome` (`done` or `hold`) and the recorded `reason` |
 | `retention_checked` | `dispatch` | `retained`, plus `findings` that prevent retention and `notes` that do not |
 | `halted` | `dispatch` | The `stage`, `reason` and optional `detail` of a dispatch that stopped before finishing; optional `leaseId`, `workspace` and `outputBranch` recovered from inspection. An uncertain acquisition records `reason: outcome_unknown`, so the `requested` pool identifies a lease that may still be held even without a `leased` entry |
