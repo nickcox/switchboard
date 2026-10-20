@@ -135,3 +135,13 @@ test("discard needs explicit confirmation, then returns the lease even with unco
   assert.deepEqual([held?.state, held?.held], ["queued", true]);
   assert.deepEqual((await kinds(f)).slice(-2), ["discarded", "lease_returned"]);
 });
+
+test("finish refuses an attempt that may be changed but is not awaiting review or finish, such as one its worker held", async () => {
+  // The worker reports a valid hold, so its result is readable and retained: only the state check refuses.
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "hold" });
+  const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "held");
+  const outcome = await finish(f.deps, { leaseId, noProcesses: true });
+  assert.equal(outcome.reason, "refused");
+  assert.equal(await listed(f, leaseId), true);
+});

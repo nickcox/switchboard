@@ -7,6 +7,7 @@ import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
 import { resolveLeaseReturned, resolveStopped } from "./dispatch/resolve.ts";
+import { discard, finish } from "./dispatch/finish.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
@@ -17,6 +18,8 @@ const usage = `Usage:
   switchboard status [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
+  switchboard finish --lease <lease-id> --no-processes [--dry-run] [--json] [--config <path>]
+  switchboard discard --lease <lease-id> --confirm --no-processes [--note <text>] [--dry-run] [--json] [--config <path>]
   switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
   switchboard stop --lease <lease-id> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
   switchboard steer --lease <lease-id> [--after] [--as <sender>] [--wait <seconds>] [--json] [--config <path>] "<message>"
@@ -36,9 +39,16 @@ lease in a workspace pool Switchboard no longer lists, for example after the ori
 Use exactly one of --lease and --task. --task is only for --lease-returned; --attempt selects a task's attempt
 (default: latest). resolve never changes the task or the lease.
 
+finish completes an attempt awaiting review or awaiting finish under the context's finalisation policy (manual,
+or local-merge, which first fast-forwards the target branch), records the task as done and returns the lease.
+discard returns the lease of an attempt whose work is not wanted, removing the workspace's contents, and holds its
+task. Both return a lease only with --no-processes, your confirmation that no worker process remains; discard
+also needs --confirm. --dry-run shows what would be done.
+
 The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
 Exit status: 0 when no work was ready, a dry run selected a task or the task was recorded as done (dispatch), nothing needs attention (status),
-the confirmation was recorded (resolve), Pi accepted the request (stop, steer) or the attempt was found (watch);
+the confirmation was recorded (resolve), Pi accepted the request (stop, steer), the attempt was found (watch), or the
+attempt was finished, discarded or its dry run planned (finish, discard);
 1 for any other outcome, described by the report's reason; 2 for usage or configuration errors.`;
 
 async function main(argv: string[]): Promise<number> {
@@ -47,7 +57,7 @@ async function main(argv: string[]): Promise<number> {
     options: {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
-      lease: { type: "string" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
+      lease: { type: "string" }, "no-processes": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" },
     },
   });
@@ -57,7 +67,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const command = positionals[0];
-  const commands = ["dispatch", "status", "resolve", "watch", "stop", "steer"];
+  const commands = ["dispatch", "status", "resolve", "watch", "stop", "steer", "finish", "discard"];
   if (values.help || !command || !commands.includes(command) || positionals.length !== (command === "steer" ? 2 : 1)) {
     console.error(usage);
     return values.help ? 0 : 2;
@@ -66,6 +76,7 @@ async function main(argv: string[]): Promise<number> {
   const allowed: Record<string, string[]> = {
     dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "note"],
     watch: ["lease", "no-follow"], stop: ["lease", "as", "wait"], steer: ["lease", "after", "as", "wait"],
+    finish: ["lease", "no-processes", "dry-run"], discard: ["lease", "no-processes", "confirm", "note", "dry-run"],
   };
   const misplaced = Object.keys(values).filter(name => !["json", "config", ...allowed[command]!].includes(name));
   if (misplaced.length > 0) {
@@ -99,7 +110,7 @@ async function main(argv: string[]): Promise<number> {
     console.error("--attempt is only supported by resolve --task --lease-returned.");
     return 2;
   }
-  if (["watch", "stop", "steer"].includes(command) && !values.lease) {
+  if (["watch", "stop", "steer", "finish", "discard"].includes(command) && !values.lease) {
     console.error(`${command} requires --lease <lease-id>; \`switchboard status\` shows each attempt's lease ID.\n\n${usage}`);
     return 2;
   }
@@ -137,6 +148,14 @@ async function main(argv: string[]): Promise<number> {
     });
     if (!outcome.found) console.error(`No runtime record for lease ${values.lease} in this context. The worker may not have been launched.`);
     return outcome.found ? 0 : 1;
+  }
+
+  if (command === "finish" || command === "discard") {
+    const common = { leaseId: values.lease!, noProcesses: values["no-processes"] === true, dryRun: values["dry-run"] === true };
+    const value = command === "finish" ? await finish(deps, common)
+      : await discard(deps, { ...common, confirm: values.confirm === true, ...(values.note ? { note: values.note } : {}) });
+    console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+    return value.ok ? 0 : 1;
   }
 
   if (command === "resolve") {

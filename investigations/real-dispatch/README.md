@@ -37,7 +37,7 @@ To build the demo without dispatching, add `--setup-only`. It prints the configu
 
 After a `code` dispatch, the script reports PASS or FAIL for each of:
 
-- the task was held for review (reason `held`, next action `review_branch`)
+- the task was held for review (reason `held`, next action `review_then_finish`)
 - the output branch's head is the reported result commit
 - `hello.txt` on the output branch contains exactly the requested line
 - `main` is unchanged

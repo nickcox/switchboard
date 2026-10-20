@@ -61,13 +61,13 @@ test("unfinished: an open attempt with no lease and no worker", async () => {
 test("awaiting review: completed code held for review with its lease", async () => {
   const f = await fixture({ tasks: [task("review-a1")], scenario: "commit-result" });
   await dispatchOnce(f.deps);
-  expect(await only(f.deps, "review-a1"), "awaiting_review", "review_branch", true);
+  expect(await only(f.deps, "review-a1"), "awaiting_review", "review_then_finish", true);
 });
 
 test("awaiting finish: an independent deliverable recorded as done, with its lease", async () => {
   const f = await fixture({ tasks: [task("done-a1")], scenario: "commit-result", acceptance: "independent_deliverable" });
   await dispatchOnce(f.deps);
-  expect(await only(f.deps, "done-a1"), "awaiting_finish", "return_lease", true);
+  expect(await only(f.deps, "done-a1"), "awaiting_finish", "finish_attempt", true);
 });
 
 test("held: a failed worker's task held with its lease", async () => {
@@ -79,7 +79,7 @@ test("held: a failed worker's task held with its lease", async () => {
 test("not retained: a reported commit missing from the output branch", async () => {
   const f = await fixture({ tasks: [task("ghost-a1")], acceptance: "independent_deliverable" });
   await dispatchOnce(f.deps);
-  expect(await only(f.deps, "ghost-a1"), "not_retained", "inspect_attempt", true);
+  expect(await only(f.deps, "ghost-a1"), "not_retained", "fix_or_discard", true);
 });
 
 test("lease in another pool: the origin remote changed after the lease was acquired", async () => {

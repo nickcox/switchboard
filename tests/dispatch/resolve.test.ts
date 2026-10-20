@@ -34,7 +34,7 @@ for (const heartbeat of ["missing", "stale"]) test(`a runtime record with a ${he
   const record = (await runtime.discover("fixture-context")).find(r => r.binding.input.identity.leaseId === "lease-orphan");
   assert.equal(record?.child.status, "operator_confirmed_stopped");
 
-  assert.equal((await dispatchOnce(deps)).nextAction.code, "review_branch");
+  assert.equal((await dispatchOnce(deps)).nextAction.code, "review_then_finish");
   assert.equal((await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true })).nextAction.code, "none");
 });
 
@@ -70,7 +70,7 @@ test("an attempt logged as launched but never finished is resolved through the a
   assert.equal((await deps.attempts.read(ref)).entries.at(-1)?.kind, "operator_resolved");
   // The task store still shows logged-a1 in flight, so dispatch moves on to the next ready task.
   const next = await dispatchOnce(deps);
-  assert.equal(next.nextAction.code, "review_branch");
+  assert.equal(next.nextAction.code, "review_then_finish");
   assert.equal(next.attempt?.taskId, "other-b1");
 });
 

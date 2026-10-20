@@ -104,15 +104,15 @@ const checks: [string, boolean][] = scout ? [
   ["the output branch has no new commits", branchHead === undefined || branchHead === base],
   ["main is unchanged", show(["rev-parse", "main"]) === base],
   ["retention check passed", report.retention?.retained === true],
-  ["status asks for the lease to be returned", nextAction === "return_lease"],
+  ["status asks for the lease to be returned", nextAction === "finish_attempt"],
 ] : [
-  ["dispatch held the task for review", report.reason === "held" && report.nextAction?.code === "review_branch"],
+  ["dispatch held the task for review", report.reason === "held" && report.nextAction?.code === "review_then_finish"],
   ["output branch head is the reported result commit", branchHead !== undefined && branchHead === report.attempt?.resultCommit],
   ["hello.txt on the output branch has the exact line", (branch ? show(["show", `${branch}:hello.txt`]) : undefined) === expected],
   ["main is unchanged", show(["rev-parse", "main"]) === base],
   ["task store shows the task queued and held", /state: queued/.test(task) && /held: yes/.test(task)],
   ["retention check passed", report.retention?.retained === true],
-  ["status asks for review", nextAction === "review_branch"],
+  ["status asks for review", nextAction === "review_then_finish"],
 ];
 for (const [name, passed] of checks) console.log(`${passed ? "PASS" : "FAIL"}  ${name}`);
 if (scout && reports[0]) console.log(`\nReport: ${reports[0]}`);

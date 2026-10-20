@@ -18,8 +18,8 @@ test("a task kind with a report contract is done when its report is retained out
   assert.equal(outcome.reason, "done", JSON.stringify(outcome, null, 2));
   assert.equal((await f.tasks.read("scout-a1"))?.state, "done");
   assert.equal(outcome.retention?.retained, true);
-  assert.equal(outcome.nextAction.code, "return_lease");
-  assert.equal((await status(f.deps)).attempts[0]?.nextAction.code, "return_lease");
+  assert.equal(outcome.nextAction.code, "finish_attempt");
+  assert.equal((await status(f.deps)).attempts[0]?.nextAction.code, "finish_attempt");
   const requested = (await f.deps.attempts.forTask("scout-a1"))[0]!.entries[0]!;
   assert.deepEqual(requested.data.contract, { name: "scout", ...scout });
   // The worker was told where artefacts survive.
@@ -89,7 +89,7 @@ test("a code contract can also require a report, which must be retained in the a
   const outcome = await dispatchOnce(f.deps);
   assert.equal(outcome.reason, "held");
   assert.equal(outcome.retention?.retained, true, JSON.stringify(outcome.retention));
-  assert.equal(outcome.nextAction.code, "review_branch");
+  assert.equal(outcome.nextAction.code, "review_then_finish");
 });
 
 test("a report outside the attempt's artefact directory is not retained, even outside every workspace", async () => {
@@ -155,7 +155,7 @@ test("a task kind with no contract is refused before any change", async () => {
 test("a task with no kind uses the default contract", async () => {
   const f = await fixture({ tasks: [["add", "plain-a1", "Plain", "--repo", "fixture", "--body", "Change"]], scenario: "commit-result", byTaskKind: { scout } });
   const outcome = await dispatchOnce(f.deps);
-  assert.equal(outcome.nextAction.code, "review_branch");
+  assert.equal(outcome.nextAction.code, "review_then_finish");
   const contract = (await f.deps.attempts.forTask("plain-a1"))[0]!.entries[0]!.data.contract as { name: string } | undefined;
   assert.equal(contract?.name, "default");
 });

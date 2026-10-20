@@ -17,7 +17,7 @@ test("no ready work is a successful no-op", async () => {
 test("completed code work is held for review, retained on its branch, and the lease is preserved", async () => {
   const { deps, tasks, run } = await fixture({ tasks: [task("work-a1")], scenario: "commit-result" });
   const outcome = await dispatchOnce(deps);
-  assert.equal(outcome.nextAction.code, "review_branch", JSON.stringify(outcome, null, 2));
+  assert.equal(outcome.nextAction.code, "review_then_finish", JSON.stringify(outcome, null, 2));
   assert.equal(outcome.ok, false);
   assert.equal(outcome.lease, "preserved");
   assert.equal(outcome.retention?.retained, true);
