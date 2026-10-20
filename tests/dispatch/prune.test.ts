@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { lstat, readdir, readFile, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { AttemptPruner } from "../../src/attempts/prune.ts";
 import { prune } from "../../src/dispatch/prune.ts";
+import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
+import { finish } from "../../src/dispatch/finish.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { key, readJsonFile } from "../../src/runtime/records.ts";
 import { fixture, task } from "./fixture.ts";
@@ -140,4 +142,55 @@ test("prune CLI supports JSON and dry-run and rejects invalid ages", async () =>
   for (const age of [undefined, "0", "-1", "NaN", "Infinity"]) {
     assert.throws(() => execFileSync(process.execPath, [cli, "prune", ...(age === undefined ? [] : ["--older-than", age])], { stdio: "pipe" }), (error: unknown) => (error as { status: number }).status === 2);
   }
+});
+
+// Phase 2 review findings 4 and 10 (docs/phases/02-reconciliation-and-recovery/review-2026-10-21.md).
+
+test("finding 4: a second prune refuses while one is cleaning up, so a reservation claimed meanwhile survives", async () => {
+  const f = await setup();
+  let entered!: () => void;
+  const reached = new Promise<void>(resolve => { entered = resolve; });
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  let paused = false;
+  // Pause the first prune after it has read the old reservation and checked that no attempt refers to it.
+  const attempts = Object.assign(Object.create(Object.getPrototypeOf(f.deps.attempts)), f.deps.attempts, {
+    findByRequest: async (requestId: string) => {
+      const found = await f.deps.attempts.findByRequest(requestId);
+      if (!paused) { paused = true; entered(); await barrier; }
+      return found;
+    },
+  });
+  const first = prune({ ...f.deps, attempts }, old);
+  await reached;
+  const second = await prune(f.deps, old);
+  const claimed = await f.deps.attempts.reserveRequest("request", "new-task");
+  release();
+  assert.equal((await first).ok, true);
+  assert.equal(second.reason, "refused", second.detail ?? "");
+  assert.match(second.detail ?? "", /another prune/i);
+  // Whoever claimed the request ID during the cleanup still holds it afterwards.
+  if (claimed) assert.equal(await f.deps.attempts.reserveRequest("request", "third-task"), false);
+});
+
+test("a prune lock left by an interrupted run refuses, naming the lock to remove", async () => {
+  const f = await setup();
+  await prune(f.deps, { olderThan: 1e9 });
+  const lock = join(f.deps.attempts.root, `prune-lock-${key(f.deps.contextId)}`);
+  await mkdir(lock);
+  const outcome = await prune(f.deps, old);
+  assert.equal(outcome.reason, "refused");
+  assert.ok((outcome.detail ?? "").includes(lock), outcome.detail ?? "");
+  assert.equal((await f.deps.attempts.list()).length, 1);
+});
+
+test("finding 10: an attempt whose lease finish returned stays finished after the origin remote changes, and can be pruned", async () => {
+  const f = await fixture({ tasks: [task("prune-a1")], scenario: "commit-result" });
+  const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+  assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "finished");
+  f.run(["remote", "add", "origin", "https://example.invalid/fixture.git"]);
+  assert.equal((await status(f.deps)).attempts[0]?.state, "finished");
+  const outcome = await prune(f.deps, old);
+  assert.equal(outcome.reason, "pruned", outcome.detail ?? "");
+  assert.deepEqual(await f.deps.attempts.list(), []);
 });

@@ -105,7 +105,7 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
   const leasesInOtherPools: Inspection["leasesInOtherPools"] = [];
   for (const attempt of attempts) {
     const leasePool = possibleLeasePool(attempt);
-    if (leasePool !== undefined && leasePool !== pool && !resolvedBy(attempt, "lease_returned")) {
+    if (leasePool !== undefined && leasePool !== pool && !leaseReturned(attempt)) {
       leasesInOtherPools.push({ ...summarise(attempt), pool: leasePool });
     }
   }
@@ -446,6 +446,11 @@ function possibleLeasePool(attempt: AttemptRecord): string | undefined {
   const refused = attempt.entries.some(e => e.kind === "halted" && e.data.stage === "acquire" && e.data.reason !== "outcome_unknown");
   const requested = attempt.entries[0]?.data.pool;
   return !refused && typeof requested === "string" ? requested : undefined;
+}
+
+/** Whether the attempt's lease is known to be returned: by `finish` or `discard`, or as confirmed by the operator. */
+export function leaseReturned(attempt: AttemptRecord): boolean {
+  return attempt.entries.some(e => e.kind === "lease_returned") || resolvedBy(attempt, "lease_returned");
 }
 
 /** Whether the operator recorded this confirmation for the attempt with `resolve`. */

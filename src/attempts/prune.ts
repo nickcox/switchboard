@@ -114,6 +114,26 @@ export class AttemptPruner {
     }
   }
 
+  /** The context's prune lock, held by one prune run at a time so two runs never complete the same cleanup. */
+  lockPath(): string {
+    return join(this.log.root, `prune-lock-${key(this.log.contextId)}`);
+  }
+
+  /** Takes the prune lock by creating it exclusively, or returns false if another run holds it. */
+  async lock(): Promise<boolean> {
+    try { await mkdir(this.lockPath(), { mode: 0o700 }); }
+    catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") return false;
+      throw error;
+    }
+    await writeOnce(join(this.lockPath(), "owner.json"), { version: 1, pid: process.pid, startedAt: new Date().toISOString() });
+    return true;
+  }
+
+  async unlock(): Promise<void> {
+    await rm(this.lockPath(), { recursive: true, force: true });
+  }
+
   async remove(value: ArchivedAttempt): Promise<void> {
     const source = this.directory(value);
     const tombstone = join(source, "..", `.${value.attempt}.pruned`);
