@@ -74,7 +74,14 @@ export class AttemptConflict extends Error {
   }
 }
 
-const entryName = /^(\d{4})-([a-z_]+)\.json$/;
+const entryName = /^(\d{4,})(?:-([a-z_]+))?\.json$/;
+
+function sequenceOf(name: string): number {
+  const match = entryName.exec(name);
+  const sequence = match ? Number(match[1]) : NaN;
+  if (!Number.isSafeInteger(sequence)) throw new Error("Uninspectable attempt entry sequence");
+  return sequence;
+}
 
 /**
  * Append-only record of which task, lease, session, commits and outcome belong to each attempt (ADR-0006).
@@ -202,19 +209,20 @@ export class AttemptLog {
     });
     const directory = into ?? join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));
     // Write-once: a concurrent writer at the same sequence fails rather than replacing an entry.
-    await writeOnce(join(directory, `${String(sequence).padStart(4, "0")}-${kind}.json`), entry);
+    await writeOnce(join(directory, `${String(sequence).padStart(4, "0")}.json`), entry);
   }
 
   private async entries(directory: string, ref: AttemptRef): Promise<AttemptEntry[]> {
     // Names starting with "." are temporary files from an entry still being written.
-    const names = (await readdir(directory)).filter(name => !name.startsWith(".")).sort();
+    const names = (await readdir(directory)).filter(name => !name.startsWith("."));
+    names.sort((a, b) => sequenceOf(a) - sequenceOf(b));
     const entries: AttemptEntry[] = [];
     for (const [index, name] of names.entries()) {
       const match = entryName.exec(name);
-      if (!match || Number(match[1]) !== index) throw new Error("Uninspectable attempt entry sequence");
+      if (!match || sequenceOf(name) !== index) throw new Error("Uninspectable attempt entry sequence");
       const entry = envelopeSchema.parse(await readJsonFile(join(directory, name)));
       const data = entrySchemas[entry.kind].parse(entry.data);
-      if (entry.kind !== match[2] || entry.sequence !== index || entry.contextId !== ref.contextId ||
+      if ((match[2] !== undefined && entry.kind !== match[2]) || entry.sequence !== index || entry.contextId !== ref.contextId ||
         entry.taskId !== ref.taskId || entry.attempt !== ref.attempt) {
         throw new Error("Attempt entry does not match its storage location");
       }
@@ -226,7 +234,8 @@ export class AttemptLog {
   }
 
   private async firstEntry(directory: string): Promise<AttemptEntry> {
-    const first = (await readdir(directory)).filter(name => !name.startsWith(".")).sort()[0];
+    const first = (await readdir(directory)).filter(name => !name.startsWith("."))
+      .sort((a, b) => sequenceOf(a) - sequenceOf(b))[0];
     if (!first) throw new Error("Attempt has no entries");
     return envelopeSchema.parse(await readJsonFile(join(directory, first)));
   }

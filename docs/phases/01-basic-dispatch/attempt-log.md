@@ -9,12 +9,13 @@ The attempt log records which task, lease, session, commits and outcome belong t
 The log lives under the configured `runtimeRoot`, next to the runtime records and outside every workspace:
 
 ```text
-<runtimeRoot>/attempts/<sha256(contextId)>/<sha256(taskId)>/<attempt>/<sequence>-<kind>.json
+<runtimeRoot>/attempts/<sha256(contextId)>/<sha256(taskId)>/<attempt>/<sequence>.json
 ```
 
 - Context and task IDs are hashed into directory names, so any ID is a safe path. The original IDs are kept in every entry, and reading checks that they match the directory.
 - `<attempt>` counts from 1 for each task.
-- `<sequence>` is four digits from `0000`, one per entry, with no gaps.
+- `<sequence>` starts at `0000`, one per entry with no gaps, padded to at least four digits. It grows past `9999` without changing format. The maximum is `9007199254740991` (`Number.MAX_SAFE_INTEGER`); entry validation refuses larger numbers before writing.
+- Existing `<sequence>-<kind>.json` entries remain readable, including alongside newer sequence-only entries. Stop older Switchboard writers before upgrading – they do not use the new sequence claim.
 - Directories are created with mode `0700`. Linked directories are refused.
 - The log has its own `attempts/` directory because runtime-record discovery refuses unexpected entries in a context directory.
 
@@ -27,7 +28,7 @@ Each entry is one JSON file:
 | `version` | Always `1` |
 | `contextId`, `taskId`, `attempt` | Which attempt the entry belongs to |
 | `sequence` | Position in the attempt, matching the file name |
-| `kind` | One of the kinds below, matching the file name |
+| `kind` | One of the kinds below; also checked against the kind in legacy file names |
 | `recordedAt` | ISO 8601 time the entry was written |
 | `data` | The kind's fields, validated against its schema before writing and again when read |
 
@@ -50,17 +51,17 @@ The runtime records hold the launch input and the observed child exit ([runtime 
 
 - **Creating an attempt.** The caller names the latest attempt it has inspected for the task. Creation fails if any other attempt is now the latest. The new attempt's directory and its `requested` entry are written under a temporary name beginning with `.` and renamed into place, so readers never see an attempt without its first entry, and a rename that loses to another invocation fails instead of replacing its attempt. Together with the rule that a task whose latest attempt is unfinished is not selected, this is what stops two invocations dispatching the same task.
 - **Reserving a request ID.** Before creating an attempt with a request ID, dispatch creates `<runtimeRoot>/request-ids/<sha256(contextId)>/<sha256(requestId)>.json` exclusively, recording the request ID, task ID and time. A call that finds the file already created returns the attempt holding that request ID, or refuses while it does not exist. The reservation is removed only when creating the attempt then fails.
-- **Appending.** Each entry is written once under the next sequence number. It is written to a temporary file beginning with `.`, flushed, then hard-linked to its final name, so a reader sees either no entry or the complete entry. An existing entry is never replaced, so a second writer of the same sequence number fails.
+- **Appending.** Each entry is written once under the next sequence number. It is written to a temporary file beginning with `.`, flushed, then hard-linked to its final name, so a reader sees either no entry or the complete entry. The final name contains only the sequence, regardless of kind, so concurrent dispatcher, control and resolution events contend for the same hard link. An existing entry is never replaced. A second writer of the same sequence fails with `EEXIST`, without an automatic retry or any entry from that call; the caller must inspect the log before deciding whether to append again.
 - **Never edited or deleted.** Corrections are new entries.
 - Entries are flushed before their write completes, but durability after host power loss has not been qualified.
 
 ## Reading
 
-Readers ignore names beginning with `.`, which are writes in progress. Anything else that is unexpected causes refusal rather than an empty or partial result:
+Readers ignore names beginning with `.`, which are writes in progress. They parse and sort sequence numbers numerically, including legacy names, rather than sorting file names lexically. Anything else that is unexpected causes refusal rather than an empty or partial result:
 
 - an entry that fails its schema
 - a gap or duplicate in the sequence
-- a file name that does not match the entry's kind and sequence
+- a file name that does not match the entry's sequence (or kind, for legacy names)
 - an attempt whose first entry is not `requested`, or with a `requested` entry anywhere else
 - an entry whose context, task or attempt does not match its location
 - an attempt directory with no entries

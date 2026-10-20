@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { mkdtempSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AttemptConflict, AttemptLog } from "../../src/attempts/log.ts";
-import { RuntimeRecords } from "../../src/runtime/records.ts";
+import { key, RuntimeRecords } from "../../src/runtime/records.ts";
 
 const evidence = resolve(import.meta.dirname, "../../.investigation/attempts-unit");
 mkdirSync(evidence, { recursive: true });
@@ -22,6 +22,71 @@ test("creates numbered attempts and appends entries in order", async () => {
   assert.deepEqual((await log.forTask("task-1")).map(r => r.attempt), [1, 2]);
   assert.equal((await log.findByRequest("req-1"))?.attempt, 1);
   assert.equal(await log.findByRequest("req-unknown"), undefined);
+});
+
+test("different-kind concurrent appends claim one sequence only", async () => {
+  const root = freshRoot();
+  const first = new AttemptLog(root, "c");
+  const second = new AttemptLog(root, "c");
+  const ref = await first.create("task-1", {}, 0);
+  let arrived = 0;
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  for (const log of [first, second]) {
+    const read = log.read.bind(log);
+    log.read = async reference => {
+      const record = await read(reference);
+      if (++arrived === 2) release();
+      await barrier;
+      return record;
+    };
+  }
+  const results = await Promise.allSettled([
+    first.append(ref, "operator_resolved", { action: "worker_stopped" }),
+    second.append(ref, "worker_finished", { status: "exited", runtimeDirectory: root }),
+  ]);
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+  const rejected = results.find(result => result.status === "rejected");
+  assert.equal(rejected?.reason.code, "EEXIST");
+  const reader = new AttemptLog(root, "c");
+  assert.equal((await reader.read(ref)).entries.length, 2);
+  await reader.append(ref, "halted", { stage: "test", reason: "after conflict" });
+  assert.equal((await reader.list())[0]?.entries.length, 3);
+});
+
+test("legacy entries can be read and extended without accepting duplicate sequences or wrong kinds", async () => {
+  const root = freshRoot();
+  const log = new AttemptLog(root, "c");
+  const ref = await log.create("task-1", {}, 0);
+  const directory = join(root, "attempts", key("c"), key("task-1"), "1");
+  renameSync(join(directory, "0000.json"), join(directory, "0000-requested.json"));
+  await log.append(ref, "halted", { stage: "test", reason: "fixture" });
+  assert.deepEqual((await log.list())[0]?.entries.map(entry => entry.kind), ["requested", "halted"]);
+  renameSync(join(directory, "0001.json"), join(directory, "0001-worker_finished.json"));
+  await assert.rejects(log.read(ref), /storage location/);
+  renameSync(join(directory, "0001-worker_finished.json"), join(directory, "0001-halted.json"));
+  const entry = (await log.read(ref)).entries[1];
+  writeFileSync(join(directory, "0001.json"), JSON.stringify(entry));
+  await assert.rejects(log.read(ref), /sequence/);
+});
+
+test("sequence 10000 remains readable and sorts after 9999", async () => {
+  const root = freshRoot();
+  const log = new AttemptLog(root, "c");
+  const ref = await log.create("task-1", {}, 0);
+  const directory = join(root, "attempts", key("c"), key("task-1"), "1");
+  // Seed the preceding observations without thousands of append readbacks.
+  for (let sequence = 1; sequence < 10000; sequence += 1) {
+    writeFileSync(join(directory, `${String(sequence).padStart(4, "0")}-halted.json`), JSON.stringify({
+      version: 1, ...ref, sequence, kind: "halted", recordedAt: new Date().toISOString(),
+      data: { stage: "test", reason: "fixture" },
+    }));
+  }
+  await log.append(ref, "operator_resolved", { action: "worker_stopped" });
+  const record = await log.read(ref);
+  assert.equal(record.entries.length, 10001);
+  assert.equal(record.entries.at(-1)?.sequence, 10000);
+  assert.equal(record.entries.at(-1)?.kind, "operator_resolved");
 });
 
 test("creation is conditional on the latest attempt the caller inspected", async () => {
