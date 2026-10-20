@@ -21,7 +21,8 @@ const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): TaskStore => {
 };
 const workspacesWith = (f: Fixture, overrides: Partial<Dependencies["workspaces"]>): Dependencies["workspaces"] => ({
   acquire: request => f.deps.workspaces.acquire(request), leases: () => f.deps.workspaces.leases(),
-  pool: () => f.deps.workspaces.pool(), recyclableRoots: () => f.deps.workspaces.recyclableRoots(), ...overrides,
+  pool: () => f.deps.workspaces.pool(), recyclableRoots: () => f.deps.workspaces.recyclableRoots(),
+  returnLease: (lease, options) => f.deps.workspaces.returnLease(lease, options), ...overrides,
 });
 const delivery = { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code" as const, acceptance: "review_or_integration" as const, requiredEvidence: [], requiredDeliverables: [] };
 

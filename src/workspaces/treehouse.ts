@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { describeCommand, runCommand } from "../infra/command.ts";
 import { inside } from "../runtime/records.ts";
-import { WorkspaceError, type Allocation, type Lease, type WorkspaceProvider } from "./provider.ts";
+import { WorkspaceError, type Allocation, type Lease, type LeaseIdentity, type WorkspaceProvider } from "./provider.ts";
 
 /**
  * Treehouse 3.1 adapter. Commands run from the configured repository with an explicit pool root dedicated to this
@@ -71,6 +71,21 @@ export class TreehouseProvider implements WorkspaceProvider {
 
   async recyclableRoots(): Promise<string[]> { return [this.options.poolRoot]; }
 
+  async returnLease(lease: LeaseIdentity, options: { discardChanges: boolean }): Promise<void> {
+    const holder = argument.parse(lease.holder);
+    const leaseId = argument.parse(lease.leaseId);
+    if (!isAbsolute(lease.path)) throw new WorkspaceError("rejected", "Workspace path must be absolute");
+    // Treehouse asks before discarding uncommitted changes. Without `discardChanges` its input is closed, so it declines.
+    const result = await this.treehouse(["return", "--if-lease-holder", holder, "--if-lease-id", leaseId, lease.path], options.discardChanges ? "y\n" : undefined);
+    const listed = await this.leases().then(all => all.some(l => l.leaseId === leaseId), () => undefined);
+    if (listed === false) return;
+    if (listed === undefined || result.timedOut || result.exitCode === null) {
+      throw new WorkspaceError("outcome_unknown", `Whether lease ${leaseId} was returned is unknown`, describeCommand(result));
+    }
+    if (result.exitCode === 3) throw new WorkspaceError("rejected", `The workspace for lease ${leaseId} has uncommitted changes`, describeCommand(result));
+    throw new WorkspaceError("rejected", `Treehouse did not return lease ${leaseId}`, describeCommand(result));
+  }
+
   async leases(): Promise<Lease[]> {
     const result = await this.treehouse(["status", "--json"]);
     if (result.timedOut || result.exitCode !== 0) {
@@ -115,9 +130,9 @@ export class TreehouseProvider implements WorkspaceProvider {
     return { leaseId: acquired.lease_id, holder, path, branch, startingCommit: head.data };
   }
 
-  private treehouse(args: string[]) {
+  private treehouse(args: string[], input?: string) {
     const { treehouse, poolRoot, repository, environment, timeoutMs } = this.options;
-    return runCommand(treehouse, ["--root", poolRoot, ...args], { cwd: repository, env: environment, timeoutMs });
+    return runCommand(treehouse, ["--root", poolRoot, ...args], { cwd: repository, env: environment, timeoutMs, ...(input === undefined ? {} : { input }) });
   }
 
   private async git(cwd: string, args: string[]): Promise<string> {

@@ -16,18 +16,22 @@ const outputLimit = 16 * 1024 * 1024;
 const drainMs = 500;
 
 /**
- * Runs an external command without a shell and with closed stdin. A command that exceeds its timeout is killed and
+ * Runs an external command without a shell, with closed stdin unless `input` is given. A command that exceeds its timeout is killed and
  * reported as `timedOut`, which callers treat as an unknown outcome rather than a failure.
  *
  * The result is returned soon after the command itself exits, even if a process it started still holds its output
  * pipes open; that process is not waited for, killed or claimed to have stopped.
  */
 export async function runCommand(
-  executable: string, args: string[], options: { cwd: string; env: Record<string, string>; timeoutMs: number },
+  executable: string, args: string[], options: { cwd: string; env: Record<string, string>; timeoutMs: number; input?: string },
 ): Promise<CommandResult> {
   const child = spawn(executable, args, {
-    cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true,
+    cwd: options.cwd, env: options.env, stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"], shell: false, windowsHide: true,
   });
+  if (options.input !== undefined && child.stdin) {
+    child.stdin.on("error", () => {});
+    child.stdin.end(options.input);
+  }
   let stdout = "";
   let stderr = "";
   let truncated = false;
@@ -36,8 +40,8 @@ export async function runCommand(
     truncated = true;
     return text.slice(-outputLimit);
   };
-  child.stdout.setEncoding("utf8").on("data", (text: string) => { stdout = keep(stdout + text); });
-  child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr = keep(stderr + text); });
+  child.stdout!.setEncoding("utf8").on("data", (text: string) => { stdout = keep(stdout + text); });
+  child.stderr!.setEncoding("utf8").on("data", (text: string) => { stderr = keep(stderr + text); });
   let timedOut = false;
   let drain: NodeJS.Timeout | undefined;
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, options.timeoutMs);
@@ -48,7 +52,7 @@ export async function runCommand(
       child.once("exit", (code, signal) => {
         exit = signal ? null : code;
         // Stop waiting for the pipes to close once the drain period ends, and release them.
-        drain = setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); resolve(exit); }, drainMs);
+        drain = setTimeout(() => { child.stdout!.destroy(); child.stderr!.destroy(); resolve(exit); }, drainMs);
       });
       child.once("close", (code, signal) => resolve(signal ? null : code));
     });

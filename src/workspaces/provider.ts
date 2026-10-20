@@ -41,8 +41,18 @@ export class WorkspaceError extends Error {
   }
 }
 
-/** Phase 1 acquires and inspects leases only. Returning a lease is left to the operator. */
+export type LeaseIdentity = { leaseId: string; holder: string; path: string };
+
+/**
+ * Phase 1 acquires and inspects leases only. `returnLease` exists for the Phase 2 `finish` and `discard` commands, which
+ * check every return condition first; nothing else may call it.
+ */
 export interface WorkspaceProvider {
+  /**
+   * Returns exactly this lease, refusing if its identity or holder has changed. Uncommitted changes in the workspace
+   * make the return fail unless `discardChanges` is set. Confirms the lease is no longer listed.
+   */
+  returnLease(lease: LeaseIdentity, options: { discardChanges: boolean }): Promise<void>;
   acquire(request: { holder: string; baseRef: string; branch: string }): Promise<Allocation>;
   /** Areas containing every recyclable workspace, including idle workspaces and earlier pools. */
   recyclableRoots(): Promise<string[]>;

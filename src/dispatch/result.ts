@@ -18,11 +18,14 @@ export const reasons = {
   resolved: "The operator's confirmation was recorded. The attempt no longer blocks dispatch.",
   delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",
   undelivered: "No running dispatcher took the request in time, so it was withdrawn. It will never be forwarded.",
+  finished: "The attempt was finished under the context's finalisation policy: its task is recorded as done and its lease returned.",
+  discarded: "The attempt's work was discarded and its lease returned. Its task is held.",
+  planned: "Nothing was changed. The detail lists what the command would do.",
 } as const;
 export type Reason = keyof typeof reasons;
 
 /** Where a result was decided, matching the Phase 1 PRD dispatch sequence. */
-export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "finalise" | "resolve" | "control";
+export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "finalise" | "resolve" | "control" | "finish";
 
 export const nextActions = {
   none: "Nothing further is needed.",
@@ -40,6 +43,8 @@ export const nextActions = {
   choose_another_task: "Choose a ready task without an earlier lease, or resolve the earlier attempt first.",
   complete_task_update: "Read the task in the task store and apply the outcome recorded in the attempt log.",
   watch_attempt: "Follow the attempt with `switchboard watch --lease <lease-id>`.",
+  confirm_no_processes: "Check that no process from the attempt's worker is still running in its workspace, for example with `lsof +D <workspace>` on macOS or Linux, then run the command again with --no-processes.",
+  confirm_discard: "Discarding returns the lease and removes the workspace's contents, including uncommitted changes. If that is intended, run the command again with --confirm.",
   no_dispatcher: "No running dispatcher owns this worker. If it may still be running, stop it another way, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
 } as const;
 export type NextAction = keyof typeof nextActions;

@@ -25,7 +25,7 @@ test("finding 1: a dispatch started while another is acquiring a lease for the t
     ...f.deps,
     workspaces: {
       leases: () => f.deps.workspaces.leases(), pool: () => f.deps.workspaces.pool(),
-      recyclableRoots: () => f.deps.workspaces.recyclableRoots(),
+      recyclableRoots: () => f.deps.workspaces.recyclableRoots(), returnLease: (lease, options) => f.deps.workspaces.returnLease(lease, options),
       acquire: async request => {
         acquisitions += 1;
         if (pauseFirst && acquisitions === 1) await held.wait();
@@ -159,7 +159,7 @@ test("finding 1: a dispatcher whose attempt was resolved while it waited does no
     }),
     workspaces: {
       leases: () => f.deps.workspaces.leases(), pool: () => f.deps.workspaces.pool(),
-      recyclableRoots: () => f.deps.workspaces.recyclableRoots(),
+      recyclableRoots: () => f.deps.workspaces.recyclableRoots(), returnLease: (lease, options) => f.deps.workspaces.returnLease(lease, options),
       acquire: async request => { acquisitions += 1; return f.deps.workspaces.acquire(request); },
     },
   };

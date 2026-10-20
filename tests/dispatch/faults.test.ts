@@ -22,7 +22,7 @@ const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): Dependencies => {
   } };
 };
 const acquireWith = (f: Fixture, acquire: Dependencies["workspaces"]["acquire"]): Dependencies =>
-  ({ ...f.deps, workspaces: { recyclableRoots: () => f.deps.workspaces.recyclableRoots(), acquire, leases: () => f.deps.workspaces.leases(), pool: () => f.deps.workspaces.pool() } });
+  ({ ...f.deps, workspaces: { recyclableRoots: () => f.deps.workspaces.recyclableRoots(), returnLease: (lease, options) => f.deps.workspaces.returnLease(lease, options), acquire, leases: () => f.deps.workspaces.leases(), pool: () => f.deps.workspaces.pool() } });
 
 const cases: Case[] = [
   { name: "task store unreadable", reason: "refused", launches: 0,
@@ -67,7 +67,7 @@ for (const c of cases) {
     const deps: Dependencies = {
       ...injected,
       launch: (input, signal) => { launches += 1; return injected.launch(input, signal); },
-      workspaces: { recyclableRoots: () => injected.workspaces.recyclableRoots(), leases: () => injected.workspaces.leases(), pool: () => injected.workspaces.pool(), acquire: request => { acquisitions += 1; return injected.workspaces.acquire(request); } },
+      workspaces: { recyclableRoots: () => injected.workspaces.recyclableRoots(), returnLease: (lease, options) => injected.workspaces.returnLease(lease, options), leases: () => injected.workspaces.leases(), pool: () => injected.workspaces.pool(), acquire: request => { acquisitions += 1; return injected.workspaces.acquire(request); } },
     };
     const outcome = await dispatchOnce(deps);
     const detail = JSON.stringify(outcome, null, 2);
