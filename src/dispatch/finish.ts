@@ -78,6 +78,7 @@ async function recheck(deps: Dependencies, attempt: AttemptStatus): Promise<Rete
   let report;
   try { report = validateWorkerResult(await readJsonFile(runtime.binding.resultPath), runtime.binding.input); }
   catch (error) { return `The worker's result cannot be read: ${error instanceof Error ? error.message : String(error)}`; }
+  if (report.outcome !== "completed") return `The worker reported ${report.outcome}, not completed work; use --accept-output to accept its committed output instead`;
   const delivery = runtime.binding.input.delivery;
   return deps.retention({
     repository: deps.repository, workspace: runtime.binding.input.workspace, outputBranch: delivery.outputBranch,
@@ -100,8 +101,11 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
   if (attempt.state === "finished") return refused("none", "The attempt is already finished", { ...base, lease: "none" });
   const accepted = [...record.entries].reverse().find(e => e.kind === "output_accepted");
   const accepting = options.acceptOutput || accepted !== undefined;
-  if (attempt.state !== "awaiting_review" && attempt.state !== "awaiting_finish" && !(accepting && attempt.state === "held" && attempt.leaseHeld)) {
-    return refused(attempt.nextAction.code, `Only an attempt awaiting review or awaiting finish, or a held attempt with --accept-output, can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
+  // A not-retained attempt whose output was fixed, and an unconfirmed task update, are finished from the worker's
+  // completed result once retention passes now; finish then records the task as done itself.
+  const finishable = ["awaiting_review", "awaiting_finish", "not_retained", "task_update_unconfirmed"].includes(attempt.state) && attempt.leaseHeld;
+  if (!finishable && !(accepting && attempt.state === "held" && attempt.leaseHeld)) {
+    return refused(attempt.nextAction.code, `Only an attempt awaiting review or finish, not retained or with an unconfirmed task update, or a held attempt with --accept-output, can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
   }
 
   let policy: ResolvedPolicy;
@@ -216,7 +220,8 @@ export async function discard(deps: Dependencies, options: { leaseId: string; no
   const task = await deps.tasks.read(attempt.attempt.taskId).catch(() => undefined);
   if (!task) return refused("inspect_attempt", "The task cannot be read", base);
   const holdReason = `Switchboard attempt ${attempt.attempt.attempt} discarded`;
-  const steps = [...(task.state === "in_flight" ? ["hold the task"] : []), `discard the workspace's contents and return lease ${options.leaseId}`];
+  const hold = task.state !== "done" && !(task.held && task.holdReason === holdReason);
+  const steps = [...(hold ? ["hold the task"] : []), `discard the workspace's contents and return lease ${options.leaseId}`];
   if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: {}, ...base, detail: `Would ${steps.join(", then ")}`, nextAction: "none" });
 
   const stopped = (error: unknown, step: string) => result({
@@ -227,8 +232,8 @@ export async function discard(deps: Dependencies, options: { leaseId: string; no
   if (fenced) return refused("inspect_attempt", fenced, base);
   try {
     if (!record.entries.some(e => e.kind === "discarded")) await deps.attempts.append(record, "discarded", { ...(options.note ? { note: options.note } : {}) });
-    // A task left in flight would never be dispatched again; hold it so the operator decides what happens next.
-    if (task.state === "in_flight") await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## ${holdReason}${options.note ? `\n\n${options.note}` : ""}` });
+    // Every task not done is left queued and held, so it is not dispatched again until the operator decides.
+    if (hold) await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## ${holdReason}${options.note ? `\n\n${options.note}` : ""}` });
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard"); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }

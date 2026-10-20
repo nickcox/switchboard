@@ -18,7 +18,12 @@ export async function resolveStopped(
   if (!taskId) {
     return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: { leaseId: options.leaseId }, detail: "No attempt or runtime record in this context has this lease ID", nextAction: "inspect_attempt" });
   }
-  const task = await deps.tasks.read(taskId).catch(() => undefined);
+  let task;
+  try { task = await deps.tasks.read(taskId); }
+  catch (error) {
+    // Unknown is not absence: every command that changes an attempt refuses while one of its owners cannot be read.
+    return result({ ok: false, reason: "refused", stage: "resolve", lease: "unknown", observed: { leaseId: options.leaseId, task: "unreadable" }, detail: `The attempt's task cannot be read: ${error instanceof Error ? error.message : String(error)}`, nextAction: "inspect_attempt" });
+  }
   const leaseHeld = state.leases.some(l => l.leaseId === options.leaseId);
   const summary = attempt ? summarise(attempt) : { contextId: deps.contextId, taskId, attempt: 0, leaseId: options.leaseId, ...(runtime ? { sessionId: runtime.binding.input.identity.sessionId } : {}) };
   const observed = { runtime: runtime?.child.status ?? "no runtime record", leaseHeld, task: task ? { state: task.state, held: task.held } : "unreadable" };

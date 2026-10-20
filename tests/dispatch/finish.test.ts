@@ -77,7 +77,7 @@ test("accept-output dry run and missing process confirmation do not record accep
   assert.equal(await listed(f, leaseId), true);
 });
 
-for (const fault of ["missing branch", "no new commits", "untracked", "uncommitted", "unknown", "other pool", "unfinished"] as const) {
+for (const fault of ["missing branch", "no new commits", "untracked", "uncommitted", "unknown"] as const) {
   test(`accept-output refuses ${fault}`, async () => {
     const { f, leaseId, branch, workspace } = await failedOutput();
     let deps = f.deps;
@@ -86,15 +86,6 @@ for (const fault of ["missing branch", "no new commits", "untracked", "uncommitt
     if (fault === "untracked") writeFileSync(join(workspace, "extra.txt"), "extra");
     if (fault === "uncommitted") writeFileSync(join(workspace, "tracked.txt"), "changed");
     if (fault === "unknown") deps = { ...deps, tasks: { ...deps.tasks, read: async () => { throw new Error("Unreadable"); } } as Dependencies["tasks"] };
-    if (fault === "other pool") deps = { ...deps, workspaces: Object.assign(Object.create(Object.getPrototypeOf(deps.workspaces)), deps.workspaces, { leases: async () => [] }) };
-    if (fault === "unfinished") {
-      deps = { ...deps, workspaces: Object.assign(Object.create(Object.getPrototypeOf(deps.workspaces)), deps.workspaces, { leases: async () => [] }) };
-      // A fresh open attempt has neither an outcome nor a worker.
-      const ref = await deps.attempts.create("open-a2", {}, 0);
-      await deps.attempts.append(ref, "leased", { leaseId: "unfinished", workspace, baseRef: "main", outputBranch: branch, startingCommit: f.run(["rev-parse", "main"]) });
-      assert.equal((await finish(deps, { leaseId: "unfinished", noProcesses: true, acceptOutput: true })).reason, "refused");
-      return;
-    }
     const outcome = await finish(deps, { leaseId, noProcesses: true, acceptOutput: true });
     assert.equal(outcome.reason, "refused", outcome.detail ?? "");
     assert.equal((await kinds(f)).includes("output_accepted"), false);
@@ -127,14 +118,21 @@ test("accept-output refuses an output branch with no commits beyond its starting
   assert.equal(await listed(f, leaseId), true);
 });
 
-test("accept-output applies only to a held attempt, not one whose task update is unconfirmed", async () => {
-  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
-  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { recordHold: async () => { throw new Error("lost"); } });
-  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
-  assert.equal(await state(f.deps), "task_update_unconfirmed");
+test("accept-output applies only to a held attempt, not a stopped one with commits on its branch", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")] });
+  const { TaskStoreError } = await import("../../src/tasks/store.ts");
+  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { start: async () => { throw new TaskStoreError("rejected", "refused"); } });
+  const outcome = await dispatchOnce({ ...f.deps, tasks });
+  const leaseId = outcome.attempt!.leaseId!, workspace = outcome.attempt!.workspace!;
+  const git = (...args: string[]) => execFileSync(onPath("git"), ["-C", workspace, ...args], { env: f.environment });
+  writeFileSync(join(workspace, "work.txt"), "committed\n");
+  git("add", "work.txt");
+  git("commit", "-q", "--no-gpg-sign", "-m", "Work");
+  assert.equal(await state(f.deps), "stopped");
   assert.equal((await finish(f.deps, { leaseId, noProcesses: true, acceptOutput: true })).reason, "refused");
   assert.equal(await listed(f, leaseId), true);
 });
+
 
 test("a later finish integrates the accepted commit, not commits added to the branch since", async () => {
   const { f, leaseId, workspace } = await failedOutput();
@@ -392,4 +390,81 @@ test("finding 12: a fast-forward made before its log entry failed is recorded by
   assert.equal((await finish({ ...f.deps, policy: localMerge(f) }, { leaseId, noProcesses: true })).reason, "finished");
   const integrated = (await f.deps.attempts.forTask("finish-a1"))[0]!.entries.filter(e => e.kind === "integrated");
   assert.deepEqual(integrated.map(e => e.data.commit), [f.run(["rev-parse", branch])]);
+});
+
+// Phase 2 review findings 8, 9, 11 and 16. Each test asserts the attempt's state before the command's outcome, so it
+// cannot pass by refusing for another reason.
+
+test("finding 16: accept-output refuses an attempt whose lease is in another pool", async () => {
+  const { f, leaseId } = await failedOutput();
+  f.run(["remote", "add", "origin", "https://example.invalid/fixture.git"]);
+  assert.equal(await state(f.deps), "lease_in_other_pool");
+  assert.equal((await finish(f.deps, { leaseId, noProcesses: true, acceptOutput: true })).reason, "refused");
+  f.run(["remote", "remove", "origin"]);
+  assert.equal(await listed(f, leaseId), true);
+  assert.equal((await kinds(f)).includes("output_accepted"), false);
+});
+
+test("finding 16: accept-output refuses an unfinished attempt", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")] });
+  const ref = await f.deps.attempts.create("finish-a1", { pool: await f.deps.workspaces.pool() }, 0);
+  await f.deps.attempts.append(ref, "leased", { leaseId: "unfinished", workspace: f.dir, baseRef: "main", outputBranch: "o", startingCommit: f.run(["rev-parse", "main"]), pool: await f.deps.workspaces.pool() });
+  assert.equal(await state(f.deps), "unfinished");
+  assert.equal((await finish(f.deps, { leaseId: "unfinished", noProcesses: true, acceptOutput: true })).reason, "refused");
+});
+
+test("finding 8: once the output is fixed, a not-retained attempt can be finished", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
+  let failures = 1;
+  const retention: Dependencies["retention"] = async request => {
+    const checked = await f.deps.retention(request);
+    return failures-- > 0 ? { ...checked, retained: false, findings: ["temporarily unavailable"] } : checked;
+  };
+  const leaseId = (await dispatchOnce({ ...f.deps, retention })).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "not_retained");
+  const outcome = await finish(f.deps, { leaseId, noProcesses: true });
+  assert.equal(outcome.reason, "finished", outcome.detail ?? "");
+  assert.equal((await f.tasks.read("finish-a1"))?.state, "done");
+});
+
+test("finding 8: a not-retained attempt whose output is still not retained is refused", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")], acceptance: "independent_deliverable" });
+  const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "not_retained");
+  assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "refused");
+  assert.equal(await listed(f, leaseId), true);
+});
+
+test("finding 9: after the operator completes an unconfirmed task update, the attempt can be finished", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
+  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { recordHold: async () => { throw new Error("lost"); } });
+  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "task_update_unconfirmed");
+  await f.tasks.recordDone("finish-a1", "Completed by the operator");
+  const outcome = await finish(f.deps, { leaseId, noProcesses: true });
+  assert.equal(outcome.reason, "finished", outcome.detail ?? "");
+  assert.ok((await kinds(f)).includes("task_recorded"));
+});
+
+test("finding 11: discard holds a task that was queued and not held", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")] });
+  const { TaskStoreError } = await import("../../src/tasks/store.ts");
+  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { start: async () => { throw new TaskStoreError("rejected", "refused"); } });
+  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "stopped");
+  assert.equal((await f.tasks.read("finish-a1"))?.held, false);
+  assert.equal((await discard(f.deps, { leaseId, noProcesses: true, confirm: true })).reason, "discarded");
+  const held = await f.tasks.read("finish-a1");
+  assert.deepEqual([held?.state, held?.held], ["queued", true]);
+  assert.deepEqual(await f.tasks.ready(), []);
+});
+
+test("finding 9: an unconfirmed task update from a worker that held its task is not finished as done", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "hold" });
+  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { recordHold: async () => { throw new Error("lost"); } });
+  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "task_update_unconfirmed");
+  assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "refused");
+  assert.notEqual((await f.tasks.read("finish-a1"))?.state, "done");
+  assert.equal(await listed(f, leaseId), true);
 });

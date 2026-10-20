@@ -143,3 +143,19 @@ test("requests for a finished worker or an unknown lease are refused", async () 
   assert.match(late.detail!, /not running/);
   assert.equal((await requestControl(f.deps, { leaseId: "no-such-lease", kind: "stop", sender: "operator:test", waitMs: 300 })).reason, "refused");
 });
+
+test("Phase 2 review finding 14: resolve refuses to record a stop when the attempt's task cannot be read", async () => {
+  const f = await fixture({ tasks: [task("unread-a1")] });
+  const workspace = join(f.dir, "unread-workspace");
+  mkdirSync(workspace);
+  const sessionId = randomUUID();
+  const ref = await f.deps.attempts.create("unread-a1", {}, 0);
+  await f.deps.attempts.append(ref, "leased", { leaseId: "lease-unread", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
+  await f.deps.attempts.append(ref, "launched", { sessionId });
+  await f.runtime.reserve({ identity: { contextId: "fixture-context", taskId: "unread-a1", leaseId: "lease-unread", sessionId }, workspace, instructions: "Earlier", acceptanceCriteria: [],
+    delivery: { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] } });
+  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { read: async () => { throw new Error("store offline"); } });
+  const outcome = await resolveStopped({ ...f.deps, tasks }, { leaseId: "lease-unread", confirmed: true });
+  assert.equal(outcome.reason, "refused");
+  assert.equal((await f.deps.attempts.read(ref)).entries.some(e => e.kind === "operator_resolved"), false);
+});

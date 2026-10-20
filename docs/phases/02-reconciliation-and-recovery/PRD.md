@@ -45,7 +45,7 @@ Every attempt is classified from its attempt-log entries and each owner's curren
 | Awaiting review | Task held for review, lease preserved, retained | Review, then `finish` |
 | Awaiting finish | Task recorded as done, lease preserved, retained | `finish` (returns the lease) |
 | Held for another reason | Task held as failed, interrupted, over budget or held by the worker; lease preserved | Inspect, then `finish --accept-output`, dispatch again or `discard` |
-| Not retained | Retention check failed; lease preserved | Fix the output, or `discard` with confirmation |
+| Not retained | Retention check failed; lease preserved | Fix the output, then `finish`, or `discard` with confirmation |
 | Lease in another pool | Lease recorded in a pool Treehouse no longer lists | Return it by path, then `resolve --lease-returned` |
 | Task update unconfirmed | Final task update not confirmed | Complete the update, then `finish` |
 | Stopped | Halted after acquiring its lease, or its task is still in flight with no lease | Inspect the attempt |
@@ -55,7 +55,7 @@ Every attempt is classified from its attempt-log entries and each owner's curren
 
 ## Finishing an attempt
 
-`switchboard finish --lease <lease-id>` completes an attempt according to the context's finalisation policy. It is the operator's statement that the work has been reviewed and should be integrated; it never runs for an attempt that is running, possibly running, unfinished or unknown.
+`switchboard finish --lease <lease-id>` completes an attempt according to the context's finalisation policy. It applies to an attempt awaiting review or awaiting finish, and to one that is not retained or has an unconfirmed task update, once its worker's completed result passes the retention check again. It is the operator's statement that the work has been reviewed and should be integrated; it never runs for an attempt that is running, possibly running, unfinished or unknown.
 
 **Accepting committed output.** A worker can commit its work and then fail before writing its result, for example when its last provider request fails. For a held attempt (including failed, interrupted and over-budget attempts), `finish --lease <lease-id> --accept-output --no-processes` is the operator's decision to accept the output branch's current head instead of the worker's result. The branch must exist in the backing repository, and its head must be a strict descendant of the attempt's starting commit. Retention checks that the branch contains that commit and that the workspace has no uncommitted or untracked files; no worker result is needed. Running, possibly running, unfinished, unknown and other-pool attempts remain ineligible. Dry runs do not record acceptance.
 
