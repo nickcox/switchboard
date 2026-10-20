@@ -1,6 +1,6 @@
 # Phase 1 verification
 
-Status: Phase 1 is **not yet complete**. This record was first written on 19 October 2026. The independent [Phase 1 review](review-2026-10-20.md) on 20 October 2026 then found that several claimed guarantees did not hold, most seriously that two dispatches started a moment apart could launch two workers for the same task. Every finding in that review is now fixed, each with a test. Phase 1 is complete once three of the review's additional concerns are also fixed: forwarding every claimed stop request and message at shutdown, treating a launch error as uncertain when a worker may have started, and keeping task-store updates within command-line length limits. The evidence below is from 19 October, with the review's fixes noted where they apply.
+Status: Phase 1 is complete on macOS, as of 20 October 2026. This record was first written on 19 October 2026. The independent [Phase 1 review](review-2026-10-20.md) on 20 October 2026 then found that several claimed guarantees did not hold, most seriously that two dispatches started a moment apart could launch two workers for the same task. Every finding in that review is now fixed, each with a test, as are three of its additional concerns: forwarding every claimed stop request and message at shutdown, treating a launch error as uncertain when a worker may have started, and keeping task-store updates within command-line length limits. The evidence below is from 19 October, with the review's fixes noted where they apply.
 
 Test names below are from the root suite (`npm test`), which passes under Node.js 26.7.0 on macOS, and in CI on Linux and Windows. The suite uses the real tasks-axi 0.2.6 CLI, Treehouse (3.1.3 when this record was written; CI now installs 3.1.4) and Git against disposable stores and repositories, and a synthetic Pi worker (`tests/fixtures/pi-rpc.ts`) in place of a model. Real runs used [`investigations/real-dispatch/`](../../../investigations/real-dispatch/README.md) with Pi 1.2.0, provider `openai-codex` and model `gpt-6.1-sol`.
 
@@ -32,7 +32,7 @@ The PRD requires adapter fault tests and at least one real end-to-end dispatch t
 
 ## Not covered
 
-- **The review's findings.** All 24 findings are fixed, each covered by a test. Three of its six additional concerns are tracked as backlog tasks; the other three (base-commit checking, heartbeat timing across suspend, and power loss or tampering by the same user) are out of scope for Phase 1.
+- **The review's findings.** All 24 findings and three of its six additional concerns are fixed, each covered by a test. The other three concerns (base-commit checking, heartbeat timing across suspend, and power loss or tampering by the same user) are out of scope for Phase 1.
 
 - **Linux and Windows real dispatch.** The suite passes there, but no real dispatch has run, so neither platform is supported yet.
 - **Real-worker stop, usage limits and model errors.** These are tested with the synthetic worker only.
