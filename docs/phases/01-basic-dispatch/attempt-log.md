@@ -44,6 +44,7 @@ Each entry is one JSON file:
 | `retention_checked` | `dispatch` | `retained`, plus `findings` that prevent retention and `notes` that do not. Covers every reported Git branch/commit pair and artefact separately; artefacts must be readable regular files within the assigned artefact directory and outside every recyclable area |
 | `halted` | `dispatch` | The `stage`, `reason` and optional `detail` of a dispatch that stopped before finishing; optional `leaseId`, `workspace` and `outputBranch` recovered from inspection. An uncertain acquisition records `reason: outcome_unknown`, so the `requested` pool identifies a lease that may still be held even without a `leased` entry |
 | `operator_resolved` | `resolve` | `action` (`worker_stopped`, or `lease_returned` for a lease in a pool that is no longer listed) and an optional `note` |
+| `output_accepted` | `finish --accept-output` | The accepted `commit` and `acceptedBy: "operator"`. The operator accepted committed output in place of the worker's result; subsequent finish runs can use this commit after a partial failure |
 | `integrated` | `finish` | Under the `local-merge` policy: `policy`, the `targetBranch` fast-forwarded and the `commit` it now points to |
 | `discarded` | `discard` | An optional `note`. Written once, before the lease is returned |
 | `lease_returned` | `finish`, `discard` | `leaseId`, `by` (`finish` or `discard`) and `noProcessesConfirmedBy: "operator"`, recording that the confirmation was the operator's, not an observation |

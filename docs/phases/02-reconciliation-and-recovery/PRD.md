@@ -44,7 +44,7 @@ Every attempt is classified from its attempt-log entries and each owner's curren
 | Unfinished, no lease | Open attempt with no listed lease and no worker | Confirm it stopped (`resolve --task --lease-returned`) |
 | Awaiting review | Task held for review, lease preserved, retained | Review, then `finish` |
 | Awaiting finish | Task recorded as done, lease preserved, retained | `finish` (returns the lease) |
-| Held for another reason | Task held as failed, interrupted, over budget or held by the worker; lease preserved | Inspect, then dispatch again or `discard` |
+| Held for another reason | Task held as failed, interrupted, over budget or held by the worker; lease preserved | Inspect, then `finish --accept-output`, dispatch again or `discard` |
 | Not retained | Retention check failed; lease preserved | Fix the output, or `discard` with confirmation |
 | Lease in another pool | Lease recorded in a pool Treehouse no longer lists | Return it by path, then `resolve --lease-returned` |
 | Task update unconfirmed | Final task update not confirmed | Complete the update, then `finish` |
@@ -56,6 +56,10 @@ Every attempt is classified from its attempt-log entries and each owner's curren
 ## Finishing an attempt
 
 `switchboard finish --lease <lease-id>` completes an attempt according to the context's finalisation policy. It is the operator's statement that the work has been reviewed and should be integrated; it never runs for an attempt that is running, possibly running, unfinished or unknown.
+
+**Accepting committed output.** A worker can commit its work and then fail before writing its result, for example when its last provider request fails. For a held attempt (including failed, interrupted and over-budget attempts), `finish --lease <lease-id> --accept-output --no-processes` is the operator's decision to accept the output branch's current head instead of the worker's result. The branch must exist in the backing repository, and its head must be a strict descendant of the attempt's starting commit. Retention checks that the branch contains that commit and that the workspace has no uncommitted or untracked files; no worker result is needed. Running, possibly running, unfinished, unknown and other-pool attempts remain ineligible. Dry runs do not record acceptance.
+
+Before integrating or changing the task, `finish` records `output_accepted` with the commit and `acceptedBy: "operator"`. After a partial failure, a later `finish` can use that recorded acceptance without the flag or a worker result, checking retention against the accepted commit again. With the flag, the current branch head is checked and accepted afresh if it has changed. Acceptance does not skip the finalisation policy, task update, process confirmation or conditional lease return. Without the flag or a previous operator acceptance, the worker-result checks remain unchanged.
 
 **Finalisation policy.** Each context has one finalisation policy, separate from the delivery contracts, which say what a worker must produce. A policy is one of a fixed set of kinds built into Switchboard, because each kind is a sequence of steps that move or publish work and needs its own read-back, uncertain-outcome handling and retention check. Documents choose the kind and its settings, such as the target branch; they cannot define new kinds or run commands. Phase 2's kinds are:
 
@@ -83,11 +87,11 @@ Each step reads back its owner's state, and `finish` can be run again after any 
 Returning a lease recycles the workspace and is the only routine action that can destroy work, so `finish` and `discard` return a lease only when all of these hold:
 
 1. The attempt's state allows it: awaiting finish (after the task is recorded) for `finish`, or confirmed by the operator for `discard`.
-2. The retention check passes, run again immediately before returning, unless the operator is discarding the work explicitly.
+2. The retention check passes, run again immediately before returning, unless the operator is discarding the work explicitly. For accepted output it checks the operator's accepted commit, not the worker's result.
 3. The workspace holds no running process from the worker. Switchboard cannot prove this, so it is the operator's confirmation, given with the `--no-processes` flag on `finish` and `discard`, and recorded in the attempt log as theirs, not as an observation. Without the flag, both commands stop before returning the lease and say what to check. `status` shows what Switchboard can see to help: the observed exit, the heartbeat, and the workspace's open files where the platform can list them.
 4. The return is conditional on the lease's identity and holder, as Phase 1's operator instructions already require (`treehouse return --if-lease-id --if-lease-holder`).
 
-`switchboard discard --lease <lease-id>` returns a lease whose work is not retained, or not wanted, after the operator confirms they intend to discard it. It records the discard and leaves the task held, so the task can be dispatched again or closed by the operator.
+`switchboard discard --lease <lease-id>` returns a lease whose work is not retained, or not wanted, after the operator confirms they intend to discard it. It records the discard and leaves the task held, so the task can be dispatched again or closed by the operator. A task already recorded as done stays done.
 
 ## Retention of attempt records
 
@@ -99,6 +103,7 @@ Returning a lease recycles the workspace and is the only routine action that can
 2. The policy is resolved from the global, repository and context layers, with forbidden kinds enforced and the repository file read only from the base branch; a test changes the policy file on an output branch and shows it has no effect.
 3. `finish` under `manual` and `local-merge` completes a reviewed attempt in one command, can be repeated after a failure at any step without repeating completed steps, and refuses running, possibly running, unfinished and unknown attempts.
 4. No command returns a lease without a passing retention check (or an explicit discard), the operator's `--no-processes` confirmation, and a lease identity check. Tests disable each condition in turn and show the return is refused.
-5. `discard` returns a lease only after explicit confirmation and leaves the task held.
+5. `discard` returns a lease only after explicit confirmation and leaves the task held, or done if it was already done.
 6. `prune` never removes an attempt that is unfinished, holds a lease, may be running or is unknown, nor a reservation whose attempt remains.
 7. A real end-to-end run finishes a reviewed attempt with `finish` under `local-merge`.
+8. `finish --accept-output` accepts held committed output under manual and local-merge policies without a worker result, records the operator's acceptance, and can complete after partial failure. Missing or unadvanced branches, dirty workspaces and unsafe attempt states are refused.

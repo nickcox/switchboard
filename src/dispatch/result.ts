@@ -19,7 +19,7 @@ export const reasons = {
   delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",
   undelivered: "No running dispatcher took the request in time, so it was withdrawn. It will never be forwarded.",
   finished: "The attempt was finished under the context's finalisation policy: its task is recorded as done and its lease returned.",
-  discarded: "The attempt's work was discarded and its lease returned. Its task is held.",
+  discarded: "The attempt's work was discarded and its lease returned. Its task stays done if already done; otherwise it is held.",
   planned: "Nothing was changed. The detail lists what the command would do.",
   pruned: "Eligible finished attempts were archived and their records removed.",
 } as const;

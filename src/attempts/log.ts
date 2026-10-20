@@ -46,6 +46,8 @@ const entrySchemas = {
    * is in a workspace pool the provider no longer lists, has been returned.
    */
   operator_resolved: z.strictObject({ action: z.enum(["worker_stopped", "lease_returned"]), note: nonempty.optional() }),
+  /** `finish --accept-output`: the operator accepted committed output instead of a worker result. */
+  output_accepted: z.strictObject({ commit, acceptedBy: z.literal("operator") }),
   /** `finish` under the local-merge policy fast-forwarded the target branch to the output branch. */
   integrated: z.strictObject({ policy: z.literal("local-merge"), targetBranch: nonempty, commit }),
   /** `discard`: the operator chose to discard the attempt's work. */

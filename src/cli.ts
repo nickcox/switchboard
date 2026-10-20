@@ -20,7 +20,7 @@ const usage = `Usage:
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
-  switchboard finish --lease <lease-id> --no-processes [--dry-run] [--json] [--config <path>]
+  switchboard finish --lease <lease-id> --no-processes [--accept-output] [--dry-run] [--json] [--config <path>]
   switchboard discard --lease <lease-id> --confirm --no-processes [--note <text>] [--dry-run] [--json] [--config <path>]
   switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
   switchboard stop --lease <lease-id> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
@@ -41,6 +41,8 @@ lease in a workspace pool Switchboard no longer lists, for example after the ori
 Use exactly one of --lease and --task. --task is only for --lease-returned; --attempt selects a task's attempt
 (default: latest). resolve never changes the task or the lease.
 
+finish --accept-output accepts committed output from a held attempt as your decision, without a worker result.
+The output branch must advance the starting commit and the workspace must be clean.
 finish completes an attempt awaiting review or awaiting finish under the context's finalisation policy (manual,
 or local-merge, which first fast-forwards the target branch), records the task as done and returns the lease.
 discard returns the lease of an attempt whose work is not wanted, removing the workspace's contents, and holds its
@@ -62,7 +64,7 @@ async function main(argv: string[]): Promise<number> {
     options: {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
-      lease: { type: "string" }, "no-processes": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
+      lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" }, "older-than": { type: "string" },
     },
   });
@@ -81,7 +83,7 @@ async function main(argv: string[]): Promise<number> {
   const allowed: Record<string, string[]> = {
     dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "note"],
     watch: ["lease", "no-follow"], stop: ["lease", "as", "wait"], steer: ["lease", "after", "as", "wait"],
-    prune: ["older-than", "dry-run"], finish: ["lease", "no-processes", "dry-run"], discard: ["lease", "no-processes", "confirm", "note", "dry-run"],
+    prune: ["older-than", "dry-run"], finish: ["lease", "no-processes", "accept-output", "dry-run"], discard: ["lease", "no-processes", "confirm", "note", "dry-run"],
   };
   const misplaced = Object.keys(values).filter(name => !["json", "config", ...allowed[command]!].includes(name));
   if (misplaced.length > 0) {
@@ -168,7 +170,7 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "finish" || command === "discard") {
     const common = { leaseId: values.lease!, noProcesses: values["no-processes"] === true, dryRun: values["dry-run"] === true };
-    const value = command === "finish" ? await finish(deps, common)
+    const value = command === "finish" ? await finish(deps, { ...common, acceptOutput: values["accept-output"] === true })
       : await discard(deps, { ...common, confirm: values.confirm === true, ...(values.note ? { note: values.note } : {}) });
     console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
     return value.ok ? 0 : 1;

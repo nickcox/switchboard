@@ -1,4 +1,5 @@
 import type { AttemptRecord } from "../attempts/log.ts";
+import { onPath } from "../infra/executables.ts";
 import { validateWorkerResult } from "../runtime/contracts.ts";
 import { readJsonFile } from "../runtime/records.ts";
 import type { RetentionResult } from "../workspaces/retention.ts";
@@ -46,7 +47,7 @@ async function recheck(deps: Dependencies, attempt: AttemptStatus): Promise<Rete
   });
 }
 
-export async function finish(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean }): Promise<DispatchResult> {
+export async function finish(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean; acceptOutput?: boolean }): Promise<DispatchResult> {
   if (!options.noProcesses && !options.dryRun) return refused("confirm_no_processes", "Returning the lease needs your confirmation that no worker process remains (--no-processes)");
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
@@ -54,8 +55,10 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
   const base = { attempt: attempt.attempt };
   if (!attempt.changeable) return refused(attempt.nextAction.code, `The attempt is ${attempt.state.replaceAll("_", " ")}, so it cannot be finished`, base);
   if (attempt.state === "finished") return refused("none", "The attempt is already finished", { ...base, lease: "none" });
-  if (attempt.state !== "awaiting_review" && attempt.state !== "awaiting_finish") {
-    return refused(attempt.nextAction.code, `Only an attempt awaiting review or awaiting finish can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
+  const accepted = [...record.entries].reverse().find(e => e.kind === "output_accepted");
+  const accepting = options.acceptOutput || accepted !== undefined;
+  if (attempt.state !== "awaiting_review" && attempt.state !== "awaiting_finish" && !(accepting && attempt.state === "held" && attempt.leaseHeld)) {
+    return refused(attempt.nextAction.code, `Only an attempt awaiting review or awaiting finish, or a held attempt with --accept-output, can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
   }
 
   let policy: ResolvedPolicy;
@@ -63,7 +66,23 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
   catch (error) { return refused("fix_configuration", `The finalisation policy cannot be resolved: ${error instanceof Error ? error.message : String(error)}`, base); }
   if (policy.refusal) return refused("fix_configuration", policy.refusal, base);
 
-  const retention = await recheck(deps, attempt);
+  const leased = record.entries.find(e => e.kind === "leased");
+  let acceptedCommit: string | undefined;
+  if (accepting) {
+    try {
+      const git = { git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? {}, repository: deps.repository };
+      acceptedCommit = options.acceptOutput ? await branchHead(git, attempt.attempt.outputBranch!) : accepted!.data.commit as string;
+      const start = leased?.data.startingCommit as string | undefined;
+      if (!acceptedCommit || !start || acceptedCommit === start || !await isAncestor(git, start, acceptedCommit)) {
+        return refused("inspect_attempt", "The output branch must exist and have commits beyond the attempt's starting commit", base);
+      }
+    } catch (error) { return refused("inspect_attempt", `The output branch cannot be checked: ${String(error)}`, base); }
+  }
+  const check = () => acceptedCommit ? deps.retention({
+    repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch: attempt.attempt.outputBranch!,
+    resultCommit: acceptedCommit, artefacts: [],
+  }) : recheck(deps, attempt);
+  const retention = await check();
   if (typeof retention === "string") return refused("inspect_attempt", retention, base);
   if (!retention.retained) return refused("inspect_attempt", `The work is not retained: ${retention.findings.join("; ")}`, { ...base, retention });
 
@@ -72,7 +91,7 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
   let integration: { target: string; from: string; to: string } | undefined;
   if (policy.kind === "local-merge") {
     const git = { git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository };
-    const to = await branchHead(git, outputBranch);
+    const to = acceptedCommit ?? await branchHead(git, outputBranch);
     const from = await branchHead(git, policy.targetBranch!);
     if (!to || !from) return refused("inspect_attempt", `Branch ${!to ? outputBranch : policy.targetBranch} cannot be read in the backing repository`, base);
     if (!await isAncestor(git, to, from)) {
@@ -84,6 +103,7 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
   const task = await deps.tasks.read(attempt.attempt.taskId).catch(() => undefined);
   if (!task) return refused("inspect_attempt", "The task cannot be read", base);
   const steps = [
+    ...(acceptedCommit ? [`accept output commit ${acceptedCommit} as the operator`] : []),
     ...(integration ? [`fast-forward ${integration.target} to ${integration.to}`] : []),
     ...(task.state === "done" ? [] : ["record the task as done"]),
     `return lease ${options.leaseId}`,
@@ -95,6 +115,10 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
     ok: false, reason: "stopped", stage: "finish", lease: "preserved", observed: {}, ...base, retention,
     detail: `Stopped while trying to ${step}: ${error instanceof Error ? error.message : String(error)}. Run finish again to complete it`, nextAction: "inspect_attempt",
   });
+  if (acceptedCommit && accepted?.data.commit !== acceptedCommit) {
+    try { await deps.attempts.append(record, "output_accepted", { commit: acceptedCommit, acceptedBy: "operator" }); }
+    catch (error) { return stopped(error, "record the operator's output acceptance"); }
+  }
   if (integration) {
     try {
       await fastForward({ git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository }, integration.target, integration.from, integration.to);
@@ -110,6 +134,10 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
     } catch (error) { return stopped(error, "record the task as done"); }
   }
   try {
+    if (acceptedCommit) {
+      const finalRetention = await check();
+      if (typeof finalRetention === "string" || !finalRetention.retained) throw new Error("The accepted output is no longer retained");
+    }
     await deps.workspaces.returnLease({ leaseId: options.leaseId, holder: attempt.attempt.taskId, path: attempt.attempt.workspace! }, { discardChanges: false });
     await deps.attempts.append(record, "lease_returned", { leaseId: options.leaseId, by: "finish", noProcessesConfirmedBy: "operator" });
   } catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
