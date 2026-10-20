@@ -92,6 +92,23 @@ test("a code contract can also require a report, which must be retained in the a
   assert.equal(outcome.nextAction.code, "review_branch");
 });
 
+test("a report outside the attempt's artefact directory is not retained, even outside every workspace", async () => {
+  const f = await fixture({ tasks: [scoutTask("elsewhere-a1")], scenario: "artefact-result", byTaskKind: { scout } });
+  const path = join(f.dir, "report-elsewhere.md");
+  writeFileSync(path, "Report outside the artefact directory\n");
+  const launch = f.deps.launch;
+  f.deps.launch = async (...args) => {
+    const report = await launch(...args);
+    assert.ok(report.result);
+    report.result.workReferences = [{ kind: "artefact", name: "report", path, description: "Required report" }];
+    return report;
+  };
+  const outcome = await dispatchOnce(f.deps);
+  assert.equal(outcome.reason, "held");
+  assert.equal(outcome.retention?.retained, false);
+  assert.match(outcome.retention!.findings.join(), /outside the assigned artefact directory/);
+});
+
 test("runtime storage in an earlier recyclable workspace is refused before writing an attempt", async () => {
   const f = await fixture({ tasks: [scoutTask("storage-a1")], byTaskKind: { scout } });
   const earlier = await f.deps.workspaces.acquire({ holder: "earlier", baseRef: "main", branch: "earlier" });
