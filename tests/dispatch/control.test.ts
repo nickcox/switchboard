@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { requestControl } from "../../src/dispatch/control.ts";
@@ -9,7 +9,7 @@ import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { dispatcherRunning } from "../../src/runtime/heartbeat.ts";
-import { claimRequest } from "../../src/runtime/requests.ts";
+import { claimRequest, submitRequest } from "../../src/runtime/requests.ts";
 import { fixture, task } from "./fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -42,6 +42,42 @@ test("a steering message reaches the running worker once and is recorded with it
   assert.deepEqual({ kind: entry.data.kind, sender: entry.data.sender, outcome: entry.data.outcome, message: entry.data.message },
     { kind: "steer", sender: "operator:test", outcome: "queued", message: "Use the smaller fix" });
   assert.match(readFileSync(join(record.directory, "activity.jsonl"), "utf8"), /Steering message from operator:test/);
+});
+
+test("requests still being forwarded as the worker finishes are answered and recorded before the attempt is finalised", async () => {
+  const f = await fixture({ tasks: [task("drain-a1")], scenario: "await-steer-slow", worker: { requestPollMs: 50 } });
+  const dispatching = dispatchOnce(f.deps);
+  const record = await running(f, "drain-a1");
+  // The steer ends the run; the follow-up is answered only after a delay, while the worker is finishing.
+  await submitRequest(record, { kind: "steer", message: "Finish now", sender: "operator:one" });
+  await sleep(5);
+  await submitRequest(record, { kind: "follow_up", message: "Then tidy up", sender: "operator:two" });
+  const outcome = await dispatching;
+  assert.equal(outcome.reason, "held");
+  const names = readdirSync(join(record.directory, "requests"));
+  const claimed = names.filter(n => n.endsWith(".claim.json")).map(n => n.slice(0, -".claim.json".length));
+  assert.ok(claimed.length >= 1);
+  for (const id of claimed) assert.ok(names.includes(`${id}.result.json`), `claimed request ${id} has no result`);
+  const logged = (await f.deps.attempts.forTask("drain-a1"))[0]!.entries.filter(e => e.kind === "operator_request").map(e => e.data.id);
+  assert.deepEqual([...logged].sort(), [...claimed].sort());
+});
+
+test("a forwarded request that cannot be written to the attempt log is reported with the result", async () => {
+  const f = await fixture({ tasks: [task("unlogged-a1")], scenario: "await-steer", worker: { requestPollMs: 50 } });
+  const attempts = Object.assign(Object.create(Object.getPrototypeOf(f.deps.attempts)), f.deps.attempts, {
+    append: async (...args: Parameters<typeof f.deps.attempts.append>) => {
+      if (args[1] === "operator_request") throw new Error("log unavailable");
+      return f.deps.attempts.append(...args);
+    },
+  });
+  const dispatching = dispatchOnce({ ...f.deps, attempts });
+  const record = await running(f, "unlogged-a1");
+  await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "steer", message: "Finish now", sender: "operator:test", waitMs: 5000 });
+  const outcome = await dispatching;
+  const unrecorded = outcome.observed.unrecordedRequests as { sender: string; error: string }[];
+  assert.equal(unrecorded.length, 1);
+  assert.equal(unrecorded[0]?.sender, "operator:test");
+  assert.match(unrecorded[0]!.error, /log unavailable/);
 });
 
 test("a follow-up is forwarded as Pi's follow_up", async () => {

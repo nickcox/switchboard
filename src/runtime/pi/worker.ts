@@ -85,32 +85,41 @@ export class PiWorker {
     let stoppedBy: string | undefined;
     const signal = AbortSignal.any([budget.signal, stopRequest.signal, ...(operator ? [operator] : [])]);
     let requestTimer: ReturnType<typeof setInterval> | undefined;
-    let forwarding = false;
+    let forwarding: Promise<void> | undefined;
+    // Set when the worker starts finishing: no request is claimed after that, so none is forwarded to a worker that is
+    // shutting down.
+    let closing = false;
     // Only this process holds the worker's RPC channel, so it alone forwards requests, each at most once.
-    const forwardRequests = async (current: PiRpcClient) => {
-      if (forwarding || current.childExit) return;
-      forwarding = true;
-      try {
-        for (const request of await unclaimedRequests(reserved).catch(() => [])) {
-          if (!(await claimRequest(reserved, request.id, "dispatcher").catch(() => false))) continue;
-          let result: Omit<RequestResult, "version" | "at">;
-          if (request.kind === "stop") {
-            stoppedBy ??= request.sender;
-            result = { outcome: "stopping" };
-            activity.write({ kind: "note", text: `Stop requested by ${request.sender}` });
-            stopRequest.abort();
-          } else {
-            try {
-              const data = await current.request(request.kind, { message: request.message }, this.options.requestMs);
-              const disposition = isObject(data) && typeof data.disposition === "string" ? data.disposition : "accepted";
-              result = { outcome: disposition };
-            } catch (error) { result = { outcome: "failed", error: asError(error).message }; }
-            activity.write({ kind: "note", text: `${request.kind === "steer" ? "Steering message" : "Follow-up"} from ${request.sender} (${result.outcome}): ${shorten(request.message ?? "")}` });
-          }
-          await recordResult(reserved, request.id, result).catch(() => {});
-          try { hooks.onRequest?.(request, result); } catch { /* Recording must not affect the worker. */ }
+    const forwardRequests = (current: PiRpcClient) => {
+      if (forwarding || closing || current.childExit) return;
+      forwarding = forwardClaimed(current).finally(() => { forwarding = undefined; });
+    };
+    const forwardClaimed = async (current: PiRpcClient) => {
+      for (const request of await unclaimedRequests(reserved).catch(() => [])) {
+        if (closing || current.childExit) break;
+        if (!(await claimRequest(reserved, request.id, "dispatcher").catch(() => false))) continue;
+        let result: Omit<RequestResult, "version" | "at">;
+        if (request.kind === "stop") {
+          stoppedBy ??= request.sender;
+          result = { outcome: "stopping" };
+          activity.write({ kind: "note", text: `Stop requested by ${request.sender}` });
+          stopRequest.abort();
+        } else {
+          try {
+            const data = await current.request(request.kind, { message: request.message }, this.options.requestMs);
+            const disposition = isObject(data) && typeof data.disposition === "string" ? data.disposition : "accepted";
+            result = { outcome: disposition };
+          } catch (error) { result = { outcome: "failed", error: asError(error).message }; }
+          activity.write({ kind: "note", text: `${request.kind === "steer" ? "Steering message" : "Follow-up"} from ${request.sender} (${result.outcome}): ${shorten(request.message ?? "")}` });
         }
-      } finally { forwarding = false; }
+        // A claimed request always ends with a result, so its sender never waits on it forever. Failing to record
+        // one must not affect the worker, but it is reported rather than dropped.
+        await recordResult(reserved, request.id, result).catch(error => {
+          activity.write({ kind: "note", text: `The result of request ${request.id} could not be recorded: ${asError(error).message}` });
+        });
+        try { hooks.onRequest?.(request, result); }
+        catch (error) { activity.write({ kind: "note", text: `Request ${request.id} could not be passed to the dispatcher: ${asError(error).message}` }); }
+      }
     };
     let lastSnapshot = 0;
     let statsTimer: ReturnType<typeof setInterval> | undefined;
@@ -182,7 +191,11 @@ export class PiWorker {
       this.validateState(stateSchema.parse(await this.rpc(client, "get_state", {}, signal)), binding);
     } catch (error) { failure = asError(error); }
     if (statsTimer) clearInterval(statsTimer);
+    // Finish any forwarding already under way before shutting the worker down, so every claimed request is forwarded
+    // or answered and recorded before this attempt is finalised.
+    closing = true;
     if (requestTimer) clearInterval(requestTimer);
+    await forwarding;
 
     if (client) {
       await this.shutdown(client, failure !== undefined);

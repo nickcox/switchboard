@@ -131,7 +131,7 @@ export async function dispatchOnce(
   }
   const state = await inspect(deps);
   if (isFailure(state)) return state.failed;
-  const observed = { ready: state.ready, inFlight: state.inFlight, leases: state.leases.length };
+  const observed: Record<string, unknown> = { ready: state.ready, inFlight: state.inFlight, leases: state.leases.length };
   if (state.possiblyRunning.length > 0) {
     return refusal("preflight", "stop_worker", "An earlier attempt's worker may still be running", { ...observed, possiblyRunning: state.possiblyRunning });
   }
@@ -274,8 +274,12 @@ export async function dispatchOnce(
       requests = requests.then(() => deps.attempts.append(ref, "operator_request", {
         id: request.id, kind: request.kind, sender: request.sender, outcome: outcome.outcome,
         ...(request.message ? { message: request.message.slice(0, 4000) } : {}), ...(outcome.error ? { error: outcome.error.slice(0, 500) } : {}),
-      })).catch(() => {});
+      })).catch(error => {
+        // The request reached the worker; failing to log it is reported with the result rather than dropped.
+        unrecorded.push({ id: request.id, kind: request.kind, sender: request.sender, error: message(error).slice(0, 500) });
+      });
     };
+    const unrecorded: { id: string; kind: string; sender: string; error: string }[] = [];
     try { report = await deps.launch(input, options.signal, onRequest); }
     catch (error) {
       // The runtime reserves its records before starting a worker, so a worker can exist only if they do. Without an
@@ -290,6 +294,7 @@ export async function dispatchOnce(
       return finalise(deps, ref, summary, observed, task, delivery, undefined, `${runtime ? "Worker failed" : "Worker not started"}: ${message(error)}`);
     }
     await requests;
+    if (unrecorded.length > 0) observed.unrecordedRequests = unrecorded;
     const resultCommit = codeCommit(report.result, outputBranch);
     if (resultCommit) summary.resultCommit = resultCommit;
     await deps.attempts.append(ref, "worker_finished", {

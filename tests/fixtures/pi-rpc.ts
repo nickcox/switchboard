@@ -97,7 +97,7 @@ function handle(request: Record<string, unknown>) {
     }
     send({ type: "agent_start" });
     if (scenario !== "no-ack" && scenario !== "fast-events") respond(request, { disposition: "started" });
-    if (scenario === "ignore-stop" || scenario === "await-steer") return;
+    if (scenario === "ignore-stop" || scenario?.startsWith("await-steer")) return;
     send({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "echo synthetic" } });
     send({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: {}, isError: false, durationMs: 12 });
     send({ type: "message_end", message: {
@@ -110,7 +110,10 @@ function handle(request: Record<string, unknown>) {
     if (scenario === "fast-events") respond(request, { disposition: "started" });
     if (scenario === "trailing-json") process.stdout.write('{"type":');
     if (scenario === "nonzero-exit") process.exit(9);
-  } else if ((request.type === "steer" || request.type === "follow_up") && scenario === "await-steer") {
+  } else if (request.type === "follow_up" && scenario === "await-steer-slow") {
+    // Answer a follow-up only after a delay, so it is still being forwarded while the worker finishes.
+    setTimeout(() => respond(request, { disposition: "queued" }), 300);
+  } else if ((request.type === "steer" || request.type === "follow_up") && scenario?.startsWith("await-steer")) {
     // Finish the run only once a message arrives, to show it reached the running worker.
     respond(request, { disposition: "queued" });
     send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Received: ${String(request.message)}` }], stopReason: "stop" } });
