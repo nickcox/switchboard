@@ -1,6 +1,6 @@
 # Phase 1 verification
 
-Status: Phase 1 is **not yet complete**. This record was written on 19 October 2026, when Phase 1 was believed complete on macOS. The independent [Phase 1 review](review-2026-10-20.md) on 20 October 2026 found that several claimed guarantees do not hold. Its critical finding (two dispatches started a moment apart could launch two workers for the same task) and high findings 2 to 4 are fixed; high findings 5 to 7 remain. Phase 1 is complete only when the review's critical and high findings are fixed and this record is updated. The evidence below is unchanged from 19 October; criteria the review contradicts are marked.
+Status: Phase 1 is **not yet complete**. This record was written on 19 October 2026, when Phase 1 was believed complete on macOS. The independent [Phase 1 review](review-2026-10-20.md) on 20 October 2026 found that several claimed guarantees do not hold. Its critical finding (two dispatches started a moment apart could launch two workers for the same task) and all six high findings are now fixed; the medium and low findings remain, tracked as backlog tasks. Phase 1 is complete only when the review's critical and high findings are fixed and this record is updated. The evidence below is unchanged from 19 October; criteria the review contradicts are marked.
 
 Test names below are from the root suite (`npm test`), which passes under Node.js 26.7.0 on macOS, and in CI on Linux and Windows. The suite uses the real tasks-axi 0.2.6 CLI, Treehouse (3.1.3 when this record was written; CI now installs 3.1.4) and Git against disposable stores and repositories, and a synthetic Pi worker (`tests/fixtures/pi-rpc.ts`) in place of a model. Real runs used [`investigations/real-dispatch/`](../../../investigations/real-dispatch/README.md) with Pi 1.2.0, provider `openai-codex` and model `gpt-6.1-sol`.
 
@@ -32,7 +32,7 @@ The PRD requires adapter fault tests and at least one real end-to-end dispatch t
 
 ## Not covered
 
-- **The review's findings.** Findings 1 to 4 are fixed. Findings 5, 6, 7 and 11 still contradict criteria 5, 6, 8 and 9 in specific cases. Each remaining finding is tracked as a backlog task.
+- **The review's findings.** Findings 1 to 7 and 23 are fixed, each with a test that failed before its fix. Finding 11, a recorded child exit overridden by a missing log entry, still contradicts criterion 8 in one case. The remaining medium and low findings are tracked as backlog tasks.
 
 - **Linux and Windows real dispatch.** The suite passes there, but no real dispatch has run, so neither platform is supported yet.
 - **Real-worker stop, usage limits and model errors.** These are tested with the synthetic worker only.
