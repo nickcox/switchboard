@@ -161,6 +161,35 @@ export class AttemptLog {
     return records;
   }
 
+  /**
+   * Reserves a request ID across this context before its attempt is created, by creating a file exclusively. Returns
+   * false when another invocation already holds it. Reservations live beside the log, not in it, because the log's
+   * context directory holds only task directories.
+   */
+  async reserveRequest(requestId: string, taskId: string): Promise<boolean> {
+    nonempty.parse(requestId);
+    const path = await this.requestPath(requestId, true);
+    try {
+      await writeOnce(path, { version: 1, requestId, taskId, reservedAt: new Date().toISOString() });
+      return true;
+    } catch (error) {
+      if (isCode(error, "EEXIST")) return false;
+      throw error;
+    }
+  }
+
+  /** Releases a reservation whose attempt was never created, so that the request can be made again. */
+  async releaseRequest(requestId: string): Promise<void> {
+    await rm(await this.requestPath(requestId, false), { force: true });
+  }
+
+  private async requestPath(requestId: string, create: boolean): Promise<string> {
+    if (create) await mkdir(this.root, { recursive: true, mode: 0o700 });
+    const directory = join(await realpath(this.root), "request-ids", key(this.contextId));
+    if (create) await mkdir(directory, { recursive: true, mode: 0o700 });
+    return join(directory, `${key(requestId)}.json`);
+  }
+
   async findByRequest(requestId: string): Promise<AttemptRecord | undefined> {
     return (await this.list()).find(record => record.entries[0]?.data.requestId === requestId);
   }

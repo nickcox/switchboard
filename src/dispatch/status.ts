@@ -2,7 +2,7 @@ import { readActivity } from "../runtime/activity.ts";
 import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Task } from "../tasks/store.ts";
-import { inspect, summarise, type Dependencies } from "./dispatch.ts";
+import { inspect, isOpen, summarise, type Dependencies } from "./dispatch.ts";
 import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch.ts";
 import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
@@ -82,8 +82,10 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     const otherPool = state.leasesInOtherPools.find(a => a.taskId === summary.taskId && a.attempt === summary.attempt)?.pool;
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
     const running = possiblyRunning && runtime !== undefined && await dispatcherRunning(runtime.directory);
+    const unfinished = isOpen(record) && state.openTasks.includes(summary.taskId);
     const code: NextAction = possiblyRunning ? (running ? "watch_attempt" : "stop_worker")
       : otherPool !== undefined ? "confirm_lease_returned"
+      : unfinished && !leaseHeld ? "confirm_attempt_stopped"
       : !leaseHeld ? (typeof task === "object" && task.state === "in_flight" ? "inspect_attempt" : "none")
       : reviewHold ? "review_branch"
       : typeof task === "object" && task.state === "done" ? "return_lease" : "inspect_attempt";

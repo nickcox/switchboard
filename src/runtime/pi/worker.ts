@@ -67,10 +67,13 @@ export class PiWorker {
 
   async execute(input: WorkerInput, operator?: AbortSignal, hooks: WorkerHooks = {}): Promise<PiRunReport> {
     if (operator?.aborted) throw new RuntimeFailure("interrupted", "Interrupted before launch");
-    const reserved = await this.records.reserve(input);
-    const stopHeartbeat = await startHeartbeat(reserved.directory);
-    try { return await this.executeReserved(reserved, operator, hooks); }
-    finally { await stopHeartbeat(); }
+    // The heartbeat starts as soon as the runtime directory is claimed, before the binding exists, so `resolve` never
+    // sees a directory whose dispatcher might still start a worker without also seeing a fresh heartbeat.
+    let stopHeartbeat: (() => Promise<void>) | undefined;
+    try {
+      const reserved = await this.records.reserve(input, async directory => { stopHeartbeat = await startHeartbeat(directory); });
+      return await this.executeReserved(reserved, operator, hooks);
+    } finally { await stopHeartbeat?.(); }
   }
 
   private async executeReserved(reserved: { binding: RuntimeBinding; directory: string }, operator: AbortSignal | undefined, hooks: WorkerHooks): Promise<PiRunReport> {

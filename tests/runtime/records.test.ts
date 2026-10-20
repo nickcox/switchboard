@@ -50,6 +50,16 @@ test("stale exit receipts cannot certify another session", async () => {
   await assert.rejects(f.records.discover(f.input.identity.contextId), /Stale/);
 });
 
+test("reserve runs its hook after claiming the directory and before writing the binding", async () => {
+  const f = fixture();
+  let bindingExisted: boolean | undefined;
+  await f.records.reserve(f.input, async directory => {
+    bindingExisted = await readFile(join(directory, "binding.json")).then(() => true, () => false);
+  });
+  assert.equal(bindingExisted, false);
+  assert.equal((await f.records.discover(f.input.identity.contextId)).length, 1);
+});
+
 test("startup observations are write-once and discovery checks their identity", async () => {
   const f = fixture();
   const reserved = await f.records.reserve(f.input);

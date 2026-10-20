@@ -1,4 +1,4 @@
-import { inspect, resolvedBy, summarise, type Dependencies } from "./dispatch.ts";
+import { inspect, isOpen, resolvedBy, summarise, type Dependencies } from "./dispatch.ts";
 import { result, type DispatchResult } from "./result.ts";
 import { dispatcherRunning } from "../runtime/heartbeat.ts";
 
@@ -32,6 +32,12 @@ export async function resolveStopped(
   }
   if (!options.confirmed) return result({ ok: false, reason: "refused", ...common, detail: "Resolving needs the operator's confirmation that the worker has stopped", nextAction: "confirm_worker_stopped" });
 
+  // A launch logged without runtime records may still be about to start its worker. Claim its runtime directory
+  // first: the dispatcher reserves that directory exclusively before starting a worker, so it can then no longer start
+  // one. If the directory already exists, the dispatcher is starting the worker now.
+  if (!runtime && attempt?.entries.some(e => e.kind === "launched") && !await deps.runtime.fence(deps.contextId, options.leaseId)) {
+    return result({ ok: false, reason: "refused", ...common, detail: "The dispatcher is starting this worker now; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
+  }
   if (runtime?.child.status === "unknown") await deps.runtime.recordOperatorStop(runtime, options.note);
   if (attempt) {
     const kinds = attempt.entries.map(e => e.kind);
@@ -43,9 +49,10 @@ export async function resolveStopped(
 }
 
 /**
- * Operator-only: records that an attempt's lease, which is in a workspace pool the provider no longer lists, has been
- * returned, so it stops blocking its task. Switchboard cannot see that pool, so this is the operator's confirmation,
- * not an observation. It never changes the task or the lease.
+ * Operator-only: records that any lease an attempt holds has been returned, so it stops blocking its task. It applies
+ * to a lease in a workspace pool the provider no longer lists, and to an unfinished attempt whose dispatcher has
+ * stopped without logging a lease. Switchboard cannot see either lease, so this is the operator's confirmation, not an
+ * observation. It never changes the task or the lease.
  */
 export async function resolveLeaseReturned(
   deps: Dependencies,
@@ -67,7 +74,17 @@ export async function resolveLeaseReturned(
   const other = state.leasesInOtherPools.find(a => a.taskId === attempt.taskId && a.attempt === attempt.attempt);
   const observed = { leaseId, pool: state.pool, ...(other ? { leasePool: other.pool } : {}) };
   const common = { stage: "resolve" as const, attempt: summarise(attempt), observed };
-  if (!other) {
+  if (!other && isOpen(attempt)) {
+    if (state.possiblyRunning.some(p => p.taskId === attempt.taskId && p.attempt === attempt.attempt)) {
+      return result({ ok: false, reason: "refused", ...common, lease: "unknown", detail: "This attempt's worker may still be running; confirm it stopped first", nextAction: "stop_worker" });
+    }
+    // An unfinished attempt may hold a lease it never logged; look for one by its holder and output branch.
+    const outputBranch = summarise(attempt).outputBranch ?? `${deps.delivery.branchPrefix}${attempt.taskId}/attempt-${attempt.attempt}`;
+    const listed = state.leases.find(l => l.leaseId === leaseId || (l.holder === attempt.taskId && l.branch === outputBranch));
+    if (listed) {
+      return result({ ok: false, reason: "refused", ...common, observed: { ...observed, leaseId: listed.leaseId }, lease: "preserved", detail: `Lease ${listed.leaseId} for this attempt is still listed; return it through Treehouse first`, nextAction: "return_unused_lease" });
+    }
+  } else if (!other) {
     const held = state.leases.some(l => l.leaseId === leaseId);
     return result({ ok: false, reason: "refused", ...common, lease: held ? "preserved" : "none", detail: "This lease is in the workspace pool Switchboard currently lists, so its state is read from the provider and needs no confirmation", nextAction: "none" });
   }

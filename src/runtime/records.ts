@@ -128,7 +128,11 @@ export class RuntimeRecords {
     }
   }
 
-  async reserve(value: WorkerInput): Promise<{ directory: string; binding: RuntimeBinding }> {
+  /**
+   * `beforeBinding` runs once the directory is claimed and before the binding is written, so a dispatcher heartbeat can
+   * exist for as long as the directory does.
+   */
+  async reserve(value: WorkerInput, beforeBinding?: (directory: string) => Promise<void>): Promise<{ directory: string; binding: RuntimeBinding }> {
     const input = workerInputSchema.parse(value);
     if (!isAbsolute(input.workspace)) throw new Error("Worker workspace must be absolute");
     const workspace = await realpath(input.workspace);
@@ -145,6 +149,7 @@ export class RuntimeRecords {
     const directory = join(context, key(input.identity.leaseId));
     // Exclusive allocation prevents another session from reusing this lease, even after a crash.
     await mkdir(directory, { mode: 0o700 });
+    await beforeBinding?.(directory);
     const sessionDirectory = join(directory, "sessions");
     await mkdir(sessionDirectory, { mode: 0o700 });
     const artefactDirectory = join(directory, "artefacts");
@@ -155,6 +160,25 @@ export class RuntimeRecords {
     });
     await this.write(join(directory, "binding.json"), binding);
     return { directory, binding };
+  }
+
+  /**
+   * Claims a lease's runtime directory without starting a worker, so that a dispatcher that has not yet reserved it
+   * can no longer do so: reserve() creates the same directory exclusively. Returns false if it already exists.
+   */
+  async fence(contextId: string, leaseId: string): Promise<boolean> {
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    const context = join(await realpath(this.root), key(contextId));
+    await mkdir(context, { recursive: true, mode: 0o700 });
+    const existing = await lstat(context);
+    if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error("Unsafe runtime context directory");
+    try {
+      await mkdir(join(context, key(leaseId)), { mode: 0o700 });
+      return true;
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") return false;
+      throw error;
+    }
   }
 
   async recordSessionStart(record: Pick<RuntimeRecord, "directory" | "binding">, thinkingLevel: z.infer<typeof thinkingLevelSchema>): Promise<void> {

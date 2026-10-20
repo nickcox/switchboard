@@ -51,6 +51,12 @@ export type Inspection = {
    * held is unknown. Each blocks its own task until the operator confirms the lease was returned.
    */
   leasesInOtherPools: (AttemptSummary & { pool: string })[];
+  /**
+   * Tasks whose latest attempt is open: it has recorded no task outcome, has not halted and has not been resolved by
+   * the operator. Its dispatcher may still be working on it, so the task is not dispatched again until it finishes or
+   * the operator resolves it.
+   */
+  openTasks: string[];
 };
 
 type Failure = { failed: DispatchResult };
@@ -91,14 +97,17 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
   }
   const leasesInOtherPools: Inspection["leasesInOtherPools"] = [];
   for (const attempt of attempts) {
-    const leased = attempt.entries.find(e => e.kind === "leased");
-    const unknownAcquisition = attempt.entries.some(e => e.kind === "halted" && e.data.stage === "acquire" && e.data.reason === "outcome_unknown");
-    const leasePool = leased?.data.pool ?? (unknownAcquisition ? attempt.entries[0]?.data.pool : undefined);
-    if (typeof leasePool === "string" && leasePool !== pool && !resolvedBy(attempt, "lease_returned")) {
+    const leasePool = possibleLeasePool(attempt);
+    if (leasePool !== undefined && leasePool !== pool && !resolvedBy(attempt, "lease_returned")) {
       leasesInOtherPools.push({ ...summarise(attempt), pool: leasePool });
     }
   }
-  return { attempts, runtime, leases, inFlight, ready, possiblyRunning, pool, leasesInOtherPools };
+  const latest = new Map<string, AttemptRecord>();
+  for (const attempt of attempts) {
+    if ((latest.get(attempt.taskId)?.attempt ?? 0) < attempt.attempt) latest.set(attempt.taskId, attempt);
+  }
+  const openTasks = [...latest.values()].filter(isOpen).map(a => a.taskId);
+  return { attempts, runtime, leases, inFlight, ready, possiblyRunning, pool, leasesInOtherPools, openTasks };
 }
 
 /** Runs one dispatch: steps 1–8 of the Phase 1 PRD dispatch sequence. Never starts a second task. */
@@ -123,7 +132,8 @@ export async function dispatchOnce(
 
   // Step 2: select one ready task with no lease and no in-flight state.
   const unknownLease = (id: string) => state.leasesInOtherPools.some(a => a.taskId === id);
-  const blocked = (id: string) => state.leases.some(l => l.holder === id) || unknownLease(id) || state.inFlight.includes(id);
+  const open = (id: string) => state.openTasks.includes(id);
+  const blocked = (id: string) => state.leases.some(l => l.holder === id) || unknownLease(id) || state.inFlight.includes(id) || open(id);
   let taskId = options.taskId;
   if (taskId !== undefined) {
     if (state.leases.some(l => l.holder === taskId)) return refusal("select", "choose_another_task", `Task ${taskId} already has a workspace lease from an earlier attempt`, observed);
@@ -132,6 +142,9 @@ export async function dispatchOnce(
     }
     if (state.inFlight.includes(taskId)) return refusal("select", "choose_another_task", `Task ${taskId} is already in flight`, observed);
     if (!state.ready.includes(taskId)) return refusal("select", "choose_another_task", `Task ${taskId} is not ready`, observed);
+    if (open(taskId)) {
+      return refusal("select", "confirm_attempt_stopped", `Task ${taskId} has an earlier attempt that has not finished, and its dispatcher may still be working on it`, observed);
+    }
   } else {
     taskId = state.ready.find(id => !blocked(id));
     if (taskId === undefined) return result({ ok: true, reason: "no_ready_work", stage: "select", lease: "none", observed, nextAction: "dispatch_again" });
@@ -155,12 +168,21 @@ export async function dispatchOnce(
   }
 
   const previous = state.attempts.filter(a => a.taskId === taskId).map(a => a.attempt).at(-1) ?? 0;
+  // A request ID is reserved across the whole context before its attempt is created, so a competing call with the
+  // same ID cannot start an attempt for another task.
+  if (options.requestId !== undefined) {
+    let reserved: boolean;
+    try { reserved = await deps.attempts.reserveRequest(options.requestId, taskId); }
+    catch (error) { return refusal("select", "fix_configuration", `The request ID could not be reserved: ${message(error)}`, observed); }
+    if (!reserved) return requestTaken(deps, options.requestId, observed);
+  }
   let ref: AttemptRef;
   try {
     ref = await deps.attempts.create(taskId, {
       ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
     }, previous);
   } catch (error) {
+    if (options.requestId !== undefined) await deps.attempts.releaseRequest(options.requestId).catch(() => {});
     if (error instanceof AttemptConflict) return refusal("select", "inspect_attempt", `Another invocation created an attempt for task ${taskId} first`, observed);
     return refusal("select", "fix_configuration", `The attempt log could not be written: ${message(error)}`, observed);
   }
@@ -174,6 +196,11 @@ export async function dispatchOnce(
     }).catch(() => {});
     return result({ ok: false, reason: "stopped", stage, lease: summary.leaseId ? "preserved" : "none", observed, attempt: summary, detail, nextAction });
   };
+
+  // The operator may have resolved this attempt while it was waiting; never acquire for a resolved attempt.
+  if (resolvedBy(await deps.attempts.read(ref), "lease_returned")) {
+    return halt("acquire", "inspect_attempt", "The operator resolved this attempt before its lease was acquired");
+  }
 
   // Step 3: acquire a lease for the exact task ID on a unique output branch.
   const outputBranch = `${deps.delivery.branchPrefix}${taskId}/attempt-${ref.attempt}`;
@@ -310,6 +337,13 @@ function decide(report: PiRunReport | undefined, delivery: DeliveryContract, ret
   return { done: true, review: false, label: "done" };
 }
 
+/** Another invocation holds this request ID: report its attempt, or refuse while that attempt does not exist yet. */
+async function requestTaken(deps: Dependencies, requestId: string, observed: Record<string, unknown>): Promise<DispatchResult> {
+  const existing = await deps.attempts.findByRequest(requestId).catch(() => undefined);
+  if (existing) return existingRequest(deps, existing);
+  return refusal("select", "inspect_attempt", `Request ${requestId} is reserved by another invocation that has not created its attempt; it may still be running, or it stopped before creating one`, observed);
+}
+
 async function existingRequest(deps: Dependencies, attempt: AttemptRecord): Promise<DispatchResult> {
   const summary = summarise(attempt);
   const task = await deps.tasks.read(attempt.taskId).catch(() => undefined);
@@ -320,6 +354,25 @@ async function existingRequest(deps: Dependencies, attempt: AttemptRecord): Prom
     ...(task ? { task: { id: task.id, state: task.state, held: task.held, holdReason: task.holdReason } } : {}),
     nextAction: "inspect_attempt",
   });
+}
+
+/** An attempt is open until it records a task outcome, halts, or is resolved by the operator. */
+export function isOpen(attempt: AttemptRecord): boolean {
+  return !attempt.entries.some(e => e.kind === "task_recorded" || e.kind === "halted" || e.kind === "operator_resolved");
+}
+
+/**
+ * The pool in which this attempt may hold a lease. A logged lease records its pool. Without one, the attempt may still
+ * have acquired a lease in the pool recorded when it was requested, for example if its dispatcher was killed before
+ * logging the lease, unless the provider refused the acquisition outright.
+ */
+function possibleLeasePool(attempt: AttemptRecord): string | undefined {
+  const leased = attempt.entries.find(e => e.kind === "leased")?.data.pool;
+  if (typeof leased === "string") return leased;
+  if (attempt.entries.some(e => e.kind === "leased")) return undefined;
+  const refused = attempt.entries.some(e => e.kind === "halted" && e.data.stage === "acquire" && e.data.reason !== "outcome_unknown");
+  const requested = attempt.entries[0]?.data.pool;
+  return !refused && typeof requested === "string" ? requested : undefined;
 }
 
 /** Whether the operator recorded this confirmation for the attempt with `resolve`. */
