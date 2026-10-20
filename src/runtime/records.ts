@@ -5,6 +5,11 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import { identitySchema, sameIdentity, workerInputSchema, type WorkerInput } from "./contracts.ts";
 
+export const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const sessionStartSchema = z.strictObject({
+  version: z.literal(1), identity: identitySchema, observedAt: z.iso.datetime(), thinkingLevel: thinkingLevelSchema,
+});
+
 export const bindingSchema = z.strictObject({
   version: z.literal(1),
   createdAt: z.iso.datetime(),
@@ -36,6 +41,7 @@ const operatorStopSchema = z.strictObject({
 export type RuntimeRecord = {
   directory: string;
   binding: RuntimeBinding;
+  thinkingLevel?: z.infer<typeof thinkingLevelSchema>;
   /**
    * `exited` is an observed direct-child exit. `operator_confirmed_stopped` means no exit was observed and an operator
    * confirmed the worker had stopped; it is a statement by the operator, not an observation by the runtime.
@@ -151,6 +157,12 @@ export class RuntimeRecords {
     return { directory, binding };
   }
 
+  async recordSessionStart(record: Pick<RuntimeRecord, "directory" | "binding">, thinkingLevel: z.infer<typeof thinkingLevelSchema>): Promise<void> {
+    await this.write(join(record.directory, "session-start.json"), sessionStartSchema.parse({
+      version: 1, identity: record.binding.input.identity, observedAt: new Date().toISOString(), thinkingLevel,
+    }));
+  }
+
   async recordChildExit(record: Pick<RuntimeRecord, "directory" | "binding">, exit: ChildExit): Promise<void> {
     await this.write(join(record.directory, "child-exit.json"), receiptSchema.parse({
       version: 1, identity: record.binding.input.identity,
@@ -211,7 +223,13 @@ export class RuntimeRecords {
           child = { status: "operator_confirmed_stopped", confirmedAt: stop.confirmedAt, ...(stop.note === undefined ? {} : { note: stop.note }) };
         } catch (error) { if (!isMissing(error)) throw error; }
       }
-      records.push({ directory, binding, child });
+      let thinkingLevel: RuntimeRecord["thinkingLevel"];
+      try {
+        const start = sessionStartSchema.parse(await readJsonFile(join(directory, "session-start.json")));
+        if (!sameIdentity(start.identity, binding.input.identity)) throw new Error("Stale session-start record");
+        thinkingLevel = start.thinkingLevel;
+      } catch (error) { if (!isMissing(error)) throw error; }
+      records.push({ directory, binding, child, ...(thinkingLevel === undefined ? {} : { thinkingLevel }) });
     }
     return records;
   }

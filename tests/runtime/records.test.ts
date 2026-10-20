@@ -50,6 +50,20 @@ test("stale exit receipts cannot certify another session", async () => {
   await assert.rejects(f.records.discover(f.input.identity.contextId), /Stale/);
 });
 
+test("startup observations are write-once and discovery checks their identity", async () => {
+  const f = fixture();
+  const reserved = await f.records.reserve(f.input);
+  assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.thinkingLevel, undefined);
+  await f.records.recordSessionStart(reserved, "high");
+  await assert.rejects(f.records.recordSessionStart(reserved, "low"));
+  assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.thinkingLevel, "high");
+  const path = join(reserved.directory, "session-start.json");
+  const start = JSON.parse(await readFile(path, "utf8"));
+  start.identity.sessionId = randomUUID();
+  await writeFile(path, JSON.stringify(start));
+  await assert.rejects(f.records.discover(f.input.identity.contextId), /Stale session-start/);
+});
+
 test("identity and instruction snapshot text are retained without trimming", async () => {
   const f = fixture();
   const input = { ...f.input, instructions: "  Keep this indentation\n" };

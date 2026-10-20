@@ -5,12 +5,13 @@ import { validateWorkerResult, workerResultSchema, type WorkerInput, type Worker
 import { ActivityWriter, shorten, type ActivityEntry } from "../activity.ts";
 import { startHeartbeat } from "../heartbeat.ts";
 import { claimRequest, recordResult, unclaimedRequests, type ControlRequest, type RequestResult } from "../requests.ts";
-import { inside, readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding } from "../records.ts";
+import { inside, readJsonFile, RuntimeRecords, thinkingLevelSchema, type ChildExit, type RuntimeBinding } from "../records.ts";
 import type { RpcRecord } from "./jsonl.ts";
 import { PiRpcClient } from "./rpc-client.ts";
 
 const stateSchema = z.object({
   model: z.object({ provider: z.string(), id: z.string() }),
+  thinkingLevel: thinkingLevelSchema,
   sessionId: z.string(), sessionFile: z.string(),
   isStreaming: z.boolean(), isCompacting: z.boolean(), pendingMessageCount: z.number().int().nonnegative(),
 });
@@ -21,6 +22,7 @@ const optionsSchema = z.object({
   entrypoint: z.string().refine(isAbsolute, "Entrypoint must be absolute").optional(),
   provider: z.string().min(1).refine(value => !value.startsWith("-")),
   model: z.string().min(1).refine(value => !value.startsWith("-")),
+  thinking: thinkingLevelSchema.optional(),
   environment: z.record(z.string(), z.string()),
   shellTool: z.enum(["bash", "powershell"]),
   requestMs: z.number().int().positive().default(5000),
@@ -156,6 +158,7 @@ export class PiWorker {
       void receipt.catch(() => {});
       await bounded(client.started, this.options.requestMs, "startup_timeout", signal);
       const state = stateSchema.parse(await this.rpc(client, "get_state", {}, signal));
+      await this.records.recordSessionStart(reserved, state.thinkingLevel);
       this.validateState(state, binding);
       await this.rpc(client, "set_auto_retry", { enabled: false }, signal);
       const settled = client.beginRun();
@@ -228,6 +231,9 @@ export class PiWorker {
     if (state.model.provider !== this.options.provider || state.model.id !== this.options.model) {
       throw new RuntimeFailure("model_identity", "Pi did not select the exact configured model");
     }
+    if (this.options.thinking !== undefined && state.thinkingLevel !== this.options.thinking) {
+      throw new RuntimeFailure("thinking_identity", "Pi did not select the exact configured thinking level");
+    }
     if (state.isStreaming || state.isCompacting || state.pendingMessageCount !== 0) {
       throw new RuntimeFailure("unexpected_activity", "Pi is not idle with an empty input queue");
     }
@@ -239,6 +245,7 @@ export class PiWorker {
       "--mode", "rpc", "--session-id", binding.input.identity.sessionId,
       "--session-dir", binding.sessionDirectory,
       "--provider", this.options.provider, "--model", this.options.model,
+      ...(this.options.thinking === undefined ? [] : ["--thinking", this.options.thinking]),
       "--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
       "--no-approve",
       "--tools", `read,edit,write,${this.options.shellTool}`,

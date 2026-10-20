@@ -6,18 +6,22 @@ Decision: [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md). The selec
 
 ## Implemented boundary
 
-`src/runtime/pi/worker.ts` runs one assigned instruction snapshot through a separately launched Pi RPC subprocess. The caller supplies an absolute executable, optional Node entrypoint, explicit provider and exact model ID, controlled environment, shell-tool selection, exact workspace, identity and delivery contract. No arbitrary caller-supplied Pi flags are appended. The intended real invocation uses Node.js plus the pinned Pi CLI entrypoint; tests use Node.js plus a synthetic peer written in TypeScript.
+`src/runtime/pi/worker.ts` runs one assigned instruction snapshot through a separately launched Pi RPC subprocess. The caller supplies an absolute executable, optional Node entrypoint, explicit provider and exact model ID, optional thinking level, controlled environment, shell-tool selection, exact workspace, identity and delivery contract. No arbitrary caller-supplied Pi flags are appended. The intended real invocation uses Node.js plus the pinned Pi CLI entrypoint; tests use Node.js plus a synthetic peer written in TypeScript.
 
 The adapter:
 
 1. Reserves one runtime directory for the context/lease and writes the expected binding before spawning.
 2. Supplies the exact session ID and a session directory outside the leased workspace.
 3. Disables discovered extensions, MCP, skills, prompt templates, themes and context files (`AGENTS.md`, `CLAUDE.md`). Project resource approval is disabled; this is configuration control, not a sandbox.
-4. Requests structured state and checks session identity, session-file location and the exact selected provider/model. Idle startup does not establish task completion.
+4. Requests structured state and checks session identity, session-file location and the exact selected provider/model. Records the reported startup thinking level before checking an optional configured level. Idle startup does not establish task completion.
 5. Disables Pi's automatic model retry setting for this initial integration and sends exactly one prompt, with event observation already installed. Operator messages and stop requests are separate and forwarded once each ([ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md)).
 6. Requires prompt disposition `started`, a current agent run, a non-aborted settlement, a successful terminal assistant response and an empty idle queue afterwards.
 7. Closes RPC stdin, observes direct-child exit and stream closure, then validates the worker result file. A zero process exit alone is insufficient.
 8. On interruption/failure, requests queue clearing and abort when the channel permits, closes stdin, and escalates direct-child termination within a bounded stop budget. Sending a signal is never treated as an observed exit.
+
+Optional `worker.thinking` accepts exactly `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` and supplies `--thinking <level>`. Pi 1.2.0's `get_state` reports the actual level as `thinkingLevel`; the adapter reads it before prompting, whether configured or not. A configured mismatch fails with `thinking_identity` without sending a prompt, just as a model mismatch does. Pi clamps levels to model capabilities, so an unsupported configured level fails rather than silently using another level. The final idle-state check also checks the configured level. Without configuration, no flag is passed and Pi's own settings select the level.
+
+The write-once `session-start.json` retains the reported startup level even on a configured mismatch; `status` shows it beside usage. Attempts that never obtained valid startup state, and older attempts without this record, show `thinking unknown` – no level is inferred from configuration or usage.
 
 Request timeouts never cause another prompt or replacement launch. Responses are correlated by request ID and command. Late acknowledgements are ignored rather than retried. Protocol framing splits only on LF, accepts CRLF, preserves split UTF-8 and Unicode line separators, and bounds each record.
 
@@ -48,6 +52,7 @@ The worker writes `result.json` with the standard write tool, without a custom e
 | Path | Owner and purpose |
 | --- | --- |
 | `<root>/<context-hash>/<lease-hash>/binding.json` | Runtime-owned, write-once expected identity, instruction snapshot, resolved delivery contract, exact working directory and session/result locations |
+| `session-start.json` | Runtime-owned, write-once startup observation with version, exact attempt identity, observation timestamp and Pi's reported `thinkingLevel`, written before prompting |
 | `sessions/` | Pi-owned native session files selected with explicit `--session-dir` |
 | `requests/` | Stop requests and operator messages (`<id>.request.json`), each with a claim file created exclusively by the owning dispatcher or, if undelivered, by its sender (`<id>.claim.json`), and the outcome Pi reported (`<id>.result.json`) |
 | `heartbeat.json` | Diagnostic dispatcher heartbeat, atomically refreshed every five seconds while it owns the worker, with `version: 1`, `at` (UTC timestamp) and `pid`. A timestamp less than 30 seconds old makes `status` offer `watch` and refuses operator stop confirmation. Removed when the dispatcher finishes; missing, invalid or stale heartbeats never prove worker termination or permit dispatch. The PID is informational, never checked for liveness |

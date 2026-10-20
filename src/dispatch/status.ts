@@ -21,6 +21,7 @@ export type AttemptStatus = {
   activity?: ActivitySummary & { stale: boolean };
   /** Pi's session file: the worker's full transcript. */
   transcript?: string;
+  thinkingLevel?: RuntimeRecord["thinkingLevel"];
   /** How to continue the work by hand. Offered only once the worker is known to have stopped. */
   takeover?: string;
   nextAction: { code: NextAction; description: string };
@@ -28,7 +29,7 @@ export type AttemptStatus = {
 
 const defaultStaleMs = 20 * 60 * 1000;
 
-async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, staleMs: number): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover">> {
+async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, staleMs: number): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover" | "thinkingLevel">> {
   if (!record) return {};
   const activity = summariseActivity(await readActivity(record.directory));
   const stale = possiblyRunning && (activity.lastActivity === null || Date.now() - Date.parse(activity.lastActivity) > staleMs);
@@ -36,6 +37,7 @@ async function workerView(record: RuntimeRecord | undefined, possiblyRunning: bo
   const { sessionId } = record.binding.input.identity;
   return {
     activity: { ...activity, stale },
+    ...(record.thinkingLevel === undefined ? {} : { thinkingLevel: record.thinkingLevel }),
     ...(transcript ? { transcript } : {}),
     ...(possiblyRunning ? {} : { takeover: `In ${record.binding.input.workspace}, run: pi --session-id ${sessionId} --session-dir ${record.binding.sessionDirectory}` }),
   };
@@ -128,10 +130,11 @@ export function describeStatus(value: StatusResult): string {
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
       : `lease ${a.attempt.leaseId} not held`;
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
+    const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;
     if (a.activity?.lastActivity) {
       const usage = a.activity.tokens === null ? "" : `; ${a.activity.tokens} tokens, $${(a.activity.cost ?? 0).toFixed(2)}`;
-      lines.push(`  Last activity ${a.activity.lastActivity}${a.activity.currentTool ? `, running ${a.activity.currentTool}` : ""}${usage}${a.activity.stale ? "; NO RECENT ACTIVITY" : ""}`);
-    } else if (a.activity?.stale) lines.push("  No activity recorded; NO RECENT ACTIVITY");
+      lines.push(`  Last activity ${a.activity.lastActivity}${a.activity.currentTool ? `, running ${a.activity.currentTool}` : ""}${usage}; ${thinking}${a.activity.stale ? "; NO RECENT ACTIVITY" : ""}`);
+    } else lines.push(`  No activity recorded; ${thinking}${a.activity?.stale ? "; NO RECENT ACTIVITY" : ""}`);
     if (a.transcript) lines.push(`  Transcript: ${a.transcript}`);
     if (a.takeover) lines.push(`  Take over by hand: ${a.takeover}`);
     if (a.nextAction.code !== "none") lines.push(`  Next: ${a.nextAction.description}`);

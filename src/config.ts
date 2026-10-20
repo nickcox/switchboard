@@ -7,7 +7,7 @@ import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { PiWorker } from "./runtime/pi/worker.ts";
-import { RuntimeRecords } from "./runtime/records.ts";
+import { RuntimeRecords, thinkingLevelSchema } from "./runtime/records.ts";
 import { TasksAxiStore } from "./tasks/tasks-axi.ts";
 import { checkRetention } from "./workspaces/retention.ts";
 import { TreehouseProvider } from "./workspaces/treehouse.ts";
@@ -43,6 +43,7 @@ export const configSchema = z.strictObject({
     piEntrypoint: absolute,
     provider: nonempty,
     model: nonempty,
+    thinking: thinkingLevelSchema.optional(),
     shellTool: z.enum(["bash", "powershell"]).default("bash"),
     runMs: z.number().int().positive().default(30 * 60 * 1000),
     /** Stop the worker when an attempt's reported cost (in the provider's currency, usually US dollars) exceeds this. */
@@ -83,6 +84,7 @@ export async function createDependencies(config: Config, progress?: (message: st
     executable: process.execPath, entrypoint: config.worker.piEntrypoint,
     provider: config.worker.provider, model: config.worker.model, shellTool: config.worker.shellTool, runMs: config.worker.runMs,
     statsMs: config.worker.statsMs,
+    ...(config.worker.thinking === undefined ? {} : { thinking: config.worker.thinking }),
     ...(config.worker.maxCost === undefined ? {} : { maxCost: config.worker.maxCost }),
     ...(config.worker.maxTokens === undefined ? {} : { maxTokens: config.worker.maxTokens }),
     environment: config.worker.environment ?? inherited([

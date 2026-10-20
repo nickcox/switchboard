@@ -79,6 +79,7 @@ function handle(request: Record<string, unknown>) {
   if (request.type === "get_state") {
     respond(request, {
       model: { provider: "fixture", id: scenario === "wrong-model" ? "another-model" : "fixture" },
+      thinkingLevel: scenario === "wrong-thinking" ? "low" : process.argv.includes("--thinking") ? flag("--thinking") : "medium",
       sessionId: scenario === "wrong-session" ? "wrong-session" : sessionId,
       sessionFile: join(sessions, `fixture_${sessionId}.jsonl`),
       isStreaming: false, isCompacting: false, pendingMessageCount: 0,

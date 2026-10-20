@@ -40,6 +40,38 @@ test("RPC worker uses exact cwd/session and standard tools, retains result, and 
   assert.equal(discovered[0]?.child.status, "exited");
 });
 
+for (const thinking of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+  test(`configured thinking ${thinking} is passed, checked and recorded`, async () => {
+    const f = fixture("normal", { thinking });
+    const report = await f.worker.execute(f.input);
+    assert.equal(report.status, "reported");
+    const launch = JSON.parse(await readFile(join(report.directory, "fixture-launch.json"), "utf8"));
+    assert.equal(launch.argv[launch.argv.indexOf("--thinking") + 1], thinking);
+    assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.thinkingLevel, thinking);
+  });
+}
+
+test("a thinking mismatch records the actual level and fails before prompting", async () => {
+  const f = fixture("wrong-thinking", { thinking: "high" });
+  const report = await f.worker.execute(f.input);
+  assert.equal(report.status, "failed");
+  assert.equal(report.reason, "thinking_identity");
+  assert.equal((await requests(f.log)).some(r => r.type === "prompt"), false);
+  assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.thinkingLevel, "low");
+});
+
+test("unconfigured thinking is left to Pi and its reported level is recorded", async () => {
+  const f = fixture();
+  const report = await f.worker.execute(f.input);
+  assert.equal(report.status, "reported");
+  const launch = JSON.parse(await readFile(join(report.directory, "fixture-launch.json"), "utf8"));
+  assert.equal(launch.argv.includes("--thinking"), false);
+  const start = JSON.parse(await readFile(join(report.directory, "session-start.json"), "utf8"));
+  assert.equal(start.thinkingLevel, "medium");
+  assert.deepEqual(start.identity, f.input.identity);
+  assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.thinkingLevel, "medium");
+});
+
 for (const scenario of ["missing-result", "malformed-result", "stale-result", "missing-evidence", "wrong-branch", "large-result"]) {
   test(`worker refuses ${scenario} even after successful model settlement and child exit`, async () => {
     const f = fixture(scenario);

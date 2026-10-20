@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { configSchema } from "../src/config.ts";
 import { onPath } from "../src/infra/executables.ts";
 
 // Runs the real CLI with a configuration file that points at disposable fixtures and the synthetic Pi peer.
@@ -41,7 +42,7 @@ function fixture() {
     workspaces: { repository, poolRoot: join(dir, "pool") },
     delivery: { baseRef: "main", requiredEvidence: ["tests"], requiredDeliverables: ["code"] },
     worker: {
-      piEntrypoint: resolve(import.meta.dirname, "fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", runMs: 5000,
+      piEntrypoint: resolve(import.meta.dirname, "fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", thinking: "high", runMs: 5000,
       environment: { ...environment, FAKE_PI_SCENARIO: "commit-result", FAKE_PI_LOG: join(dir, "requests.jsonl") },
     },
   }));
@@ -51,6 +52,17 @@ function fixture() {
   });
   return { switchboard, run };
 }
+
+test("worker configuration accepts only Pi's thinking levels and leaves the field optional", () => {
+  const worker = { piEntrypoint: cli, provider: "fixture", model: "fixture" };
+  assert.equal(configSchema.shape.worker.parse(worker).thinking, undefined);
+  for (const thinking of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+    assert.equal(configSchema.shape.worker.parse({ ...worker, thinking }).thinking, thinking);
+  }
+  for (const thinking of ["auto", "HIGH", "", null, 1]) {
+    assert.equal(configSchema.shape.worker.safeParse({ ...worker, thinking }).success, false);
+  }
+});
 
 test("--version prints the package version without loading configuration", () => {
   const dir = mkdtempSync(join(evidence, "version-"));
@@ -145,6 +157,7 @@ test("dispatch --once and status report the attempt as structured JSON with docu
   assert.equal(view.reason, "attention");
   assert.equal(view.attempts[0].nextAction.code, "review_branch");
   assert.equal(view.attempts[0].leaseHeld, true);
+  assert.equal(view.attempts[0].thinkingLevel, "high");
 
   const replay = switchboard(["dispatch", "--once", "--json", "--request-id", "cli-1"]);
   assert.equal(JSON.parse(replay.stdout).version, 1);

@@ -58,6 +58,7 @@ Otherwise, create a configuration file with absolute paths. For example, `switch
     "piEntrypoint": "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
     "provider": "openai-codex",
     "model": "gpt-6.1-sol",
+    "thinking": "high",
     "maxCost": 5
   }
 }
@@ -73,6 +74,7 @@ npm run switchboard -- dispatch --once --config ./switchboard.json
 - **Dry runs.** `dispatch --once --dry-run` runs the same preflight and selection checks, including `--task <id>`, and reports the selected task and resolved delivery contract, or the same refusal as dispatch. It creates no attempt, acquires no lease, changes no task and launches no worker. Add `--json` for a structured result.
 - **Delivery contracts.** A task's tasks-axi `kind` selects its delivery contract from `byTaskKind`. A task with no kind uses the default, which holds completed code for review.
 - **Long runs.** `dispatch --once` prints each tool call as the worker makes it and stays in the foreground until the worker finishes. Run it under tmux or `nohup` for long tasks, because closing its terminal ends the dispatcher.
+- **Thinking.** Optional `worker.thinking` pins Pi's reasoning level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Switchboard checks the reported level before prompting and fails on a mismatch, including model capability clamping. If omitted, Pi selects the level from its settings. Each session's reported startup level is retained and shown beside usage in `status`.
 - **Watching.** From another terminal, `watch --lease <lease-id>` follows a worker's activity, and `status` shows its last activity, usage, transcript path and whether it has gone quiet. `maxCost` and `maxTokens` stop a worker that exceeds them.
 - **Stopping and steering.** `stop --lease <lease-id>` asks the dispatcher that owns a worker to stop it. `steer --lease <lease-id> "<message>"` passes it a message, and `--after` waits until it finishes its current work. A request that no running dispatcher takes is withdrawn and reported as undelivered.
 - **A worker that may still be running.** If `status` reports one, check it has stopped, then run `resolve --lease <lease-id> --worker-stopped`. That attempt then stops blocking dispatch.

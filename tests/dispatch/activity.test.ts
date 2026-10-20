@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
-import { status } from "../../src/dispatch/status.ts";
+import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { watch } from "../../src/dispatch/watch.ts";
 import type { ActivityEntry } from "../../src/runtime/activity.ts";
 import { fixture, task } from "./fixture.ts";
@@ -30,7 +30,10 @@ test("watch prints a finished attempt's activity and stops; an unknown lease is 
 test("status shows a finished attempt's activity, usage and how to take over by hand", async () => {
   const f = await fixture({ tasks: [task("view-a1")], scenario: "commit-result" });
   await dispatchOnce(f.deps);
-  const attempt = (await status(f.deps)).attempts[0]!;
+  const view = await status(f.deps);
+  const attempt = view.attempts[0]!;
+  assert.equal(attempt.thinkingLevel, "medium");
+  assert.match(describeStatus(view), /1200 tokens, \$0\.01; thinking medium/);
   assert.ok(attempt.activity?.lastActivity);
   assert.equal(attempt.activity?.tokens, 1200);
   assert.equal(attempt.activity?.stale, false);
@@ -49,4 +52,6 @@ test("a possibly running worker with no recent activity is flagged as stale, wit
   const quiet = (await status({ ...f.deps, staleMs: 1 })).attempts.find(a => a.attempt.leaseId === "lease-quiet")!;
   assert.equal(quiet.activity?.stale, true);
   assert.equal(quiet.takeover, undefined);
+  assert.equal(quiet.thinkingLevel, undefined);
+  assert.match(describeStatus(await status(f.deps)), /thinking unknown/);
 });
