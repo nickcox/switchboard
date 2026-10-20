@@ -1,6 +1,6 @@
 # Phase 2: Reconciliation and recovery
 
-Status: draft for review. Nothing here is agreed until the open questions at the end are settled.
+Status: agreed on 20 October 2026; not yet implemented. Requirements, not a description of existing behaviour.
 
 ## Objective and scope
 
@@ -15,17 +15,23 @@ In scope:
 - A classification of every attempt's state across the three owners, used by `status` and by the commands below.
 - Finishing an attempt with one command, under a finalisation policy configured per context.
 - Returning a lease, and discarding unretained work, as explicit operator commands with their own checks.
-- Optionally starting a new attempt for an attempt that failed with a temporary provider error.
 - A retention policy for attempt records.
-- A prototype of process ownership on macOS, as a separate track that decides whether automatic lease return is possible.
 
-Out of scope: policies defined as scripts or hooks in a repository file, which would run code the repository supplies and need their own opt-in design; a background dispatcher, attempts in parallel and another runtime (Phase 3); an agent supervisor (Phase 4); automatic lease return before process ownership is proven; Switchboard merging into a protected branch; real-dispatch qualification on Linux and Windows, which stays a Phase 1 platform item.
+Out of scope:
+
+- A finalisation policy that pushes the output branch and opens a pull request, with finishing that waits for the pull request to be merged and a retention check that works with the remote (Phase 3).
+- A background dispatcher, attempts in parallel and another runtime (Phase 3).
+- Starting a new attempt automatically after a temporary provider error; dispatching again stays with the operator until an agent supervisor can decide it (Phase 4).
+- Proving that every process a worker started has stopped, and so automatic lease return. The [process-ownership survey](process-ownership-survey.md) found this needs a virtual machine per attempt or Endpoint Security's descendants client on macOS; it is deferred, and Phase 2 relies on the operator's confirmation instead.
+- Policies defined as scripts or hooks in a repository file, which would run code the repository supplies and need their own opt-in design.
+- Switchboard merging into a protected branch.
+- Real-dispatch qualification on Linux and Windows, which stays a Phase 1 platform item.
 
 Inputs: the [architecture's notes for later phases](../../architecture.md#notes-for-later-phases), the [process-ownership survey](process-ownership-survey.md), the [Phase 1 review](../01-basic-dispatch/review-2026-10-20.md) and its out-of-scope concerns, and the [Phase 1 verification record](../01-basic-dispatch/verification.md).
 
 ## Pi Durable checkpoint
 
-The runtime notes and [ADR-0003](../../adr/0003-pi-durable-for-durable-orchestration.md) require a short comparison with Pi Durable before reconciliation is implemented, and before any retry, restart or replay is added. Phase 2's reconciliation is a read of owner state followed by explicit operator commands; it adds no queue, scheduler, replay or long-running process. Automatic new attempts (below) are the one feature close to the line, because they start work without an operator command. Before implementing them, record the comparison in ADR-0005's "Continuing comparison" section and confirm that a bounded, logged new attempt does not reproduce Pi Durable's task machinery.
+The runtime notes and [ADR-0003](../../adr/0003-pi-durable-for-durable-orchestration.md) require a short comparison with Pi Durable before reconciliation is implemented, and before any retry, restart or replay is added. Phase 2's reconciliation is a read of owner state followed by explicit operator commands; it adds no queue, scheduler, retry, replay or long-running process, and starts no work without an operator command. Record that comparison in ADR-0005's "Continuing comparison" section before implementing it.
 
 ## Attempt states
 
@@ -50,11 +56,12 @@ Unaccounted leases and orphaned in-flight tasks remain separate findings, as in 
 
 `switchboard finish --lease <lease-id>` completes an attempt according to the context's finalisation policy. It is the operator's statement that the work has been reviewed and should be integrated; it never runs for an attempt that is running, possibly running, unfinished or unknown.
 
-**Finalisation policy.** Each context has one finalisation policy, separate from the delivery contracts, which say what a worker must produce. A policy is one of a fixed set of kinds built into Switchboard, because each kind is a sequence of steps that move or publish work and needs its own read-back, uncertain-outcome handling and retention check. Documents choose the kind and its settings, such as the target branch, whether pushing needs approval, and a pull request's reviewers or labels; they cannot define new kinds or run commands. The kinds are:
+**Finalisation policy.** Each context has one finalisation policy, separate from the delivery contracts, which say what a worker must produce. A policy is one of a fixed set of kinds built into Switchboard, because each kind is a sequence of steps that move or publish work and needs its own read-back, uncertain-outcome handling and retention check. Documents choose the kind and its settings, such as the target branch; they cannot define new kinds or run commands. Phase 2's kinds are:
 
 - `manual`: Phase 1's behaviour. `finish` records the task as done and returns the lease, and the operator integrates the output branch themselves before running it.
 - `local-merge`: `finish` fast-forwards a configured target branch, such as `main`, to the output branch in the backing repository, refusing if that is not a fast-forward, then records the task as done and returns the lease.
-- `pull-request` (later milestone): `finish` pushes the output branch and opens a pull request, which publishes work and so needs operator approval. The task stays held with the pull request's URL until the pull request is merged, so finishing becomes asynchronous: `status` notices the merge, and `finish` then records the task as done and returns the lease. Retention must accept a branch that has been merged by squash or rebase, whose result commit is not on the target branch. Switchboard only opens and watches the pull request; merging stays with the repository's own review rules.
+
+A `pull-request` kind follows in Phase 3. The layers and checks below are designed so it can be added without changing them.
 
 **Where the policy comes from.** Three layers, each overriding the one before:
 
@@ -74,18 +81,10 @@ Returning a lease recycles the workspace and is the only routine action that can
 
 1. The attempt's state allows it: awaiting finish (after the task is recorded) for `finish`, or confirmed by the operator for `discard`.
 2. The retention check passes, run again immediately before returning, unless the operator is discarding the work explicitly.
-3. The workspace holds no running process from the worker. Until process ownership is proven (below), this is the operator's confirmation, given with a flag such as `--no-processes`, and recorded in the attempt log as theirs, not as an observation. `status` shows what Switchboard can see to help: the observed exit, the heartbeat, and the workspace's open files where the platform can list them.
+3. The workspace holds no running process from the worker. Switchboard cannot prove this, so it is the operator's confirmation, given with the `--no-processes` flag on `finish` and `discard`, and recorded in the attempt log as theirs, not as an observation. Without the flag, both commands stop before returning the lease and say what to check. `status` shows what Switchboard can see to help: the observed exit, the heartbeat, and the workspace's open files where the platform can list them.
 4. The return is conditional on the lease's identity and holder, as Phase 1's operator instructions already require (`treehouse return --if-lease-id --if-lease-holder`).
 
 `switchboard discard --lease <lease-id>` returns a lease whose work is not retained, or not wanted, after the operator confirms they intend to discard it. It records the discard and leaves the task held, so the task can be dispatched again or closed by the operator.
-
-## Process ownership track
-
-The [survey](process-ownership-survey.md) found no cheap way on macOS to prove that every process a worker started has stopped. Phase 2 includes a time-boxed prototype of Endpoint Security's descendants client (`es_new_descendants_client`, macOS 27), which needs the Endpoint Security entitlement but not root, covering the survey's open questions: orphans, rapid process creation, event loss, and the monitor or dispatcher dying. Its outcome is a decision, recorded as an ADR: adopt it, prototype a virtual machine per attempt instead, or keep operator confirmation. Automatic lease return, starting with report tasks whose output is kept outside the workspace, is enabled only if that decision provides a proven termination receipt.
-
-## New attempts after temporary errors
-
-Optional, and off by default. A context may allow `dispatch` to start a new attempt for a task whose latest attempt failed with a provider error classified as temporary (for example a dropped connection, but not a usage limit), at most a configured number of times, only after the failed attempt's worker exit is observed and its lease is returned by `finish` or `discard` rules. Each new attempt is an ordinary attempt with its own lease, session and log, so no prompt is ever sent twice to one session. This needs the Pi Durable checkpoint above first.
 
 ## Retention of attempt records
 
@@ -96,17 +95,7 @@ Optional, and off by default. A context may allow `dispatch` to start a new atte
 1. `status` reports each attempt's state from the classification above, and every command refuses an attempt whose state is unknown.
 2. The policy is resolved from the global, repository and context layers, with forbidden kinds enforced and the repository file read only from the base branch; a test changes the policy file on an output branch and shows it has no effect.
 3. `finish` under `manual` and `local-merge` completes a reviewed attempt in one command, can be repeated after a failure at any step without repeating completed steps, and refuses running, possibly running, unfinished and unknown attempts.
-4. No command returns a lease without a passing retention check (or an explicit discard), the operator's process confirmation, and a lease identity check. Tests disable each condition in turn and show the return is refused.
+4. No command returns a lease without a passing retention check (or an explicit discard), the operator's `--no-processes` confirmation, and a lease identity check. Tests disable each condition in turn and show the return is refused.
 5. `discard` returns a lease only after explicit confirmation and leaves the task held.
-6. If enabled, automatic new attempts start only after a temporary error, within the configured limit, after the previous worker's exit is observed and its lease returned, and each is a separate logged attempt.
-7. `prune` never removes an attempt that is unfinished, holds a lease, may be running or is unknown, nor a reservation whose attempt remains.
-8. The process-ownership prototype ends with an ADR recording its decision.
-9. A real end-to-end run finishes a reviewed attempt with `finish` under `local-merge`.
-
-## Open questions
-
-1. **Pull requests in Phase 2?** The `pull-request` policy is the most useful for repositories with a protected default branch, but it brings asynchronous finishing, pushing (which needs approval) and remote-aware retention. Include it in Phase 2 as a final milestone, or move it to Phase 3?
-2. **Command names.** `finish` and `discard`, or names closer to Treehouse's, such as `return`?
-3. **Process confirmation.** Is a flag on `finish` and `discard` the right form for the operator's confirmation that no worker process remains, or should it be a separate `resolve` action recorded first?
-4. **Automatic new attempts.** Worth including at all in Phase 2, given the Pi Durable checkpoint, or leave dispatching again to the operator until a supervisor exists?
-5. **Process-ownership prototype.** Do you have, or want to obtain, the Endpoint Security entitlement it needs? Without it, the track is limited to a virtual-machine prototype or deferral.
+6. `prune` never removes an attempt that is unfinished, holds a lease, may be running or is unknown, nor a reservation whose attempt remains.
+7. A real end-to-end run finishes a reviewed attempt with `finish` under `local-merge`.
