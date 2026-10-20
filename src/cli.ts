@@ -16,6 +16,7 @@ const usage = `Usage:
   switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
+  switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
   switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
   switchboard stop --lease <lease-id> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
   switchboard steer --lease <lease-id> [--after] [--as <sender>] [--wait <seconds>] [--json] [--config <path>] "<message>"
@@ -32,7 +33,8 @@ and never forwarded. --as names the sender recorded with the request; the defaul
 resolve records the operator's confirmation that a worker with no observed exit has stopped. Without
 --worker-stopped it only reports what each owner holds. --lease-returned records the operator's confirmation that a
 lease in a workspace pool Switchboard no longer lists, for example after the origin remote changed, was returned.
-resolve never changes the task or the lease.
+Use exactly one of --lease and --task. --task is only for --lease-returned; --attempt selects a task's attempt
+(default: latest). resolve never changes the task or the lease.
 
 The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
 Exit status: 0 when no work was ready, a dry run selected a task or the task was recorded as done (dispatch), nothing needs attention (status),
@@ -46,7 +48,7 @@ async function main(argv: string[]): Promise<number> {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
       lease: { type: "string" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
-      after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" },
+      after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" },
     },
   });
   if (values.version) {
@@ -73,7 +75,21 @@ async function main(argv: string[]): Promise<number> {
     console.error("resolve takes either --worker-stopped or --lease-returned, not both.");
     return 2;
   }
-  if (["resolve", "watch", "stop", "steer"].includes(command) && !values.lease) {
+  const attempt = values.attempt === undefined ? undefined : Number(values.attempt);
+  if (command === "resolve" && (
+    (values.lease !== undefined) === (values.task !== undefined)
+    || values.lease === "" || values.task === ""
+    || (values.task !== undefined && !values["lease-returned"])
+    || (values.attempt !== undefined && (!values.task || !Number.isSafeInteger(attempt) || attempt! <= 0))
+  )) {
+    console.error("resolve requires exactly one of --lease or --task; --task requires --lease-returned, and --attempt must be a positive integer with --task.\n\n" + usage);
+    return 2;
+  }
+  if (values.attempt !== undefined && command !== "resolve") {
+    console.error("--attempt is only supported by resolve --task --lease-returned.");
+    return 2;
+  }
+  if (["watch", "stop", "steer"].includes(command) && !values.lease) {
     console.error(`${command} requires --lease <lease-id>; \`switchboard status\` shows each attempt's lease ID.\n\n${usage}`);
     return 2;
   }
@@ -116,7 +132,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "resolve") {
     const note = values.note ? { note: values.note } : {};
     const value = values["lease-returned"]
-      ? await resolveLeaseReturned(deps, { leaseId: values.lease!, ...note })
+      ? await resolveLeaseReturned(deps, { ...(values.task ? { taskId: values.task, ...(attempt !== undefined ? { attempt } : {}) } : { leaseId: values.lease! }), ...note })
       : await resolveStopped(deps, { leaseId: values.lease!, confirmed: values["worker-stopped"] === true, ...note });
     console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
     return value.ok ? 0 : 1;

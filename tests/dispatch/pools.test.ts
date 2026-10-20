@@ -95,7 +95,19 @@ for (const rejected of [false, true]) {
     assert.equal(view.attempts[0]?.leaseInOtherPool, rejected ? undefined : pool);
     if (!rejected) {
       assert.match(describeStatus(view), /UNKNOWN: its workspace pool is no longer listed/);
+      assert.equal(view.attempts[0]?.attempt.leaseId, undefined);
+      assert.match(view.attempts[0]!.nextAction.description, /resolve --task <task-id> --lease-returned/);
       assert.equal((await dispatchOnce(f.deps)).reason, "no_ready_work");
+      const resolved = await resolveLeaseReturned(f.deps, { taskId: "pool-d1", note: "Returned through Treehouse" });
+      assert.equal(resolved.reason, "resolved");
+      const attempt = (await f.deps.attempts.forTask("pool-d1"))[0]!;
+      assert.deepEqual(attempt.entries.at(-1)?.data, { action: "lease_returned", note: "Returned through Treehouse" });
+      assert.equal((await resolveLeaseReturned(f.deps, { taskId: "pool-d1" })).reason, "refused");
+      const second = await dispatchOnce(f.deps);
+      assert.equal(second.attempt?.taskId, "pool-d1");
+      assert.equal(second.attempt?.attempt, 2);
+      assert.equal((await resolveLeaseReturned(f.deps, { taskId: "pool-d1" })).lease, "preserved");
+      assert.match((await resolveLeaseReturned(f.deps, { taskId: "pool-d1", attempt: 1 })).detail!, /already confirmed/);
     }
   });
 }
@@ -107,4 +119,7 @@ test("a lease in the listed pool needs no confirmation that it was returned", as
   assert.equal(refused.reason, "refused");
   assert.equal(refused.lease, "preserved");
   assert.equal((await resolveLeaseReturned(f.deps, { leaseId: "no-such-lease" })).reason, "refused");
+  assert.equal((await resolveLeaseReturned(f.deps, { taskId: "pool-b1" })).lease, "preserved");
+  assert.equal((await resolveLeaseReturned(f.deps, { taskId: "pool-b1", attempt: 99 })).reason, "refused");
+  assert.equal((await resolveLeaseReturned(f.deps, { taskId: "no-such-task" })).reason, "refused");
 });

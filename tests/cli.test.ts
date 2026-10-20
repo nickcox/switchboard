@@ -49,7 +49,7 @@ function fixture() {
   const switchboard = (args: string[]) => spawnSync(process.execPath, [cli, ...args, "--config", config], {
     env: { ...process.env, ...gitEnvironment, HOME: home }, encoding: "utf8",
   });
-  return { switchboard };
+  return { switchboard, run };
 }
 
 test("--version prints the package version without loading configuration", () => {
@@ -66,6 +66,26 @@ test("--version prints the package version without loading configuration", () =>
   const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stderr, /switchboard --version/);
+});
+
+test("resolve validates task and lease selectors before loading configuration", () => {
+  const invalid = [
+    [], ["--lease-returned"], ["--task", "cli-a1"], ["--task", "cli-a1", "--worker-stopped"],
+    ["--lease", "lease-1", "--task", "cli-a1", "--lease-returned"],
+    ["--lease", "lease-1", "--attempt", "1", "--lease-returned"],
+    ...["0", "-1", "1.5", "bad"].map(n => ["--task", "cli-a1", "--lease-returned", "--attempt", n]),
+  ];
+  for (const args of invalid) {
+    const result = spawnSync(process.execPath, [cli, "resolve", ...args, "--config", "missing.json"], { encoding: "utf8" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.doesNotMatch(result.stderr, /Configuration error/);
+  }
+  const { switchboard } = fixture();
+  for (const args of [[], ["--attempt", "1"]]) {
+    const result = switchboard(["resolve", "--task", "unknown-task", "--lease-returned", ...args, "--json"]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(JSON.parse(result.stdout).reason, "refused");
+  }
 });
 
 test("dispatch --once --dry-run supports JSON, explicit selection and readable output", () => {
@@ -86,7 +106,7 @@ test("dispatch --once --dry-run supports JSON, explicit selection and readable o
 });
 
 test("dispatch --once and status report the attempt as structured JSON with documented exit codes", async () => {
-  const { switchboard } = fixture();
+  const { switchboard, run } = fixture();
   const before = switchboard(["status", "--json"]);
   assert.equal(before.status, 0, before.stderr);
   assert.equal(JSON.parse(before.stdout).version, 1);
@@ -122,4 +142,10 @@ test("dispatch --once and status report the attempt as structured JSON with docu
   const none = switchboard(["dispatch", "--once"]);
   assert.equal(none.status, 0);
   assert.match(none.stdout, /no_ready_work/);
+
+  run(["remote", "add", "origin", "https://example.invalid/fixture.git"]);
+  const resolved = switchboard(["resolve", "--task", "cli-a1", "--attempt", "1", "--lease-returned", "--json"]);
+  assert.equal(resolved.status, 0, resolved.stderr);
+  assert.equal(JSON.parse(resolved.stdout).reason, "resolved");
+  assert.equal(switchboard(["resolve", "--task", "cli-a1", "--lease-returned"]).status, 1);
 });

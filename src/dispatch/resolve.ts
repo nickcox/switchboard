@@ -47,21 +47,28 @@ export async function resolveStopped(
  * returned, so it stops blocking its task. Switchboard cannot see that pool, so this is the operator's confirmation,
  * not an observation. It never changes the task or the lease.
  */
-export async function resolveLeaseReturned(deps: Dependencies, options: { leaseId: string; note?: string }): Promise<DispatchResult> {
+export async function resolveLeaseReturned(
+  deps: Dependencies,
+  options: ({ leaseId: string; taskId?: never; attempt?: never } | { taskId: string; attempt?: number; leaseId?: never }) & { note?: string },
+): Promise<DispatchResult> {
   const state = await inspect(deps);
   if ("failed" in state) return state.failed;
-  const attempt = state.attempts.find(a => summarise(a).leaseId === options.leaseId);
+  const candidates = state.attempts.filter(a => a.taskId === options.taskId);
+  const attempt = options.taskId !== undefined
+    ? options.attempt !== undefined ? candidates.find(a => a.attempt === options.attempt) : candidates.sort((a, b) => b.attempt - a.attempt)[0]
+    : state.attempts.find(a => summarise(a).leaseId === options.leaseId);
   if (!attempt) {
-    return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: { leaseId: options.leaseId }, detail: "No attempt in this context has this lease ID", nextAction: "inspect_attempt" });
+    return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: options, detail: "No attempt in this context matches the given lease or task and attempt", nextAction: "inspect_attempt" });
   }
+  const leaseId = summarise(attempt).leaseId;
   if (resolvedBy(attempt, "lease_returned")) {
-    return result({ ok: false, reason: "refused", stage: "resolve", attempt: summarise(attempt), lease: "unknown", observed: { leaseId: options.leaseId }, detail: "The operator has already confirmed this lease was returned", nextAction: "none" });
+    return result({ ok: false, reason: "refused", stage: "resolve", attempt: summarise(attempt), lease: "unknown", observed: { leaseId }, detail: "The operator has already confirmed this lease was returned", nextAction: "none" });
   }
   const other = state.leasesInOtherPools.find(a => a.taskId === attempt.taskId && a.attempt === attempt.attempt);
-  const observed = { leaseId: options.leaseId, pool: state.pool, ...(other ? { leasePool: other.pool } : {}) };
+  const observed = { leaseId, pool: state.pool, ...(other ? { leasePool: other.pool } : {}) };
   const common = { stage: "resolve" as const, attempt: summarise(attempt), observed };
   if (!other) {
-    const held = state.leases.some(l => l.leaseId === options.leaseId);
+    const held = state.leases.some(l => l.leaseId === leaseId);
     return result({ ok: false, reason: "refused", ...common, lease: held ? "preserved" : "none", detail: "This lease is in the workspace pool Switchboard currently lists, so its state is read from the provider and needs no confirmation", nextAction: "none" });
   }
   await deps.attempts.append(attempt, "operator_resolved", { action: "lease_returned", ...(options.note ? { note: options.note } : {}) });

@@ -30,7 +30,7 @@ export const nextActions = {
   review_branch: "Review the output branch, integrate it, then record the task as done in the task store. Return the lease after confirming the retention check.",
   inspect_attempt: "Inspect the attempt's task, lease and runtime records, resolve them, then dispatch again.",
   stop_worker: "Confirm the worker has stopped, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
-  confirm_lease_returned: "The lease is in a workspace pool the provider no longer lists, for example because the repository's origin remote was added or changed. Inspect the workspace at its recorded path and return the lease through Treehouse by that path, then run `switchboard resolve --lease <lease-id> --lease-returned`.",
+  confirm_lease_returned: "The lease is in a workspace pool the provider no longer lists, for example because the repository's origin remote was added or changed. Inspect the workspace at its recorded path and return the lease through Treehouse by that path, then run `switchboard resolve --lease <lease-id> --lease-returned`. If no lease ID was learned, use `switchboard resolve --task <task-id> --lease-returned` instead, with `--attempt <n>` if it is not the task's latest attempt.",
   confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>` on macOS or Linux, or Resource Monitor on Windows, then run resolve again with --worker-stopped.",
   apply_task_outcome: "Read the task and the workspace, record the task outcome in the task store, and return the lease once the work is retained.",
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",
