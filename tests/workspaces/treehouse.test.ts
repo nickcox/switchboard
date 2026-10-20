@@ -102,3 +102,41 @@ test("open requires the canonical top level of a Git work tree", async () => {
   await assert.rejects(TreehouseProvider.open({ ...f.options, repository: `${f.repository}/subdirectory/..` }), /canonical/);
   await assert.rejects(TreehouseProvider.open({ ...f.options, repository: "repository" }));
 });
+
+test("Phase 2 review finding 15: a lease is returned only with its exact lease ID and holder", async () => {
+  const f = fixture();
+  const provider = await TreehouseProvider.open(f.options);
+  const allocation = await provider.acquire({ holder: "task-a1", baseRef: "main", branch: "switchboard/task-a1/1" });
+  const lease = { leaseId: allocation.leaseId, holder: "task-a1", path: allocation.path };
+  const held = async () => (await provider.leases()).some(l => l.leaseId === allocation.leaseId);
+  await assert.rejects(provider.returnLease({ ...lease, leaseId: "0".repeat(32) }, { discardChanges: false }), WorkspaceError);
+  assert.equal(await held(), true);
+  await assert.rejects(provider.returnLease({ ...lease, holder: "task-b1" }, { discardChanges: false }), WorkspaceError);
+  assert.equal(await held(), true);
+  await provider.returnLease(lease, { discardChanges: false });
+  assert.equal(await held(), false);
+});
+
+test("Phase 2 review finding 5: a refused return is not success because the repository moved to another pool", async () => {
+  const f = fixture();
+  const provider = await TreehouseProvider.open(f.options);
+  const allocation = await provider.acquire({ holder: "task-a1", baseRef: "main", branch: "switchboard/task-a1/1" });
+  writeFileSync(join(allocation.path, "untracked.txt"), "keep me\n");
+  f.run(["remote", "add", "origin", "https://example.invalid/fixture.git"]);
+  await assert.rejects(provider.returnLease({ leaseId: allocation.leaseId, holder: "task-a1", path: allocation.path }, { discardChanges: false }), WorkspaceError);
+  f.run(["remote", "remove", "origin"]);
+  assert.equal((await provider.leases()).some(l => l.leaseId === allocation.leaseId), true);
+});
+
+test("Phase 2 review finding 5: a reported return is not trusted when the listing comes from another pool", { skip: process.platform === "win32" }, async () => {
+  const f = fixture();
+  const provider = await TreehouseProvider.open(f.options);
+  const allocation = await provider.acquire({ holder: "task-a1", baseRef: "main", branch: "switchboard/task-a1/1" });
+  // A stand-in that reports a successful return without making one, while the repository moves to another pool.
+  const shim = join(f.dir, "treehouse-shim");
+  writeFileSync(shim, `#!/bin/sh\nfor a in "$@"; do if [ "$a" = return ]; then "${git}" -C "${f.repository}" remote add origin https://example.invalid/moved.git; exit 0; fi; done\nexec "${treehouse}" "$@"\n`, { mode: 0o755 });
+  const shimmed = await TreehouseProvider.open({ ...f.options, treehouse: shim });
+  await assert.rejects(shimmed.returnLease({ leaseId: allocation.leaseId, holder: "task-a1", path: allocation.path }, { discardChanges: false }), WorkspaceError);
+  f.run(["remote", "remove", "origin"]);
+  assert.equal((await provider.leases()).some(l => l.leaseId === allocation.leaseId), true);
+});

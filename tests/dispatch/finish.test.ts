@@ -200,7 +200,7 @@ test("finish under the manual policy records the task as done and returns the le
   assert.equal(outcome.reason, "finished", outcome.detail ?? "");
   assert.equal((await f.tasks.read("finish-a1"))?.state, "done");
   assert.equal(await listed(f, leaseId), false);
-  assert.deepEqual((await kinds(f)).slice(-2), ["task_recorded", "lease_returned"]);
+  assert.deepEqual((await kinds(f)).slice(-3), ["task_recorded", "lease_return_started", "lease_returned"]);
   assert.equal(await state(f.deps), "finished");
   assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "refused");
 });
@@ -212,7 +212,7 @@ test("finish under local-merge fast-forwards the target branch to the output bra
   const outcome = await finish(deps, { leaseId, noProcesses: true });
   assert.equal(outcome.reason, "finished", outcome.detail ?? "");
   assert.equal(f.run(["rev-parse", "main"]), head);
-  assert.deepEqual((await kinds(f)).slice(-3), ["integrated", "task_recorded", "lease_returned"]);
+  assert.deepEqual((await kinds(f)).slice(-4), ["integrated", "task_recorded", "lease_return_started", "lease_returned"]);
 });
 
 test("finish under local-merge refuses a change that is not a fast-forward, before changing anything", async () => {
@@ -296,7 +296,7 @@ test("discard needs explicit confirmation, then returns the lease even with unco
   assert.equal(await listed(f, leaseId), false);
   const held = await f.tasks.read("finish-a1");
   assert.deepEqual([held?.state, held?.held], ["queued", true]);
-  assert.deepEqual((await kinds(f)).slice(-2), ["discarded", "lease_returned"]);
+  assert.deepEqual((await kinds(f)).slice(-3), ["discarded", "lease_return_started", "lease_returned"]);
 });
 
 test("finish refuses an attempt that may be changed but is not awaiting review or finish, such as one its worker held", async () => {
@@ -307,4 +307,89 @@ test("finish refuses an attempt that may be changed but is not awaiting review o
   const outcome = await finish(f.deps, { leaseId, noProcesses: true });
   assert.equal(outcome.reason, "refused");
   assert.equal(await listed(f, leaseId), true);
+});
+
+// Phase 2 review findings 1, 2 and 12 (docs/phases/02-reconciliation-and-recovery/review-2026-10-21.md).
+
+for (const pause of ["before", "after"] as const) {
+  test(`finding 1: discard during a dispatch paused ${pause} its task start fences the launch, so no worker starts`, async () => {
+    const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
+    let entered!: () => void;
+    const reached = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
+      start: async (id: string) => {
+        if (pause === "before") { entered(); await barrier; }
+        const started = await f.tasks.start(id);
+        if (pause === "after") { entered(); await barrier; }
+        return started;
+      },
+    });
+    let launched: "not called" | "started" | "refused" = "not called";
+    const launch: Dependencies["launch"] = async (...args) => {
+      try { const report = await f.deps.launch(...args); launched = "started"; return report; }
+      catch (error) { launched = "refused"; throw error; }
+    };
+    const dispatching = dispatchOnce({ ...f.deps, tasks, launch });
+    await reached;
+    const leaseId = (await status(f.deps)).attempts.find(a => a.attempt.taskId === "finish-a1")!.attempt.leaseId!;
+    const discarded = await discard(f.deps, { leaseId, noProcesses: true, confirm: true });
+    release();
+    const outcome = await dispatching;
+    assert.equal(discarded.reason, "discarded", discarded.detail ?? "");
+    assert.notEqual(launched, "started", JSON.stringify({ discarded: discarded.reason, outcome: outcome.reason }));
+    assert.equal(await listed(f, leaseId), false);
+    assert.equal((await f.runtime.discover("fixture-context")).some(r => r.binding.input.identity.leaseId === leaseId), false);
+  });
+}
+
+test("finding 2: an ordinary finish checks retention again immediately before returning the lease", async () => {
+  const { f, leaseId, branch } = await reviewed();
+  const deps = { ...f.deps, tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
+    recordDone: async (id: string, note: string) => {
+      // Point the output branch at a commit with the same tree but not the reported commit: the workspace stays clean,
+      // so Treehouse would return it, but the reported work is no longer on the branch.
+      const tree = f.run(["rev-parse", `${branch}^{tree}`]);
+      f.run(["update-ref", `refs/heads/${branch}`, f.run(["commit-tree", tree, "-m", "Same tree, different commit"])]);
+      return f.tasks.recordDone(id, note);
+    },
+  }) };
+  const outcome = await finish(deps, { leaseId, noProcesses: true });
+  assert.notEqual(outcome.reason, "finished");
+  assert.equal(await listed(f, leaseId), true);
+});
+
+test("finding 12: a lease returned before its log entry failed is recorded by the next run", async () => {
+  const { f, leaseId } = await reviewed();
+  let failures = 1;
+  const attempts = Object.assign(Object.create(Object.getPrototypeOf(f.deps.attempts)), f.deps.attempts, {
+    append: async (...args: Parameters<Dependencies["attempts"]["append"]>) => {
+      if (args[1] === "lease_returned" && failures-- > 0) throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      return f.deps.attempts.append(...args);
+    },
+  });
+  const first = await finish({ ...f.deps, attempts }, { leaseId, noProcesses: true });
+  assert.equal(first.reason, "stopped");
+  assert.equal(first.lease, "none");
+  assert.equal(await listed(f, leaseId), false);
+  const second = await finish(f.deps, { leaseId, noProcesses: true });
+  assert.equal(second.reason, "finished", second.detail ?? "");
+  assert.equal((await kinds(f)).filter(k => k === "lease_returned").length, 1);
+});
+
+test("finding 12: a fast-forward made before its log entry failed is recorded by the next run", async () => {
+  const { f, leaseId, branch } = await reviewed();
+  let failures = 1;
+  const attempts = Object.assign(Object.create(Object.getPrototypeOf(f.deps.attempts)), f.deps.attempts, {
+    append: async (...args: Parameters<Dependencies["attempts"]["append"]>) => {
+      if (args[1] === "integrated" && failures-- > 0) throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      return f.deps.attempts.append(...args);
+    },
+  });
+  assert.equal((await finish({ ...f.deps, attempts, policy: localMerge(f) }, { leaseId, noProcesses: true })).reason, "stopped");
+  assert.equal(f.run(["rev-parse", "main"]), f.run(["rev-parse", branch]));
+  assert.equal((await finish({ ...f.deps, policy: localMerge(f) }, { leaseId, noProcesses: true })).reason, "finished");
+  const integrated = (await f.deps.attempts.forTask("finish-a1"))[0]!.entries.filter(e => e.kind === "integrated");
+  assert.deepEqual(integrated.map(e => e.data.commit), [f.run(["rev-parse", branch])]);
 });

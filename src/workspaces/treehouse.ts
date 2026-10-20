@@ -76,14 +76,19 @@ export class TreehouseProvider implements WorkspaceProvider {
     const leaseId = argument.parse(lease.leaseId);
     if (!isAbsolute(lease.path)) throw new WorkspaceError("rejected", "Workspace path must be absolute");
     // Treehouse asks before discarding uncommitted changes. Without `discardChanges` its input is closed, so it declines.
+    const poolBefore = await this.pool().catch(() => undefined);
     const result = await this.treehouse(["return", "--if-lease-holder", holder, "--if-lease-id", leaseId, lease.path], options.discardChanges ? "y\n" : undefined);
-    const listed = await this.leases().then(all => all.some(l => l.leaseId === leaseId), () => undefined);
-    if (listed === false) return;
-    if (listed === undefined || result.timedOut || result.exitCode === null) {
-      throw new WorkspaceError("outcome_unknown", `Whether lease ${leaseId} was returned is unknown`, describeCommand(result));
+    // Absence from the listing proves a return only if Treehouse reported success and the listing is of the same pool:
+    // a lease in a pool that is no longer listed, or a wrong lease ID, is also absent.
+    const poolAfter = await this.pool().catch(() => undefined);
+    const listing = poolBefore !== undefined && poolAfter === poolBefore ? await this.leases().catch(() => undefined) : undefined;
+    const completed = !result.timedOut && result.exitCode !== null;
+    if (listing && completed && result.exitCode === 0 && !listing.some(l => l.leaseId === leaseId || l.path === lease.path)) return;
+    if (listing && completed && result.exitCode !== 0 && listing.some(l => l.path === lease.path)) {
+      if (result.exitCode === 3) throw new WorkspaceError("rejected", `The workspace for lease ${leaseId} has uncommitted changes`, describeCommand(result));
+      throw new WorkspaceError("rejected", `Treehouse did not return lease ${leaseId}`, describeCommand(result));
     }
-    if (result.exitCode === 3) throw new WorkspaceError("rejected", `The workspace for lease ${leaseId} has uncommitted changes`, describeCommand(result));
-    throw new WorkspaceError("rejected", `Treehouse did not return lease ${leaseId}`, describeCommand(result));
+    throw new WorkspaceError("outcome_unknown", `Whether lease ${leaseId} was returned is unknown`, describeCommand(result));
   }
 
   async leases(): Promise<Lease[]> {

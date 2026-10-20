@@ -4,7 +4,8 @@ import { validateWorkerResult } from "../runtime/contracts.ts";
 import { readJsonFile } from "../runtime/records.ts";
 import type { RetentionResult } from "../workspaces/retention.ts";
 import { branchHead, fastForward, isAncestor } from "../workspaces/integration.ts";
-import type { Dependencies } from "./dispatch.ts";
+import { WorkspaceError } from "../workspaces/provider.ts";
+import { resolvedBy, type Dependencies } from "./dispatch.ts";
 import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
 import { result, type DispatchResult, type NextAction } from "./result.ts";
 import { status, type AttemptStatus } from "./status.ts";
@@ -16,6 +17,9 @@ import { status, type AttemptStatus } from "./status.ts";
  */
 
 type Located = { attempt: AttemptStatus; record: AttemptRecord };
+/** The lease's state after a failed step: `returnLease` marks its errors, and every earlier step leaves the lease held. */
+const leaseAfter = (error: unknown): DispatchResult["lease"] =>
+  typeof error === "object" && error !== null && "lease" in error && (error.lease === "none" || error.lease === "unknown") ? error.lease : "preserved";
 const refused = (nextAction: NextAction, detail: string, extra: Omit<Partial<DispatchResult>, "nextAction" | "version"> = {}) =>
   result({ ok: false, reason: "refused", stage: "finish", lease: "preserved", observed: {}, detail, nextAction, ...extra });
 
@@ -27,6 +31,44 @@ async function locate(deps: Dependencies, leaseId: string): Promise<Located | Di
   const record = (await deps.attempts.forTask(attempt.attempt.taskId)).find(r => r.attempt === attempt.attempt.attempt);
   if (!record) return refused("inspect_attempt", "The attempt could not be read from the attempt log", { lease: "unknown" });
   return { attempt, record };
+}
+
+/**
+ * Makes sure no dispatcher can still start a worker in this lease's workspace. A dispatcher reserves the lease's runtime
+ * directory exclusively before it starts a worker, so creating that directory first stops any launch still pending, for
+ * example from a dispatch paused between acquiring the lease and launching. If the directory exists, it must belong to a
+ * worker whose exit was observed, or to a launch the operator confirmed stopped with `resolve --worker-stopped`.
+ */
+async function fenceLaunch(deps: Dependencies, record: AttemptRecord, leaseId: string): Promise<string | undefined> {
+  if (await deps.runtime.fence(deps.contextId, leaseId)) return undefined;
+  const runtime = (await deps.runtime.discover(deps.contextId)).find(r => r.binding.input.identity.leaseId === leaseId);
+  if (runtime ? runtime.child.status !== "unknown" : resolvedBy(record, "worker_stopped")) return undefined;
+  return "A dispatcher may be starting this attempt's worker now; check with status before trying again";
+}
+
+/**
+ * Asks the provider to return the lease, recording first that the return was started, so that a run interrupted after
+ * the return but before `lease_returned` was written can complete the record.
+ */
+async function returnLease(deps: Dependencies, record: AttemptRecord, attempt: AttemptStatus, by: "finish" | "discard"): Promise<void> {
+  const leaseId = attempt.attempt.leaseId!;
+  const last = record.entries.at(-1);
+  if (!(last?.kind === "lease_return_started" && last.data.by === by)) {
+    await deps.attempts.append(record, "lease_return_started", { leaseId, by, noProcessesConfirmedBy: "operator" });
+  }
+  try { await deps.workspaces.returnLease({ leaseId, holder: attempt.attempt.taskId, path: attempt.attempt.workspace! }, { discardChanges: by === "discard" }); }
+  catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { lease: error instanceof WorkspaceError && error.reason === "outcome_unknown" ? "unknown" : "preserved" }); }
+  try { await deps.attempts.append(record, "lease_returned", { leaseId, by, noProcessesConfirmedBy: "operator" }); }
+  catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { lease: "none" }); }
+}
+
+/** Completes the record of a return that an earlier run started, once the lease is no longer listed. */
+async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt: AttemptStatus, by: "finish" | "discard"): Promise<boolean> {
+  if (attempt.state !== "finished" || attempt.leaseHeld) return false;
+  const started = record.entries.some(e => e.kind === "lease_return_started" && e.data.by === by && e.data.leaseId === attempt.attempt.leaseId);
+  if (!started || record.entries.some(e => e.kind === "lease_returned")) return false;
+  await deps.attempts.append(record, "lease_returned", { leaseId: attempt.attempt.leaseId!, by, noProcessesConfirmedBy: "operator" });
+  return true;
 }
 
 /** Runs the retention check again from the worker's recorded result, as dispatch did when the attempt finished. */
@@ -54,6 +96,7 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
   const { attempt, record } = located;
   const base = { attempt: attempt.attempt };
   if (!attempt.changeable) return refused(attempt.nextAction.code, `The attempt is ${attempt.state.replaceAll("_", " ")}, so it cannot be finished`, base);
+  if (!options.dryRun && await completeReturn(deps, record, attempt, "finish")) return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: {}, ...base, nextAction: "none" });
   if (attempt.state === "finished") return refused("none", "The attempt is already finished", { ...base, lease: "none" });
   const accepted = [...record.entries].reverse().find(e => e.kind === "output_accepted");
   const accepting = options.acceptOutput || accepted !== undefined;
@@ -89,6 +132,8 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
   // Under local-merge, check before any change that the target can be fast-forwarded, or already contains the work.
   const outputBranch = attempt.attempt.outputBranch!;
   let integration: { target: string; from: string; to: string } | undefined;
+  // The target already contains the work, but an earlier run's fast-forward may not have been recorded.
+  let unrecorded: { target: string; commit: string } | undefined;
   if (policy.kind === "local-merge") {
     const git = { git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository };
     const to = acceptedCommit ?? await branchHead(git, outputBranch);
@@ -97,7 +142,7 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
     if (!await isAncestor(git, to, from)) {
       if (!await isAncestor(git, from, to)) return refused("inspect_attempt", `${policy.targetBranch} cannot be fast-forwarded to ${outputBranch}: it has commits the output branch does not`, base);
       integration = { target: policy.targetBranch!, from, to };
-    }
+    } else if (!record.entries.some(e => e.kind === "integrated")) unrecorded = { target: policy.targetBranch!, commit: to };
   }
 
   const task = await deps.tasks.read(attempt.attempt.taskId).catch(() => undefined);
@@ -112,9 +157,11 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
 
   // From here each step changes an owner; a failure leaves what is done recorded and the rest for a later run.
   const stopped = (error: unknown, step: string) => result({
-    ok: false, reason: "stopped", stage: "finish", lease: "preserved", observed: {}, ...base, retention,
+    ok: false, reason: "stopped", stage: "finish", lease: leaseAfter(error), observed: {}, ...base, retention,
     detail: `Stopped while trying to ${step}: ${error instanceof Error ? error.message : String(error)}. Run finish again to complete it`, nextAction: "inspect_attempt",
   });
+  const fenced = await fenceLaunch(deps, record, options.leaseId);
+  if (fenced) return refused("inspect_attempt", fenced, base);
   if (acceptedCommit && accepted?.data.commit !== acceptedCommit) {
     try { await deps.attempts.append(record, "output_accepted", { commit: acceptedCommit, acceptedBy: "operator" }); }
     catch (error) { return stopped(error, "record the operator's output acceptance"); }
@@ -125,6 +172,14 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
       await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: integration.target, commit: integration.to });
     } catch (error) { return stopped(error, `fast-forward ${integration.target}`); }
   }
+  if (unrecorded) {
+    try { await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: unrecorded.target, commit: unrecorded.commit }); }
+    catch (error) { return stopped(error, `record that ${unrecorded.target} contains the work`); }
+  }
+  if (task.state === "done" && !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done")) {
+    try { await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished" }); }
+    catch (error) { return stopped(error, "record that the task is done"); }
+  }
   if (task.state !== "done") {
     try {
       const note = JSON.stringify({ attempt: attempt.attempt, finishedBy: "switchboard finish", policy: policy.kind, ...(integration ? { integrated: integration.to } : {}) });
@@ -133,14 +188,14 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
       await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished" });
     } catch (error) { return stopped(error, "record the task as done"); }
   }
-  try {
-    if (acceptedCommit) {
-      const finalRetention = await check();
-      if (typeof finalRetention === "string" || !finalRetention.retained) throw new Error("The accepted output is no longer retained");
-    }
-    await deps.workspaces.returnLease({ leaseId: options.leaseId, holder: attempt.attempt.taskId, path: attempt.attempt.workspace! }, { discardChanges: false });
-    await deps.attempts.append(record, "lease_returned", { leaseId: options.leaseId, by: "finish", noProcessesConfirmedBy: "operator" });
-  } catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
+  // The PRD's condition 2: retention is checked again immediately before the lease is returned.
+  const finalRetention = await check().catch((error: unknown) => `The retention check failed: ${error instanceof Error ? error.message : String(error)}`);
+  if (typeof finalRetention === "string" || !finalRetention.retained) {
+    const why = typeof finalRetention === "string" ? finalRetention : finalRetention.findings.join("; ");
+    return stopped(new Error(`The work is no longer retained: ${why}`), `return lease ${options.leaseId}`);
+  }
+  try { await returnLease(deps, record, attempt, "finish"); }
+  catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
   return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: { policy }, ...base, retention, nextAction: "none" });
 }
 
@@ -154,6 +209,7 @@ export async function discard(deps: Dependencies, options: { leaseId: string; no
   const { attempt, record } = located;
   const base = { attempt: attempt.attempt };
   if (!attempt.changeable) return refused(attempt.nextAction.code, `The attempt is ${attempt.state.replaceAll("_", " ")}, so it cannot be discarded`, base);
+  if (!options.dryRun && await completeReturn(deps, record, attempt, "discard")) return result({ ok: true, reason: "discarded", stage: "finish", lease: "none", observed: {}, ...base, nextAction: "none" });
   if (!discardable.includes(attempt.state) || !attempt.leaseHeld) {
     return refused(attempt.nextAction.code, `An attempt that is ${attempt.state.replaceAll("_", " ")} has no listed lease to discard`, { ...base, lease: attempt.leaseHeld ? "preserved" : "none" });
   }
@@ -164,17 +220,17 @@ export async function discard(deps: Dependencies, options: { leaseId: string; no
   if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: {}, ...base, detail: `Would ${steps.join(", then ")}`, nextAction: "none" });
 
   const stopped = (error: unknown, step: string) => result({
-    ok: false, reason: "stopped", stage: "finish", lease: "preserved", observed: {}, ...base,
+    ok: false, reason: "stopped", stage: "finish", lease: leaseAfter(error), observed: {}, ...base,
     detail: `Stopped while trying to ${step}: ${error instanceof Error ? error.message : String(error)}. Run discard again to complete it`, nextAction: "inspect_attempt",
   });
+  const fenced = await fenceLaunch(deps, record, options.leaseId);
+  if (fenced) return refused("inspect_attempt", fenced, base);
   try {
     if (!record.entries.some(e => e.kind === "discarded")) await deps.attempts.append(record, "discarded", { ...(options.note ? { note: options.note } : {}) });
     // A task left in flight would never be dispatched again; hold it so the operator decides what happens next.
-    if (task.state === "in_flight") await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## ${holdReason}\n` });
+    if (task.state === "in_flight") await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## ${holdReason}${options.note ? `\n\n${options.note}` : ""}` });
   } catch (error) { return stopped(error, "record the discard"); }
-  try {
-    await deps.workspaces.returnLease({ leaseId: options.leaseId, holder: attempt.attempt.taskId, path: attempt.attempt.workspace! }, { discardChanges: true });
-    await deps.attempts.append(record, "lease_returned", { leaseId: options.leaseId, by: "discard", noProcessesConfirmedBy: "operator" });
-  } catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
+  try { await returnLease(deps, record, attempt, "discard"); }
+  catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
   return result({ ok: true, reason: "discarded", stage: "finish", lease: "none", observed: {}, ...base, nextAction: "none" });
 }

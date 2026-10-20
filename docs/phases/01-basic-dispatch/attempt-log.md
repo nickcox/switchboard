@@ -47,6 +47,7 @@ Each entry is one JSON file:
 | `output_accepted` | `finish --accept-output` | The accepted `commit` and `acceptedBy: "operator"`. The operator accepted committed output in place of the worker's result; subsequent finish runs can use this commit after a partial failure |
 | `integrated` | `finish` | Under the `local-merge` policy: `policy`, the `targetBranch` fast-forwarded and the `commit` it now points to |
 | `discarded` | `discard` | An optional `note`. Written once, before the lease is returned |
+| `lease_return_started` | `finish`, `discard` | `leaseId`, `by` and `noProcessesConfirmedBy: "operator"`, written immediately before the workspace provider is asked to return the lease. If a later run finds the lease gone but no `lease_returned`, it writes `lease_returned` |
 | `lease_returned` | `finish`, `discard` | `leaseId`, `by` (`finish` or `discard`) and `noProcessesConfirmedBy: "operator"`, recording that the confirmation was the operator's, not an observation |
 
 The runtime records hold the launch input and the observed child exit ([runtime notes](runtime-integration.md#runtime-owned-records)). The log links to them through the lease and session IDs and the runtime directory, rather than copying them.

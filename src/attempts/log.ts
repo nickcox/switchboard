@@ -52,6 +52,11 @@ const entrySchemas = {
   integrated: z.strictObject({ policy: z.literal("local-merge"), targetBranch: nonempty, commit }),
   /** `discard`: the operator chose to discard the attempt's work. */
   discarded: z.strictObject({ note: nonempty.optional() }),
+  /**
+   * `finish` or `discard` is about to ask the workspace provider to return the lease, after the operator confirmed no
+   * worker process remained. A later run that finds the lease gone records `lease_returned`.
+   */
+  lease_return_started: z.strictObject({ leaseId: nonempty, by: z.enum(["finish", "discard"]), noProcessesConfirmedBy: z.literal("operator") }),
   /** `finish` or `discard` returned the lease, after the operator confirmed no worker process remained. */
   lease_returned: z.strictObject({ leaseId: nonempty, by: z.enum(["finish", "discard"]), noProcessesConfirmedBy: z.literal("operator") }),
 } as const;
