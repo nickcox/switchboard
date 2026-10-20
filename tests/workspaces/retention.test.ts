@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkRetention } from "../../src/workspaces/retention.ts";
 import { onPath } from "../../src/infra/executables.ts";
@@ -100,6 +100,33 @@ test("required artefacts must exist outside the workspace", async () => {
   const result = await f.check({ artefacts: [join(f.dir, "missing.md"), inside, "relative.md"] });
   assert.equal(result.retained, false);
   assert.match(result.findings.join("\n"), /missing.*\n.*inside the workspace.*\n.*not absolute/);
+});
+
+test("dangling artefact links and unreadable non-file targets are not retained", async () => {
+  const f = fixture();
+  const dangling = join(f.dir, "dangling.md");
+  symlinkSync(join(f.dir, "missing.md"), dangling);
+  const directory = join(f.dir, "report-directory");
+  mkdirSync(directory);
+  for (const path of [dangling, directory]) {
+    const result = await f.check({ artefacts: [path] });
+    assert.equal(result.retained, false, path);
+    assert.match(result.findings.join(), /artefact/i);
+  }
+});
+
+test("an artefact link to an inaccessible target is not retained", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const f = fixture();
+  const target = join(f.dir, "private.md");
+  const link = join(f.dir, "report-link.md");
+  writeFileSync(target, "private report\n");
+  symlinkSync(target, link);
+  chmodSync(target, 0o000);
+  try {
+    const result = await f.check({ artefacts: [link] });
+    assert.equal(result.retained, false);
+    assert.match(result.findings.join(), /unreadable/);
+  } finally { chmodSync(target, 0o600); }
 });
 
 test("a check that cannot run counts as not retained", async () => {

@@ -37,7 +37,7 @@ Task-store and workspace operations, the attempt log, dispatch policy and retent
 - Named Git references with branch and full commit ID, or artefact references with path and description.
 - Required reason and next action for hold/failure.
 
-Completed results must contain required evidence/deliverable names and, for code, the configured output branch plus a syntactically valid full commit ID. These are mechanical checks. They do not establish that a commit exists, the branch retains it, an artefact survives return or acceptance criteria passed independently. Git and artefact retention checks belong to finalisation.
+Completed results must contain required evidence/deliverable names and, for code, the configured output branch plus a syntactically valid full commit ID. Each required name must refer to the contract's deliverable type: Git for code, artefact for artefact contracts. An unrelated reference of the right type cannot satisfy a required name. These are mechanical checks. They do not establish that a commit exists, the branch retains it, an artefact survives return or acceptance criteria passed independently. Finalisation retention-checks every reported Git branch/commit pair and every artefact by its own reference. Artefacts must resolve to readable regular files inside the assigned artefact directory and outside every recyclable workspace; missing targets, unreadable files and escaping links fail retention.
 
 The result JSON Schema is generated from the host's Zod schema and supplied in the prompt. The same resolved delivery contract is included in worker instructions and validation. A `completed` report does not override `review_or_integration`; no task-state transition is made by this module.
 
@@ -47,7 +47,7 @@ The worker writes `result.json` with the standard write tool, without a custom e
 
 ## Runtime-owned records
 
-`src/runtime/records.ts` uses a caller-configured absolute runtime root. Context and lease IDs are hashed into directory names; the original identities remain in validated records. Paths are resolved before launch and runtime evidence beneath the worker workspace is refused. Symlinked context directories are refused.
+`src/runtime/records.ts` uses a caller-configured absolute runtime root. Context and lease IDs are hashed into directory names; the original identities remain in validated records. Before dispatch writes any attempt or storage probe, runtime and attempt-log roots are checked against the provider's entire recyclable area (Treehouse's configured pool root, including earlier pools and idle workspaces). Existing ancestors are resolved, including for paths not yet created. Paths are also resolved before launch and runtime evidence beneath the worker workspace is refused. Symlinked context directories are refused.
 
 | Path | Owner and purpose |
 | --- | --- |

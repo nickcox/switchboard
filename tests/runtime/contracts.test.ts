@@ -33,6 +33,17 @@ test("completed artefact work requires an artefact reference even without config
   ] }, input).outcome, "completed");
 });
 
+test("an unrelated artefact cannot satisfy a required report supplied as Git", () => {
+  const { input } = fixture();
+  input.delivery.kind = "artefact";
+  input.delivery.requiredDeliverables = ["report"];
+  const result = resultFor(input);
+  assert.throws(() => validateWorkerResult({ ...result, workReferences: [
+    { kind: "git", name: "report", branch: "does-not-exist", commit: "c".repeat(40) },
+    { kind: "artefact", name: "extra", path: "/extra.md", description: "Unrelated" },
+  ] }, input), /Required deliverable report must be an artefact/);
+});
+
 test("hold and failure require a reason and next action but need not claim successful evidence", () => {
   const { input } = fixture();
   const held = { ...resultFor(input), outcome: "hold", validationEvidence: [], workReferences: [], reason: "Needs operator input", nextAction: "Inspect retained workspace" };

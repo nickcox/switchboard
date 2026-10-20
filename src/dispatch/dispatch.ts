@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { AttemptConflict, type AttemptLog, type AttemptRecord, type AttemptRef } from "../attempts/log.ts";
 import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
 import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
@@ -114,6 +115,13 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
 export async function dispatchOnce(
   deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean } = {},
 ): Promise<DispatchResult> {
+  try {
+    const roots = await deps.workspaces.recyclableRoots();
+    await deps.runtime.checkStorage(roots);
+    await deps.attempts.checkStorage(roots);
+  } catch (error) {
+    return refusal("preflight", "fix_configuration", `Runtime storage is not retained: ${message(error)}`);
+  }
   if (options.requestId !== undefined) {
     const existing = await deps.attempts.findByRequest(options.requestId).catch(() => undefined);
     if (existing) return existingRequest(deps, existing);
@@ -288,8 +296,11 @@ async function finalise(
   const retention = await deps.retention({
     repository: deps.repository, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
     ...(summary.resultCommit ? { resultCommit: summary.resultCommit } : {}),
+    gitReferences: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
-    // For a non-code deliverable the workspace is scratch; only the artefacts must be retained.
+    recyclableRoots: await deps.workspaces.recyclableRoots(),
+    ...(report ? { artefactDirectory: report.binding.artefactDirectory ?? join(report.directory, "artefacts") } : {}),
+    // For a non-code contract the workspace is scratch; reported deliverables are still checked.
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   });
   await deps.attempts.append(ref, "retention_checked", retention);

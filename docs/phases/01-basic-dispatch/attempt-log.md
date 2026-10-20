@@ -6,7 +6,7 @@ The attempt log records which task, lease, session, commits and outcome belong t
 
 ## Location
 
-The log lives under the configured `runtimeRoot`, next to the runtime records and outside every workspace:
+The log lives under the configured `runtimeRoot`, next to the runtime records and outside every workspace. Before any dispatch write, the runtime and log roots are checked against the provider's entire recyclable area, resolving existing ancestors. Treehouse supplies its configured pool root, covering idle workspaces and earlier pools as well as current leases:
 
 ```text
 <runtimeRoot>/attempts/<sha256(contextId)>/<sha256(taskId)>/<attempt>/<sequence>.json
@@ -41,7 +41,7 @@ Each entry is one JSON file:
 | `operator_request` | `dispatch` | A forwarded stop request or message: `id`, `kind` (`stop`, `steer` or `follow_up`), `sender`, Pi's `outcome`, and optional `message` and `error` |
 | `worker_finished` | `dispatch` | Runtime `status`, `runtimeDirectory`, and when known the failure `reason` and shortened `detail`, worker `outcome` and `resultCommit` |
 | `task_recorded` | `dispatch` | `outcome` (`done` or `hold`) and the recorded `reason` |
-| `retention_checked` | `dispatch` | `retained`, plus `findings` that prevent retention and `notes` that do not |
+| `retention_checked` | `dispatch` | `retained`, plus `findings` that prevent retention and `notes` that do not. Covers every reported Git branch/commit pair and artefact separately; artefacts must be readable regular files within the assigned artefact directory and outside every recyclable area |
 | `halted` | `dispatch` | The `stage`, `reason` and optional `detail` of a dispatch that stopped before finishing; optional `leaseId`, `workspace` and `outputBranch` recovered from inspection. An uncertain acquisition records `reason: outcome_unknown`, so the `requested` pool identifies a lease that may still be held even without a `leased` entry |
 | `operator_resolved` | `resolve` | `action` (`worker_stopped`, or `lease_returned` for a lease in a pool that is no longer listed) and an optional `note` |
 

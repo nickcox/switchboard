@@ -43,6 +43,7 @@ test("a lost acquisition reply still records the pool and blocks redispatch afte
   let acquisitions = 0;
   const deps: Dependencies = { ...f.deps, workspaces: {
     pool: () => f.deps.workspaces.pool(), leases: () => f.deps.workspaces.leases(),
+    recyclableRoots: () => f.deps.workspaces.recyclableRoots(),
     acquire: async request => {
       acquisitions += 1;
       const attempt = (await f.deps.attempts.forTask(request.holder))[0]!;
@@ -83,6 +84,7 @@ for (const rejected of [false, true]) {
     let acquiring = false;
     await dispatchOnce({ ...f.deps, workspaces: {
       pool: () => f.deps.workspaces.pool(),
+      recyclableRoots: () => f.deps.workspaces.recyclableRoots(),
       leases: () => acquiring ? Promise.reject(new Error("unreadable")) : f.deps.workspaces.leases(),
       acquire: async request => {
         acquiring = true;

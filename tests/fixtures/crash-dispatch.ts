@@ -12,7 +12,7 @@ const die = () => process.kill(process.pid, "SIGKILL");
 
 if (stage === "after-lease") {
   const real = deps.workspaces;
-  deps.workspaces = { leases: () => real.leases(), pool: () => real.pool(), acquire: async request => { await real.acquire(request); die(); throw new Error("unreachable"); } };
+  deps.workspaces = { recyclableRoots: () => real.recyclableRoots(), leases: () => real.leases(), pool: () => real.pool(), acquire: async request => { await real.acquire(request); die(); throw new Error("unreachable"); } };
 } else if (stage === "after-start") {
   const real = deps.tasks;
   deps.tasks = {

@@ -44,6 +44,8 @@ export class WorkspaceError extends Error {
 /** Phase 1 acquires and inspects leases only. Returning a lease is left to the operator. */
 export interface WorkspaceProvider {
   acquire(request: { holder: string; baseRef: string; branch: string }): Promise<Allocation>;
+  /** Areas containing every recyclable workspace, including idle workspaces and earlier pools. */
+  recyclableRoots(): Promise<string[]>;
   /** Current leases in this context's workspace pool. */
   leases(): Promise<Lease[]>;
   /**

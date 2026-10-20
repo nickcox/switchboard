@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { inside, requireRetainedStorage } from "../infra/storage.ts";
+export { inside } from "../infra/storage.ts";
 import { identitySchema, sameIdentity, workerInputSchema, type WorkerInput } from "./contracts.ts";
 
 export const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -53,10 +55,6 @@ export type RuntimeRecord = {
 };
 
 export function key(value: string): string { return createHash("sha256").update(value).digest("hex"); }
-export function inside(parent: string, candidate: string): boolean {
-  const path = relative(parent, candidate);
-  return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
-}
 
 const maxRecordBytes = 1024 * 1024;
 
@@ -108,6 +106,10 @@ export class RuntimeRecords {
     if (!isAbsolute(root)) throw new Error("Runtime storage root must be absolute");
     this.root = root;
     this.write = write;
+  }
+
+  async checkStorage(recyclableRoots: string[]): Promise<void> {
+    await requireRetainedStorage(this.root, recyclableRoots);
   }
 
   /** Check the configured filesystem, not just the host OS, before dispatch can select work. */

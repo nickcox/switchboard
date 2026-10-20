@@ -69,6 +69,8 @@ export class TreehouseProvider implements WorkspaceProvider {
     return { ...await this.verify(acquired, holder, branch), pool };
   }
 
+  async recyclableRoots(): Promise<string[]> { return [this.options.poolRoot]; }
+
   async leases(): Promise<Lease[]> {
     const result = await this.treehouse(["status", "--json"]);
     if (result.timedOut || result.exitCode !== 0) {

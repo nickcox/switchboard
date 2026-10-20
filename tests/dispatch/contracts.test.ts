@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dispatchOnce, type ContractSpec } from "../../src/dispatch/dispatch.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { fixture } from "./fixture.ts";
+import { RuntimeRecords } from "../../src/runtime/records.ts";
+import { AttemptLog } from "../../src/attempts/log.ts";
 
 // Per-task delivery contracts: a task's kind selects its contract from the configuration.
 const scout: ContractSpec = { kind: "artefact", acceptance: "independent_deliverable", requiredEvidence: ["tests"], requiredDeliverables: ["report"] };
@@ -32,6 +34,56 @@ test("a report left only in the workspace is not retained, so the task is held",
   assert.equal(outcome.retention?.retained, false);
   assert.match(outcome.retention!.findings.join(), /inside the workspace/);
   assert.equal((await f.tasks.read("scout-b1"))?.holdReason, "Switchboard attempt 1 not retained");
+});
+
+test("every named Git branch and commit is retained-checked, including a second output-branch commit", async () => {
+  for (const branch of ["does-not-exist", "output"]) {
+    const f = await fixture({ tasks: [["add", "multi-a1", "Multiple commits", "--repo", "fixture"]], scenario: "commit-result", acceptance: "independent_deliverable" });
+    f.deps.delivery.default.requiredDeliverables = ["code", "second"];
+    const launch = f.deps.launch;
+    f.deps.launch = async (...args) => {
+      const report = await launch({ ...args[0], delivery: { ...args[0].delivery, requiredDeliverables: ["code"] } }, args[1], args[2]);
+      assert.ok(report.result);
+      report.result.workReferences.push({ kind: "git", name: "second", branch: branch === "output" ? args[0].delivery.outputBranch : branch, commit: "c".repeat(40) });
+      return report;
+    };
+    const outcome = await dispatchOnce(f.deps);
+    assert.equal(outcome.reason, "held", branch);
+    assert.equal(outcome.retention?.retained, false);
+  }
+});
+
+test("runtime storage in an earlier recyclable workspace is refused before writing an attempt", async () => {
+  const f = await fixture({ tasks: [scoutTask("storage-a1")], byTaskKind: { scout } });
+  const earlier = await f.deps.workspaces.acquire({ holder: "earlier", baseRef: "main", branch: "earlier" });
+  const root = join(earlier.path, "runtime");
+  const runtime = f.deps.runtime;
+  for (const storage of ["runtime", "attempts"]) {
+    f.deps.runtime = storage === "runtime" ? new RuntimeRecords(root) : runtime;
+    if (storage === "attempts") f.deps.attempts = new AttemptLog(root, f.deps.contextId);
+    const outcome = await dispatchOnce(f.deps);
+    assert.equal(outcome.reason, "refused", storage);
+    assert.equal(outcome.nextAction.code, "fix_configuration");
+    assert.equal(existsSync(root), false);
+    assert.equal((await f.deps.workspaces.leases()).length, 1);
+  }
+});
+
+test("a report in an earlier recyclable workspace is not retained", async () => {
+  const f = await fixture({ tasks: [scoutTask("storage-b1")], scenario: "artefact-result", byTaskKind: { scout } });
+  const earlier = await f.deps.workspaces.acquire({ holder: "earlier", baseRef: "main", branch: "earlier" });
+  const path = join(earlier.path, "report.md");
+  writeFileSync(path, "Report in another workspace\n");
+  const launch = f.deps.launch;
+  f.deps.launch = async (...args) => {
+    const report = await launch(...args);
+    assert.ok(report.result);
+    report.result.workReferences = [{ kind: "artefact", name: "report", path, description: "Required report" }];
+    return report;
+  };
+  const outcome = await dispatchOnce(f.deps);
+  assert.equal(outcome.reason, "held");
+  assert.equal(outcome.retention?.retained, false);
 });
 
 test("a task kind with no contract is refused before any change", async () => {

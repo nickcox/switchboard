@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, realpath, rename, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { requireRetainedStorage } from "../infra/storage.ts";
 import { isMissing, key, readJsonFile, writeOnce } from "../runtime/records.ts";
 
 const nonempty = z.string().min(1).refine(value => value.trim().length > 0);
@@ -94,6 +95,10 @@ export class AttemptLog {
     if (!isAbsolute(root)) throw new Error("Attempt log root must be absolute");
     this.root = root;
     this.contextId = nonempty.parse(contextId);
+  }
+
+  async checkStorage(recyclableRoots: string[]): Promise<void> {
+    await requireRetainedStorage(this.root, recyclableRoots);
   }
 
   /**

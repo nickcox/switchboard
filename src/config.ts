@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AttemptLog } from "./attempts/log.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
+import { requireRetainedStorage } from "./infra/storage.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { PiWorker } from "./runtime/pi/worker.ts";
 import { RuntimeRecords, thinkingLevelSchema } from "./runtime/records.ts";
@@ -76,6 +77,7 @@ function inherited(names: string[]): Record<string, string> {
 
 /** Opens and validates every adapter. Fails before any dispatch if a store, repository or executable is unusable. */
 export async function createDependencies(config: Config, progress?: (message: string) => void): Promise<Dependencies> {
+  await requireRetainedStorage(config.runtimeRoot, [config.workspaces.poolRoot]);
   const git = onPath("git");
   // Git and Treehouse use the operator's own environment, including their Git identity and credentials.
   const hostEnvironment = Object.fromEntries(Object.entries(process.env).flatMap(([k, v]) => (v === undefined ? [] : [[k, v]])));
