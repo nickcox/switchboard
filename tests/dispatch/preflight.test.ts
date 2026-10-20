@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { RuntimeRecords, writeOnce } from "../../src/runtime/records.ts";
@@ -49,6 +49,8 @@ test("dispatch probes with the record writer and removes the probe; status never
   assert.equal(outcome.reason, "dry_run");
   assert.equal(paths.length, 2);
   assert.equal(paths[0], paths[1]);
+  assert.equal(dirname(paths[0]!), root);
+  assert.match(basename(paths[0]!), /^exclusive-probe-[a-f0-9-]+\.json$/);
   assert.deepEqual(await readdir(root), []);
   await dispatchOnce(f.deps, { dryRun: true });
   assert.equal(paths.length, 4);

@@ -154,6 +154,12 @@ async function main(argv: string[]): Promise<number> {
 }
 
 process.exitCode = await main(process.argv.slice(2)).catch(error => {
-  console.error(error instanceof Error ? error.stack : String(error));
+  if (error instanceof Error && "code" in error && (
+    error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" || error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+  )) {
+    console.error(`${error.message.split("\n")[0]}\n\n${usage}`);
+  } else {
+    console.error(error instanceof Error ? error.stack : String(error));
+  }
   return 2;
 });

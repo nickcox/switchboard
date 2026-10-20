@@ -107,7 +107,8 @@ export class RuntimeRecords {
   /** Check the configured filesystem, not just the host OS, before dispatch can select work. */
   async probeExclusiveCreation(): Promise<void> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
-    const path = join(this.root, `.exclusive-probe-${randomUUID()}.json`);
+    // Keep probes outside context directories, where runtime readers never look.
+    const path = join(this.root, `exclusive-probe-${randomUUID()}.json`);
     try {
       await this.write(path, { probe: 1 });
       try { await this.write(path, { probe: 2 }); }

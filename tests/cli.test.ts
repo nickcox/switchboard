@@ -68,6 +68,23 @@ test("--version prints the package version without loading configuration", () =>
   assert.match(help.stderr, /switchboard --version/);
 });
 
+test("invalid options print a one-line error and usage without a stack trace", () => {
+  const invalid = [
+    { args: ["--no-such-option"], problem: /Unknown option '--no-such-option'/ },
+    { args: ["--config"], problem: /Option '--config <value>' argument missing/ },
+    { args: ["--config", "--json"], problem: /Option '--config' argument is ambiguous/ },
+    { args: ["--once=value"], problem: /Option '--once' does not take an argument/ },
+  ];
+  for (const { args, problem } of invalid) {
+    const result = spawnSync(process.execPath, [cli, "dispatch", "--once", ...args], { encoding: "utf8" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr.split("\n")[0]!, problem);
+    assert.match(result.stderr, /^[^\n]+\n\nUsage:\n/);
+    assert.doesNotMatch(result.stderr, /\n\s+at\s|ERR_PARSE_ARGS|Configuration error/);
+  }
+});
+
 test("resolve validates task and lease selectors before loading configuration", () => {
   const invalid = [
     [], ["--lease-returned"], ["--task", "cli-a1"], ["--task", "cli-a1", "--worker-stopped"],
