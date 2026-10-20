@@ -66,11 +66,9 @@ export function validateWorkerResult(value: unknown, input: WorkerInput): Worker
     }
     const deliverables = result.workReferences.map(ref => ref.name);
     if (new Set(deliverables).size !== deliverables.length) throw new Error("Duplicate deliverable names");
+    // A required deliverable may be either kind of reference; retention then checks each by its own kind.
     for (const name of input.delivery.requiredDeliverables) {
-      const reference = result.workReferences.find(ref => ref.name === name);
-      if (!reference) throw new Error(`Missing required deliverable: ${name}`);
-      const kind = input.delivery.kind === "code" ? "git" : "artefact";
-      if (reference.kind !== kind) throw new Error(`Required deliverable ${name} must be ${kind === "artefact" ? "an artefact" : "a Git"} reference`);
+      if (!deliverables.includes(name)) throw new Error(`Missing required deliverable: ${name}`);
     }
     if (input.delivery.kind === "code" && !result.workReferences.some(ref =>
       ref.kind === "git" && ref.branch === input.delivery.outputBranch)) {

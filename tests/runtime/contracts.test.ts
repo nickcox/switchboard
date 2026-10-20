@@ -33,15 +33,18 @@ test("completed artefact work requires an artefact reference even without config
   ] }, input).outcome, "completed");
 });
 
-test("an unrelated artefact cannot satisfy a required report supplied as Git", () => {
+test("a required deliverable may be either kind of reference, whatever the contract's kind", () => {
   const { input } = fixture();
+  input.delivery.requiredDeliverables = ["code", "report"];
+  const result = resultFor(input);
+  const report = { kind: "artefact" as const, name: "report", path: "/report.md", description: "Required report" };
+  assert.equal(validateWorkerResult({ ...result, workReferences: [...result.workReferences, report] }, input).outcome, "completed");
   input.delivery.kind = "artefact";
   input.delivery.requiredDeliverables = ["report"];
-  const result = resultFor(input);
-  assert.throws(() => validateWorkerResult({ ...result, workReferences: [
-    { kind: "git", name: "report", branch: "does-not-exist", commit: "c".repeat(40) },
-    { kind: "artefact", name: "extra", path: "/extra.md", description: "Unrelated" },
-  ] }, input), /Required deliverable report must be an artefact/);
+  assert.equal(validateWorkerResult({ ...result, workReferences: [
+    { kind: "git", name: "report", branch: "reports", commit: "c".repeat(40) },
+    { kind: "artefact", name: "extra", path: "/extra.md", description: "Another artefact" },
+  ] }, input).outcome, "completed");
 });
 
 test("hold and failure require a reason and next action but need not claim successful evidence", () => {

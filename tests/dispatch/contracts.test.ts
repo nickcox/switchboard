@@ -53,6 +53,45 @@ test("every named Git branch and commit is retained-checked, including a second 
   }
 });
 
+test("a required report supplied as a Git reference to a missing branch is not retained, whatever else is reported", async () => {
+  // Review finding 7: an unrelated artefact must not stand in for the required report.
+  const f = await fixture({ tasks: [scoutTask("kind-a1")], scenario: "artefact-result", byTaskKind: { scout } });
+  const launch = f.deps.launch;
+  f.deps.launch = async (...args) => {
+    const report = await launch(...args);
+    assert.ok(report.result);
+    const extra = join(report.binding.artefactDirectory!, "extra.md");
+    writeFileSync(extra, "Unrelated\n");
+    report.result.workReferences = [
+      { kind: "git", name: "report", branch: "does-not-exist", commit: "c".repeat(40) },
+      { kind: "artefact", name: "extra", path: extra, description: "Unrelated" },
+    ];
+    return report;
+  };
+  const outcome = await dispatchOnce(f.deps);
+  assert.equal(outcome.reason, "held");
+  assert.equal(outcome.retention?.retained, false);
+  assert.match(outcome.retention!.findings.join(), /does-not-exist/);
+});
+
+test("a code contract can also require a report, which must be retained in the artefact directory", async () => {
+  const f = await fixture({ tasks: [["add", "both-a1", "Code and report", "--repo", "fixture"]], scenario: "commit-result" });
+  f.deps.delivery.default.requiredDeliverables = ["code", "report"];
+  const launch = f.deps.launch;
+  f.deps.launch = async (...args) => {
+    const report = await launch({ ...args[0], delivery: { ...args[0].delivery, requiredDeliverables: ["code"] } }, args[1], args[2]);
+    assert.ok(report.result);
+    const path = join(report.binding.artefactDirectory!, "report.md");
+    writeFileSync(path, "Report\n");
+    report.result.workReferences.push({ kind: "artefact", name: "report", path, description: "Required report" });
+    return report;
+  };
+  const outcome = await dispatchOnce(f.deps);
+  assert.equal(outcome.reason, "held");
+  assert.equal(outcome.retention?.retained, true, JSON.stringify(outcome.retention));
+  assert.equal(outcome.nextAction.code, "review_branch");
+});
+
 test("runtime storage in an earlier recyclable workspace is refused before writing an attempt", async () => {
   const f = await fixture({ tasks: [scoutTask("storage-a1")], byTaskKind: { scout } });
   const earlier = await f.deps.workspaces.acquire({ holder: "earlier", baseRef: "main", branch: "earlier" });
