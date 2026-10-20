@@ -278,9 +278,16 @@ export async function dispatchOnce(
     };
     try { report = await deps.launch(input, options.signal, onRequest); }
     catch (error) {
-      // The runtime refused before starting a worker; nothing was launched.
-      await deps.attempts.append(ref, "worker_finished", { status: "not_started", runtimeDirectory: "-", reason: message(error).slice(0, 500) });
-      return finalise(deps, ref, summary, observed, task, delivery, undefined, `Worker not started: ${message(error)}`);
+      // The runtime reserves its records before starting a worker, so a worker can exist only if they do. Without an
+      // observed or confirmed exit, the error leaves the attempt unresolved, like any launch whose worker may be running.
+      const records = await deps.runtime.discover(deps.contextId).catch(() => undefined);
+      const runtime = records?.find(r => r.binding.input.identity.leaseId === allocation.leaseId);
+      if (records === undefined || runtime?.child.status === "unknown") {
+        if (runtime) await deps.attempts.append(ref, "worker_finished", { status: "unresolved", runtimeDirectory: runtime.directory, reason: message(error).slice(0, 500) });
+        return result({ ok: false, reason: "stopped", stage: "launch", lease: "preserved", observed, attempt: summary, worker: { status: "unresolved" }, detail: `Launching failed after the worker may have started, so it may still be running: ${message(error)}`, nextAction: "stop_worker" });
+      }
+      await deps.attempts.append(ref, "worker_finished", { status: runtime ? "failed" : "not_started", runtimeDirectory: runtime?.directory ?? "-", reason: message(error).slice(0, 500) });
+      return finalise(deps, ref, summary, observed, task, delivery, undefined, `${runtime ? "Worker failed" : "Worker not started"}: ${message(error)}`);
     }
     await requests;
     const resultCommit = codeCommit(report.result, outputBranch);
