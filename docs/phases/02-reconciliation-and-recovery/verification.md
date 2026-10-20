@@ -1,0 +1,22 @@
+# Phase 2 verification
+
+Status: Phase 2 is complete on macOS, as of 21 October 2026. Linux and Windows are covered by CI once these changes are pushed; until then they have not run there.
+
+This record maps each [PRD](PRD.md) acceptance criterion to its evidence. Unless stated otherwise the evidence is a test in `tests/`, and each safety check was also disabled in turn to confirm that a test fails without it.
+
+## Acceptance criteria
+
+1. **States.** `tests/dispatch/state.test.ts` builds each of the twelve states from real owners and checks its next action and whether commands may change it. `finish`, `discard` and `prune` refuse an attempt whose state is unknown (`tests/dispatch/finish.test.ts`, `tests/dispatch/prune.test.ts`).
+2. **Policy.** `tests/dispatch/policy.test.ts` covers the default, the order of the global, repository and context layers, forbidden kinds, reading the repository file only from the base branch (with a different policy committed on an output branch and left uncommitted in a workspace), invalid documents, and forge facts.
+3. **`finish`.** `tests/dispatch/finish.test.ts` finishes a reviewed attempt under `manual` and under `local-merge`, refuses a change that is not a fast-forward, runs again after a failed lease return without repeating completed steps, and refuses running, possibly running and held attempts.
+4. **Returning a lease.** With each check disabled in turn, a test fails: `--no-processes` on both commands, `--confirm` on `discard`, the retention re-check, the exact lease identity and holder, the state checks and the fast-forward check.
+5. **`discard`.** It needs `--confirm` and `--no-processes`, returns the lease even with uncommitted changes, and holds the task, or leaves it done if it was already done.
+6. **`prune`.** `tests/dispatch/prune.test.ts` preserves attempts that are unfinished, leased (including an unlogged lease held by the same task), possibly running, in another pool, unknown, unreadable or corrupt, together with their request-ID reservations, and resumes safely after interruption at each removal step.
+7. **Real run under `local-merge`.** On 20 October 2026, task `p2-accept-output-a1` was dispatched to a real Pi worker in a Treehouse lease. After review, `switchboard finish --no-processes` with the context policy set to `local-merge` fast-forwarded `main` to the output branch, recorded the task as done and returned the lease; `status` then reported the attempt as finished and nothing needing attention.
+8. **`finish --accept-output`.** `tests/dispatch/finish.test.ts` accepts committed output from a held attempt under both policies and through the CLI, completes after a partial failure using the recorded acceptance, and refuses a missing branch, a branch with no new commits, a dirty workspace, an attempt whose task update is unconfirmed, and unknown, unfinished and other-pool attempts.
+
+## Known gaps
+
+- The real `gh api` call for branch protection is not covered by tests; tests supply the forge fact directly.
+- The tasks-axi adapter's handling of truncated command output is not tested.
+- The PRD's process-ownership checks were deferred: whether a worker process remains is the operator's confirmation (`--no-processes`), as the PRD states.
