@@ -1,11 +1,13 @@
 import { constants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { AttemptLog } from "./attempts/log.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
+import { githubBranchProtection } from "./infra/github.ts";
+import { operatorPolicySchema } from "./dispatch/policy.ts";
 import { requireRetainedStorage } from "./infra/storage.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { PiWorker } from "./runtime/pi/worker.ts";
@@ -40,6 +42,11 @@ export const configSchema = z.strictObject({
     /** Contracts selected by task kind, for example a "scout" kind whose deliverable is a report. */
     byTaskKind: z.record(nonempty, contractSchema).default({}),
   }),
+  /**
+   * The context layer of the finalisation policy, and where the global layer is (default
+   * ~/.config/switchboard/policy.json). The repository layer is read from the base branch.
+   */
+  finalisation: operatorPolicySchema.extend({ globalFile: absolute.optional() }).default({}),
   worker: z.strictObject({
     /** The Pi CLI entry point run with this Node.js executable, for example .../pi-coding-agent/dist/bundle/cli.js. */
     piEntrypoint: absolute,
@@ -116,6 +123,12 @@ export async function createDependencies(config: Config, progress?: (message: st
     }),
     retention: request => checkRetention(git, hostEnvironment, request),
     repository: config.workspaces.repository,
+    policy: {
+      git, environment: hostEnvironment, repository: config.workspaces.repository, baseRef: config.delivery.baseRef,
+      globalFile: config.finalisation.globalFile ?? join(homedir(), ".config", "switchboard", "policy.json"),
+      context: { ...(config.finalisation.kind ? { kind: config.finalisation.kind } : {}), ...(config.finalisation.targetBranch ? { targetBranch: config.finalisation.targetBranch } : {}), ...(config.finalisation.forbid ? { forbid: config.finalisation.forbid } : {}) },
+      forge: branch => githubBranchProtection({ git, gh: onPathOrUndefined("gh"), repository: config.workspaces.repository, environment: hostEnvironment, branch }),
+    },
     staleMs: config.worker.staleMs,
     delivery: {
       baseRef: config.delivery.baseRef, branchPrefix: config.delivery.branchPrefix, byTaskKind: config.delivery.byTaskKind,
@@ -126,4 +139,8 @@ export async function createDependencies(config: Config, progress?: (message: st
     },
     ...(progress ? { progress } : {}),
   };
+}
+
+function onPathOrUndefined(name: string): string | undefined {
+  try { return onPath(name); } catch { return undefined; }
 }

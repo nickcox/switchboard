@@ -7,6 +7,7 @@ import type { RuntimeRecord, RuntimeRecords } from "../runtime/records.ts";
 import { TaskStoreError, type Task, type TaskStore } from "../tasks/store.ts";
 import { WorkspaceError, type Allocation, type Lease, type WorkspaceProvider } from "../workspaces/provider.ts";
 import type { RetentionRequest, RetentionResult } from "../workspaces/retention.ts";
+import type { PolicySources } from "./policy.ts";
 import { result, type AttemptSummary, type DispatchResult, type NextAction, type Stage } from "./result.ts";
 
 /** The parts of a delivery contract chosen per task; the base, branch and starting commit are added per attempt. */
@@ -33,6 +34,8 @@ export type Dependencies = {
   delivery: DeliveryConfiguration;
   /** A possibly running worker with no activity for this long is flagged in status. Default 20 minutes. */
   staleMs?: number;
+  /** Where the finalisation policy's layers are found (Phase 2 PRD). Without it the policy is `manual`. */
+  policy?: PolicySources;
   progress?: (message: string) => void;
 };
 

@@ -5,6 +5,7 @@ import type { Lease } from "../workspaces/provider.ts";
 import type { Task } from "../tasks/store.ts";
 import { inspect, isOpen, summarise, type Dependencies } from "./dispatch.ts";
 import { classify, type AttemptState } from "./state.ts";
+import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
 import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch.ts";
 import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
@@ -70,6 +71,8 @@ export type StatusResult = {
   /** Tasks in flight with no attempt in the log, no runtime record and no lease, so nothing accounts for them. */
   orphanedInFlight: string[];
   attempts: AttemptStatus[];
+  /** The context's resolved finalisation policy, or why it could not be resolved. Absent when none is configured. */
+  policy?: { resolved: ResolvedPolicy } | { error: string };
   detail?: string;
   nextAction: { code: NextAction; description: string };
 };
@@ -123,9 +126,13 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
   const orphanedInFlight = state.inFlight.filter(id => !state.attempts.some(a => a.taskId === id) &&
     !state.runtime.some(r => r.binding.input.identity.taskId === id) && !state.leases.some(l => l.holder === id));
   const unaccounted = unaccountedLeases.length > 0 || orphanedInFlight.length > 0;
-  const attention = attempts.some(a => a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt") || unaccounted;
+  const policy = deps.policy === undefined ? undefined
+    : await resolvePolicy(deps.policy).then(resolved => ({ resolved }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
+  // A policy that cannot be resolved needs fixing before any attempt can be finished.
+  const attention = attempts.some(a => a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt") || unaccounted || (policy !== undefined && "error" in policy);
   return {
     version: 1, ok: !attention, reason: attention ? "attention" : "clear", ready: state.ready, inFlight: state.inFlight, unaccountedLeases, orphanedInFlight, attempts,
+    ...(policy ? { policy } : {}),
     nextAction: action(overall(attempts, unaccounted)),
   };
 }
@@ -136,6 +143,15 @@ function overall(attempts: AttemptStatus[], unaccounted: boolean): NextAction {
   const pending = new Set(attempts.map(a => a.nextAction.code).filter(code => code !== "none"));
   if (pending.size === 0 && !unaccounted) return "dispatch_again";
   return pending.size === 1 && !unaccounted ? [...pending][0]! : "inspect_attempt";
+}
+
+function describePolicy(policy: NonNullable<StatusResult["policy"]>): string {
+  if ("error" in policy) return `Finalisation policy cannot be resolved: ${policy.error}`;
+  const p = policy.resolved;
+  const target = p.targetBranch ? ` into ${p.targetBranch} (target from the ${p.sources.targetBranch} layer)` : "";
+  const forbidden = p.forbidden.length ? `; forbidden: ${p.forbidden.map(f => `${f.kind} by the ${f.by} layer`).join(", ")}` : "";
+  const notes = `${p.refusal ? `; cannot be used: ${p.refusal}` : ""}${p.forgeUnknown ? `; not checked against the forge: ${p.forgeUnknown}` : ""}`;
+  return `Finalisation policy: ${p.kind} (from the ${p.sources.kind} layer)${target}${forbidden}${notes}`;
 }
 
 export function describeStatus(value: StatusResult): string {
@@ -161,6 +177,7 @@ export function describeStatus(value: StatusResult): string {
   }
   for (const l of value.unaccountedLeases) lines.push(`- Lease ${l.leaseId} for ${l.holder} at ${l.path} is not in the attempt log`);
   for (const id of value.orphanedInFlight) lines.push(`- Task ${id} is in flight, but no attempt, worker or lease accounts for it`);
+  if (value.policy) lines.push(describePolicy(value.policy));
   lines.push(`Next: ${value.nextAction.description}`);
   return lines.join("\n");
 }
