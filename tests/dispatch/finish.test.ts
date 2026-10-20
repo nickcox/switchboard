@@ -117,6 +117,60 @@ test("accepted output survives a partial failure without needing a worker result
   assert.equal((await kinds(f)).filter(k => k === "integrated").length, 1);
 });
 
+test("accept-output refuses an output branch with no commits beyond its starting commit, even with a clean workspace", async () => {
+  const { f, leaseId, workspace } = await failedOutput();
+  const start = (await f.deps.attempts.forTask("finish-a1"))[0]!.entries.find(e => e.kind === "leased")!.data.startingCommit as string;
+  execFileSync(onPath("git"), ["-C", workspace, "reset", "-q", "--hard", start], { env: f.environment });
+  const outcome = await finish(f.deps, { leaseId, noProcesses: true, acceptOutput: true });
+  assert.equal(outcome.reason, "refused");
+  assert.match(outcome.detail ?? "", /commits beyond/);
+  assert.equal(await listed(f, leaseId), true);
+});
+
+test("accept-output applies only to a held attempt, not one whose task update is unconfirmed", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
+  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { recordHold: async () => { throw new Error("lost"); } });
+  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "task_update_unconfirmed");
+  assert.equal((await finish(f.deps, { leaseId, noProcesses: true, acceptOutput: true })).reason, "refused");
+  assert.equal(await listed(f, leaseId), true);
+});
+
+test("a later finish integrates the accepted commit, not commits added to the branch since", async () => {
+  const { f, leaseId, workspace } = await failedOutput();
+  let failures = 1;
+  const deps = { ...f.deps, policy: localMerge(f), tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
+    recordDone: async (id: string, note: string) => {
+      if (failures-- > 0) throw new Error("Task store unavailable");
+      return f.tasks.recordDone(id, note);
+    },
+  }) };
+  // The first run fails before integrating, so local-merge has nothing recorded yet.
+  const first = await finish({ ...deps, policy: { ...localMerge(f), context: { kind: "manual" } } }, { leaseId, noProcesses: true, acceptOutput: true });
+  assert.equal(first.reason, "stopped");
+  const accepted = (await f.deps.attempts.forTask("finish-a1"))[0]!.entries.find(e => e.kind === "output_accepted")!.data.commit;
+  writeFileSync(join(workspace, "later.txt"), "added after acceptance\n");
+  const git = (...args: string[]) => execFileSync(onPath("git"), ["-C", workspace, ...args], { env: f.environment });
+  git("add", "later.txt");
+  git("commit", "-q", "--no-gpg-sign", "-m", "Later");
+  assert.equal((await finish(deps, { leaseId, noProcesses: true })).reason, "finished");
+  assert.equal(f.run(["rev-parse", "main"]), accepted);
+});
+
+test("accepted output is checked again immediately before the lease is returned", async () => {
+  const { f, leaseId, workspace } = await failedOutput();
+  const deps = { ...f.deps, tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
+    recordDone: async (id: string, note: string) => {
+      writeFileSync(join(workspace, "late.txt"), "written while finishing\n");
+      return f.tasks.recordDone(id, note);
+    },
+  }) };
+  const outcome = await finish(deps, { leaseId, noProcesses: true, acceptOutput: true });
+  assert.equal(outcome.reason, "stopped");
+  assert.match(outcome.detail ?? "", /no longer retained/);
+  assert.equal(await listed(f, leaseId), true);
+});
+
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const localMerge = (f: Fixture): NonNullable<Dependencies["policy"]> => ({
   git: onPath("git"), environment: f.environment, repository: join(f.dir, "repository"), baseRef: "main",
