@@ -90,7 +90,24 @@ async function recheck(deps: Dependencies, attempt: AttemptStatus): Promise<Rete
   });
 }
 
+/**
+ * A failure no step anticipated still gives a structured result. Each step that changes an owner has its own handler, so
+ * the lease's state is unknown only in the sense that this handler does not know which step failed.
+ */
+const unexpected = (command: "finish" | "discard") => (error: unknown) => result({
+  ok: false, reason: "stopped", stage: "finish", lease: "unknown", observed: {},
+  detail: `${command} failed unexpectedly: ${error instanceof Error ? error.message : String(error)}. Check status, then run ${command} again`, nextAction: "inspect_attempt",
+});
+
 export async function finish(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean; acceptOutput?: boolean }): Promise<DispatchResult> {
+  return finishAttempt(deps, options).catch(unexpected("finish"));
+}
+
+export async function discard(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {
+  return discardAttempt(deps, options).catch(unexpected("discard"));
+}
+
+async function finishAttempt(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean; acceptOutput?: boolean }): Promise<DispatchResult> {
   if (!options.noProcesses && !options.dryRun) return refused("confirm_no_processes", "Returning the lease needs your confirmation that no worker process remains (--no-processes)");
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
@@ -205,7 +222,7 @@ export async function finish(deps: Dependencies, options: { leaseId: string; noP
 
 const discardable = ["awaiting_review", "awaiting_finish", "held", "not_retained", "stopped", "task_update_unconfirmed"];
 
-export async function discard(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {
+async function discardAttempt(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {
   if (!options.confirm && !options.dryRun) return refused("confirm_discard", "Discarding the attempt's work needs your explicit confirmation (--confirm)");
   if (!options.noProcesses && !options.dryRun) return refused("confirm_no_processes", "Returning the lease needs your confirmation that no worker process remains (--no-processes)");
   const located = await locate(deps, options.leaseId);

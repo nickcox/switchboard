@@ -5,7 +5,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createDependencies, loadConfig } from "../../src/config.ts";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
-import { status } from "../../src/dispatch/status.ts";
+import { describeStatus, status } from "../../src/dispatch/status.ts";
+import { finish } from "../../src/dispatch/finish.ts";
 import type { TaskStore } from "../../src/tasks/store.ts";
 import { fixture, task } from "./fixture.ts";
 
@@ -123,4 +124,30 @@ test("finding 15: an attempt-log failure after acquiring a lease gives a structu
   assert.equal(outcome.stage, "start");
   assert.match(outcome.detail ?? "", /disk full/);
   assert.ok(outcome.attempt?.leaseId);
+});
+
+test("Phase 2 review finding 13: a failure while finalising gives a structured stopped result and is recorded", async () => {
+  const f = await fixture({ tasks: [task("final-a1")], scenario: "commit-result" });
+  const outcome = await dispatchOnce({ ...f.deps, retention: async () => { throw new Error("injected retention read failure"); } });
+  assert.equal(outcome.reason, "stopped");
+  assert.equal(outcome.lease, "preserved");
+  assert.match(outcome.detail ?? "", /injected retention read failure/);
+  assert.equal((await f.deps.attempts.forTask("final-a1"))[0]!.entries.at(-1)?.kind, "halted");
+});
+
+test("Phase 2 review finding 13: finish turns an unexpected failure into a structured result", async () => {
+  const f = await fixture({ tasks: [task("final-a1")], scenario: "commit-result" });
+  const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+  const outcome = await finish({ ...f.deps, retention: async () => { throw new Error("injected retention read failure"); } }, { leaseId, noProcesses: true });
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.detail ?? "", /injected retention read failure/);
+  assert.equal((await f.deps.workspaces.leases()).some(l => l.leaseId === leaseId), true);
+});
+
+test("Phase 2 review finding 18: status shows the observed worker exit and the dispatcher heartbeat", async () => {
+  const f = await fixture({ tasks: [task("final-a1")], scenario: "commit-result" });
+  await dispatchOnce(f.deps);
+  const view = await status(f.deps);
+  assert.deepEqual(view.attempts[0]?.worker, { exit: "observed", code: 0, signal: null, dispatcherHeartbeat: "stale_or_missing" });
+  assert.match(describeStatus(view), /Worker exit: observed \(code 0\); dispatcher heartbeat stale or missing/);
 });

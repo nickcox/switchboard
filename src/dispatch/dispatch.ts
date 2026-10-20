@@ -294,7 +294,8 @@ export async function dispatchOnce(
         return result({ ok: false, reason: "stopped", stage: "launch", lease: "preserved", observed, attempt: summary, worker: { status: "unresolved" }, detail: `Launching failed after the worker may have started, so it may still be running: ${message(error)}`, nextAction: "stop_worker" });
       }
       await deps.attempts.append(ref, "worker_finished", { status: runtime ? "failed" : "not_started", runtimeDirectory: runtime?.directory ?? "-", reason: message(error).slice(0, 500) });
-      return finalise(deps, ref, summary, observed, task, delivery, undefined, `${runtime ? "Worker failed" : "Worker not started"}: ${message(error)}`);
+      // Awaited here, so that a failure while finalising reaches the handler below and is recorded.
+      return await finalise(deps, ref, summary, observed, task, delivery, undefined, `${runtime ? "Worker failed" : "Worker not started"}: ${message(error)}`);
     }
     await requests;
     if (unrecorded.length > 0) observed.unrecordedRequests = unrecorded;
@@ -310,7 +311,7 @@ export async function dispatchOnce(
       return result({ ok: false, reason: "stopped", stage: "launch", lease: "preserved", observed, attempt: summary, worker: { status: report.status }, detail: "The worker's exit was not observed, so it may still be running", nextAction: "stop_worker" });
     }
     stage = "finalise";
-    return finalise(deps, ref, summary, observed, task, delivery, report);
+    return await finalise(deps, ref, summary, observed, task, delivery, report);
   } catch (error) {
     const detail = `The attempt stopped at ${stage} because a step failed: ${message(error)}`;
     await deps.attempts.append(ref, "halted", { stage, reason: "error", detail: detail.slice(0, 4000) }).catch(() => {});

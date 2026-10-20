@@ -20,4 +20,5 @@ This record maps each [PRD](PRD.md) acceptance criterion to its evidence. Unless
 - The real `gh api` call for branch protection is not covered by tests; tests supply the forge fact directly.
 - When `finish` or `discard` finds the lease's runtime directory already exists, it continues only if the directory holds a worker whose exit was observed or the operator confirmed the launch stopped. The case of a dispatcher that has claimed the directory but not yet written its records is refused by that rule but not reproduced by a test.
 - The tasks-axi adapter's handling of truncated command output is not tested.
-- The PRD's process-ownership checks were deferred: whether a worker process remains is the operator's confirmation (`--no-processes`), as the PRD states.
+- The PRD's process-ownership checks were deferred: whether a worker process remains is the operator's confirmation (`--no-processes`), as the PRD states. To help with it, `status` shows the observed or confirmed exit of the worker's direct child and whether the dispatcher's heartbeat is fresh (review finding 18); listing the workspace's open files is deferred.
+- A failure while dispatch finalises an attempt, and an unexpected failure in `finish` or `discard`, give a structured result instead of an error from the command line, and dispatch records the failure in the attempt log (review finding 13).
