@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
 import { status } from "../../src/dispatch/status.ts";
+import { classify } from "../../src/dispatch/state.ts";
+import type { AttemptRecord } from "../../src/attempts/log.ts";
 import { WorkspaceError } from "../../src/workspaces/provider.ts";
 import type { TaskStore } from "../../src/tasks/store.ts";
 import { fixture, task } from "./fixture.ts";
@@ -20,11 +22,6 @@ const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): TaskStore => {
     ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id), start: id => real.start(id),
     recordDone: (id, note) => real.recordDone(id, note), recordHold: (id, hold) => real.recordHold(id, hold), ...overrides,
   };
-};
-const findFile = (root: string, name: string): string => {
-  const found = readdirSync(root, { recursive: true, encoding: "utf8" }).filter(path => path.split(/[\\/]/).at(-1) === name);
-  assert.equal(found.length, 1, `exactly one ${name} under ${root}`);
-  return join(root, found[0]!);
 };
 const only = async (deps: Dependencies, taskId: string) => {
   const view = await status(deps);
@@ -100,19 +97,17 @@ test("held: an attempt held for review whose hold reason was changed since is he
   expect(await only(f.deps, "changed-a1"), "held", "inspect_attempt", true);
 });
 
-test("an outcome recorded before categories is classified from the hold reason Switchboard recorded", async () => {
-  const f = await fixture({ tasks: [task("legacy-a1")], scenario: "commit-result" });
-  await dispatchOnce(f.deps);
-  const [record] = await f.deps.attempts.forTask("legacy-a1");
-  const recorded = record!.entries.find(e => e.kind === "task_recorded")!;
-  assert.deepEqual(recorded.data, { outcome: "hold", reason: "Switchboard attempt 1 review required", category: "review_required" });
-  // Rewrite the entry as an earlier version wrote it, without a category.
-  const path = findFile(join(f.dir, "runtime", "attempts"), `${String(recorded.sequence).padStart(4, "0")}.json`);
-  const entry = JSON.parse(readFileSync(path, "utf8"));
-  delete entry.data.category;
-  writeFileSync(path, JSON.stringify(entry));
-  assert.equal((await f.deps.attempts.forTask("legacy-a1"))[0]!.entries.find(e => e.kind === "task_recorded")!.data.category, undefined);
-  expect(await only(f.deps, "legacy-a1"), "awaiting_review", "review_then_finish", true);
+test("an outcome recorded before categories is classified from the hold reason Switchboard recorded", () => {
+  // The classification is pure, so build the attempt as an earlier version recorded it, without a category.
+  const entry = (sequence: number, kind: string, data: Record<string, unknown>) => ({
+    version: 1 as const, contextId: "c", taskId: "legacy-a1", attempt: 1, sequence, kind, recordedAt: new Date().toISOString(), data,
+  });
+  const reason = "Switchboard attempt 1 review required";
+  const record = { contextId: "c", taskId: "legacy-a1", attempt: 1, entries: [entry(0, "requested", {}), entry(1, "task_recorded", { outcome: "hold", reason })] } as unknown as AttemptRecord;
+  const input = { record, possiblyRunning: false, dispatcherRunning: false, leaseHeld: true, leaseInOtherPool: false, unfinished: false };
+  assert.equal(classify({ ...input, task: { state: "queued", held: true, holdReason: reason } }).state, "awaiting_review");
+  // The task store's current hold reason is never read for the category: an edited reason makes the attempt held.
+  assert.equal(classify({ ...input, task: { state: "queued", held: true, holdReason: "Switchboard attempt 1 failed" } }).state, "held");
 });
 
 test("not retained: a reported commit missing from the output branch", async () => {

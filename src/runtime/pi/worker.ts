@@ -99,7 +99,7 @@ class PiSession implements RuntimeSession {
     await this.rpc("set_auto_retry", { enabled: false }, signal);
     this.settled = this.client.beginRun();
     // Never retry this command: a lost acknowledgement may still have started work.
-    promptSchema.parse(await this.rpc("prompt", { message: workerPrompt(this.binding) }, signal));
+    promptSchema.parse(await this.rpc("prompt", { message: workerPrompt(this.binding, new Date(Date.now() + this.options.runMs)) }, signal));
   }
 
   async waitForEnd(runMs: number, signal: AbortSignal): Promise<void> {
@@ -208,9 +208,18 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function workerPrompt(binding: RuntimeBinding): string {
+/** A local time with its UTC offset, for example `2026-10-21 22:40 +11:00`, which a worker can compare with `date`. */
+export function localTime(time: Date): string {
+  const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
+  const offset = -time.getTimezoneOffset();
+  return `${time.getFullYear()}-${pad(time.getMonth() + 1)}-${pad(time.getDate())} ${pad(time.getHours())}:${pad(time.getMinutes())} ${offset < 0 ? "-" : "+"}${pad(Math.trunc(offset / 60))}:${pad(offset % 60)}`;
+}
+
+export function workerPrompt(binding: RuntimeBinding, deadline: Date): string {
   return [
     "Complete this one assigned task in the current workspace. Do not launch other agents.",
+    // Workers cannot see their own usage and have been seen to assume a small token budget and stop early.
+    `Switchboard enforces this run's time and cost limits and stops the run if it exceeds them. You cannot see your usage and do not need to track tokens, cost or context; there is no separate token budget. Work until the task is complete. Commit working progress to the output branch as you go, so that completed work is kept if the run is stopped. The run is stopped at ${localTime(deadline)} (check the time with \`date\`); leave enough time to write the result file before then.`,
     "Do not change authoritative task records, mutate Treehouse leases, merge, push or publish.",
     "Use this instruction snapshot and resolved delivery contract unchanged:",
     JSON.stringify(binding.input, null, 2),

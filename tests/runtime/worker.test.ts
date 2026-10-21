@@ -19,6 +19,7 @@ async function waitForPrompt(path: string): Promise<void> {
 
 test("RPC worker uses exact cwd/session and standard tools, retains result, and observes child exit", async () => {
   const f = fixture();
+  const started = Date.now();
   const report = await f.worker.execute(f.input);
   assert.equal(report.status, "reported");
   assert.deepEqual(report.childExit, { started: true, code: 0, signal: null });
@@ -39,6 +40,14 @@ test("RPC worker uses exact cwd/session and standard tools, retains result, and 
   const prompt = (await requests(f.log)).find(r => r.type === "prompt");
   assert.ok(String(prompt?.message).includes(f.input.instructions));
   assert.ok(String(prompt?.message).includes(f.input.delivery.outputBranch));
+  // The worker is told that the limits are enforced for it, that there is no token budget, and when it will be stopped.
+  assert.match(String(prompt?.message), /there is no separate token budget/);
+  assert.match(String(prompt?.message), /Commit working progress to the output branch as you go/);
+  const deadline = /The run is stopped at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) ([+-]\d{2}):(\d{2})/.exec(String(prompt?.message));
+  assert.ok(deadline, "the prompt gives a deadline");
+  const stated = Date.parse(`${deadline[1]!.replace(" ", "T")}:00${deadline[2]}:${deadline[3]}`);
+  // runMs is 1 s in this fixture; the stated minute is the deadline's, rounded down.
+  assert.ok(Math.abs(stated - started) < 2 * 60_000, `deadline ${deadline[0]} should be near the run's start`);
   const discovered = await f.records.discover(f.input.identity.contextId);
   assert.equal(discovered[0]?.child.status, "exited");
 });
