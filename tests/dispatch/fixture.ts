@@ -2,7 +2,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { AttemptLog } from "../../src/attempts/log.ts";
+import { AttemptStore } from "../../src/attempts/store.ts";
+import type { EntryData } from "../../src/attempts/log.ts";
+
+class FixtureAttemptStore extends AttemptStore {
+  async create(taskId: string, requested: EntryData<"requested">, _previous: number) {
+    return (await this.reserveAttempt({ taskId, requested, maximum: 100 })).ref;
+  }
+}
 import type { ContractSpec, Dependencies } from "../../src/dispatch/dispatch.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import type { DeliveryContract } from "../../src/runtime/contracts.ts";
@@ -47,10 +54,10 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     ...options.worker,
   });
   const tasks = await SqliteTaskStore.open({ path: join(dir, "tasks.db"), repo: "fixture" });
-  const deps: Dependencies = {
+  const deps: Dependencies & { attempts: FixtureAttemptStore } = {
     contextId: "fixture-context", tasks,
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
-    attempts: new AttemptLog(runtimeRoot, "fixture-context"), runtime,
+    attempts: new FixtureAttemptStore(tasks.database, "fixture-context"), runtime,
     launch: (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {}),
     retention: request => checkRetention(git, environment, request),
     repository,

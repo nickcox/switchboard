@@ -106,15 +106,16 @@ export async function importTasks(config: Config, backlog: string, archive = joi
 
 export async function importCommand(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
-    "tasks-axi": { type: "string" }, archive: { type: "string" }, json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
+    attempts: { type: "boolean" }, "tasks-axi": { type: "string" }, archive: { type: "string" }, json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
   } });
-  if (values.help || !values["tasks-axi"] || positionals.length) {
-    console.error("Usage: switchboard import --tasks-axi <backlog.md> [--archive <done-archive.md>] [--json] [--config <path>]");
+  if (values.help || Boolean(values.attempts) === Boolean(values["tasks-axi"]) || (values.attempts && values.archive) || positionals.length) {
+    console.error("Usage: switchboard import (--attempts | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]");
     return values.help ? 0 : 2;
   }
   const config = await loadConfig(resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json"));
   try {
-    const result = await importTasks(config, resolve(values["tasks-axi"]), values.archive === undefined ? undefined : resolve(values.archive));
+    const result = values.attempts ? await (await import("../attempts/import.ts")).importAttempts(config)
+      : await importTasks(config, resolve(values["tasks-axi"]!), values.archive === undefined ? undefined : resolve(values.archive));
     console.log(JSON.stringify(result, null, values.json ? 2 : undefined));
     return 0;
   } catch (error) {

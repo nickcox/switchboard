@@ -15,7 +15,8 @@ const truncateFailed = (error: unknown) => (error as { errcode?: unknown }).errc
 export class Database {
   private readonly db: DatabaseSync;
   private readonly retryMs: number;
-  private constructor(db: DatabaseSync, retryMs: number) { this.db = db; this.retryMs = retryMs; }
+  readonly path: string;
+  private constructor(db: DatabaseSync, retryMs: number, path: string) { this.db = db; this.retryMs = retryMs; this.path = path; }
 
   static async open(path: string, retryMs = 5000): Promise<Database> {
     if (!isAbsolute(path)) throw new Error("Database path must be absolute");
@@ -51,7 +52,7 @@ export class Database {
         await sleep(20);
       }
     }
-    const result = new Database(db, retryMs);
+    const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
       if (version > 2) throw new Error(`Unsupported database schema version ${version}`);
@@ -141,4 +142,8 @@ export class Database {
   }
   close() { if (this.db.isOpen) this.db.close(); }
   checkpoint() { this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); }
+  async vacuumInto(path: string): Promise<void> {
+    if (!isAbsolute(path)) throw new Error("Staging path must be absolute");
+    await this.retry(() => this.db.prepare("VACUUM INTO ?").run(path));
+  }
 }

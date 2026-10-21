@@ -14,12 +14,10 @@ if (stage === "after-lease") {
   const real = deps.workspaces;
   deps.workspaces = { recyclableRoots: () => real.recyclableRoots(), returnLease: (lease, options) => real.returnLease(lease, options), leases: () => real.leases(), pool: () => real.pool(), acquire: async request => { await real.acquire(request); die(); throw new Error("unreachable"); } };
 } else if (stage === "after-start") {
-  const real = deps.tasks;
-  deps.tasks = {
-    ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id),
-    recordDone: (id, note) => real.recordDone(id, note), recordHold: (id, hold) => real.recordHold(id, hold),
-    start: async id => { await real.start(id); die(); throw new Error("unreachable"); },
-  };
+  const real = deps.attempts;
+  deps.attempts = Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+    startReservedTask: async (ref: Parameters<typeof real.startReservedTask>[0]) => { await real.startReservedTask(ref); die(); throw new Error("unreachable"); },
+  });
 } else if (stage === "after-launch") {
   const real = deps.launch;
   const log = config.worker.environment?.FAKE_PI_LOG;

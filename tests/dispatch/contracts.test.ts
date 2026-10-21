@@ -6,7 +6,7 @@ import { dispatchOnce, type ContractSpec } from "../../src/dispatch/dispatch.ts"
 import { status } from "../../src/dispatch/status.ts";
 import { fixture } from "./fixture.ts";
 import { RuntimeRecords } from "../../src/runtime/records.ts";
-import { AttemptLog } from "../../src/attempts/log.ts";
+import { requireRetainedStorage } from "../../src/infra/storage.ts";
 
 // Per-task delivery contracts: a task's kind selects its contract from the configuration.
 const scout: ContractSpec = { kind: "artefact", acceptance: "independent_deliverable", requiredEvidence: ["tests"], requiredDeliverables: ["report"] };
@@ -116,7 +116,9 @@ test("runtime storage in an earlier recyclable workspace is refused before writi
   const runtime = f.deps.runtime;
   for (const storage of ["runtime", "attempts"]) {
     f.deps.runtime = storage === "runtime" ? new RuntimeRecords(root) : runtime;
-    if (storage === "attempts") f.deps.attempts = new AttemptLog(root, f.deps.contextId);
+    if (storage === "attempts") f.deps.attempts = Object.assign(Object.create(Object.getPrototypeOf(f.deps.attempts)), f.deps.attempts, {
+      checkStorage: (roots: string[]) => requireRetainedStorage(root, roots),
+    });
     const outcome = await dispatchOnce(f.deps);
     assert.equal(outcome.reason, "refused", storage);
     assert.equal(outcome.nextAction.code, "fix_configuration");

@@ -43,7 +43,8 @@ test("killed after leasing: the leased task is not dispatched again and status r
   // The lease was created but never logged, so status reports it as not accounted for by any attempt.
   assert.equal(view.unaccountedLeases[0]?.holder, "crash-a1");
   const next = await dispatchOnce(f.deps);
-  assert.equal(next.attempt?.taskId, "crash-b1");
+  assert.equal(next.reason, "refused");
+  assert.equal(next.observed.reason, "capacity");
   assert.equal((await dispatchOnce(f.deps, { taskId: "crash-a1" })).nextAction.code, "choose_another_task");
 });
 
@@ -51,9 +52,10 @@ test("killed after the in-flight update: the in-flight task is not dispatched ag
   const f = await crashAt("after-start");
   await repeatReturnsAttempt(f, "after-start");
   assert.equal((await f.tasks.read("crash-a1"))?.state, "in_flight");
-  assert.equal((await f.deps.attempts.forTask("crash-a1"))[0]!.entries.at(-1)?.kind, "leased");
+  assert.equal((await f.deps.attempts.forTask("crash-a1"))[0]!.entries.at(-1)?.kind, "task_started");
   const next = await dispatchOnce(f.deps);
-  assert.equal(next.attempt?.taskId, "crash-b1");
+  assert.equal(next.reason, "refused");
+  assert.equal(next.observed.reason, "capacity");
   assert.equal((await dispatchOnce(f.deps, { taskId: "crash-a1" })).nextAction.code, "choose_another_task");
 });
 

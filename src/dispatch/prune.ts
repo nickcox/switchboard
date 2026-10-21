@@ -1,9 +1,9 @@
-import { AttemptPruner, type ArchivedAttempt } from "../attempts/prune.ts";
-import { inspect, isOpen, leaseReturned, type Dependencies } from "./dispatch.ts";
+import { rm } from "node:fs/promises";
+import { inspect, isOpen, type Dependencies } from "./dispatch.ts";
 import { result, type DispatchResult } from "./result.ts";
 import { status } from "./status.ts";
 
-/** Operator-only retention: owner uncertainty always preserves the records, regardless of their age. */
+/** Owner uncertainty preserves records regardless of age. Directory removal follows the archive transaction. */
 export async function prune(deps: Dependencies, options: { olderThan: number; dryRun?: boolean }): Promise<DispatchResult> {
   const removed: { taskId: string; attempt: number; archive: string }[] = [];
   const skipped: { taskId: string; attempt: number; reason: string }[] = [];
@@ -13,15 +13,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     nextAction: ok ? "none" : "inspect_attempt",
   });
   if (!Number.isFinite(options.olderThan) || options.olderThan <= 0) return report(false, "refused", "--older-than must be a positive number of days");
-  const cutoff = Date.now() - options.olderThan * 86400000;
-  const pruner = new AttemptPruner(deps.attempts);
-  // One run at a time: two runs completing the same cleanup could release a request ID claimed in between.
-  let locked = false;
   try {
-    if (!options.dryRun) {
-      locked = await pruner.lock();
-      if (!locked) return report(false, "refused", `Another prune is running, or one was interrupted. If no prune is running, remove ${pruner.lockPath()} and run prune again`);
-    }
     const roots = await deps.workspaces.recyclableRoots();
     await deps.attempts.checkStorage(roots);
     await deps.runtime.checkStorage(roots);
@@ -29,46 +21,27 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     if (view.reason === "refused") return report(false, "refused", view.detail ?? "Owner state could not be read");
     const state = await inspect(deps);
     if ("failed" in state) return report(false, "refused", state.failed.detail ?? "Owner state could not be read");
-    const pending = await pruner.pending();
-    // A lease known to be returned no longer depends on which pool is listed now.
-    const allowed = async (value: Pick<ArchivedAttempt, "taskId" | "leaseId" | "pool">, returned: boolean): Promise<string | undefined> => {
-      if (!returned && value.pool !== undefined && value.pool !== state.pool) return "lease_in_other_pool";
-      if (state.leases.some(l => l.leaseId === value.leaseId || l.holder === value.taskId)) return "lease_held";
-      if (state.runtime.some(r => (r.binding.input.identity.leaseId === value.leaseId || r.binding.input.identity.taskId === value.taskId)
-        && r.child.status === "unknown")) return "possibly_running";
-      try { if (!await deps.tasks.read(value.taskId)) return "unknown"; }
-      catch { return "unknown"; }
-      return undefined;
-    };
+    const cutoff = Date.now() - options.olderThan * 86400000;
     for (const record of state.attempts) {
-      const last = record.entries.at(-1)!;
-      if (Date.parse(last.recordedAt) >= cutoff) continue;
+      if (Date.parse(record.entries.at(-1)!.recordedAt) >= cutoff) continue;
       const attempt = view.attempts.find(a => a.attempt.taskId === record.taskId && a.attempt.attempt === record.attempt);
-      const pool = record.entries.find(e => e.kind === "leased")?.data.pool ?? record.entries[0]?.data.pool;
-      const reason = !attempt ? "unknown" : isOpen(record) ? "unfinished"
-        : attempt.state !== "finished" ? attempt.state
-        : await allowed({ taskId: record.taskId, ...(attempt.attempt.leaseId ? { leaseId: attempt.attempt.leaseId } : {}), ...(typeof pool === "string" ? { pool } : {}) }, leaseReturned(record));
+      const reason = !attempt ? "unknown" : isOpen(record) ? "unfinished" : attempt.state !== "finished" ? attempt.state
+        : state.leases.some(l => l.holder === record.taskId || l.leaseId === attempt.attempt.leaseId) ? "lease_held"
+        : state.runtime.some(r => r.binding.input.identity.taskId === record.taskId && r.child.status === "unknown") ? "possibly_running" : undefined;
       if (reason) { skipped.push({ taskId: record.taskId, attempt: record.attempt, reason }); continue; }
-      const item = { taskId: record.taskId, attempt: record.attempt, archive: pruner.archivePath(record) };
-      const archived = await pruner.archive(record, options.dryRun);
       if (!options.dryRun) {
+        const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === attempt!.attempt.leaseId);
+        await deps.attempts.archiveAttempt(record, { ...attempt!.attempt, state: attempt!.state }, runtime ? [runtime.directory] : []);
         changed = true;
-        await pruner.remove(archived);
       }
-      removed.push(item);
+      removed.push({ taskId: record.taskId, attempt: record.attempt, archive: deps.attempts.database.path });
     }
-    for (const value of pending) {
-      const facts = value.summary.facts as Record<string, { data?: { action?: unknown } } | undefined> | undefined;
-      const reason = await allowed(value, facts?.lease_returned !== undefined || facts?.operator_resolved?.data?.action === "lease_returned");
-      if (reason) { skipped.push({ taskId: value.taskId, attempt: value.attempt, reason }); continue; }
-      if (!options.dryRun) { changed = true; await pruner.remove(value); }
-      removed.push({ taskId: value.taskId, attempt: value.attempt, archive: pruner.archivePath(value) });
+    if (!options.dryRun) for (const deletion of deps.attempts.pendingDeletions()) {
+      await rm(deletion.directory, { recursive: true, force: true });
+      await deps.attempts.completeDeletion(deletion);
     }
-    const list = removed.map(a => `${a.taskId} attempt ${a.attempt} (archive: ${a.archive})`).join("; ");
-    return report(true, options.dryRun ? "planned" : "pruned", `${options.dryRun ? "Would remove" : "Removed"} ${removed.length} attempt(s)${list ? `: ${list}` : ""}. Preserved ${skipped.length} ineligible attempt(s)`);
+    return report(true, options.dryRun ? "planned" : "pruned", `${options.dryRun ? "Would remove" : "Removed"} ${removed.length} attempt(s). Preserved ${skipped.length} ineligible attempt(s)`);
   } catch (error) {
     return report(false, changed ? "stopped" : "refused", `${error instanceof Error ? error.message : String(error)}. Run prune again after checking the records`);
-  } finally {
-    if (locked) await pruner.unlock();
   }
 }

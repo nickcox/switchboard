@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AttemptRecord } from "../attempts/log.ts";
 import { onPath } from "../infra/executables.ts";
 import { validateWorkerResult } from "../runtime/contracts.ts";
@@ -42,7 +43,9 @@ async function locate(deps: Dependencies, leaseId: string): Promise<Located | Di
 async function fenceLaunch(deps: Dependencies, record: AttemptRecord, leaseId: string): Promise<string | undefined> {
   if (await deps.runtime.fence(deps.contextId, leaseId)) return undefined;
   const runtime = (await deps.runtime.discover(deps.contextId)).find(r => r.binding.input.identity.leaseId === leaseId);
-  if (runtime ? runtime.child.status !== "unknown" : resolvedBy(record, "worker_stopped")) return undefined;
+  const stopped = deps.attempts.confirmations(record).some(c => c.fact === "worker_stopped" && c.scope.leaseId === leaseId &&
+    (c.scope.sessionId === undefined || c.scope.sessionId === runtime?.binding.input.identity.sessionId));
+  if (stopped || (runtime ? runtime.child.status !== "unknown" : resolvedBy(record, "worker_stopped"))) return undefined;
   return "A dispatcher may be starting this attempt's worker now; check with status before trying again";
 }
 
@@ -52,13 +55,12 @@ async function fenceLaunch(deps: Dependencies, record: AttemptRecord, leaseId: s
  */
 async function returnLease(deps: Dependencies, record: AttemptRecord, attempt: AttemptStatus, by: "finish" | "discard"): Promise<void> {
   const leaseId = attempt.attempt.leaseId!;
-  const last = record.entries.at(-1);
-  if (!(last?.kind === "lease_return_started" && last.data.by === by)) {
-    await deps.attempts.append(record, "lease_return_started", { leaseId, by, noProcessesConfirmedBy: "operator" });
-  }
+  const returnId = randomUUID();
+  await deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by, returnId },
+    { fact: "no_processes", scope: { leaseId, returnId } }, "operator");
   try { await deps.workspaces.returnLease({ leaseId, holder: attempt.attempt.taskId, path: attempt.attempt.workspace! }, { discardChanges: by === "discard" }); }
   catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { lease: error instanceof WorkspaceError && error.reason === "outcome_unknown" ? "unknown" : "preserved" }); }
-  try { await deps.attempts.append(record, "lease_returned", { leaseId, by, noProcessesConfirmedBy: "operator" }); }
+  try { await deps.attempts.append(record, "lease_returned", { leaseId, by, returnId }); }
   catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { lease: "none" }); }
 }
 
@@ -67,7 +69,8 @@ async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt
   if (attempt.state !== "finished" || attempt.leaseHeld) return false;
   const started = record.entries.some(e => e.kind === "lease_return_started" && e.data.by === by && e.data.leaseId === attempt.attempt.leaseId);
   if (!started || record.entries.some(e => e.kind === "lease_returned")) return false;
-  await deps.attempts.append(record, "lease_returned", { leaseId: attempt.attempt.leaseId!, by, noProcessesConfirmedBy: "operator" });
+  const intent = [...record.entries].reverse().find(e => e.kind === "lease_return_started" && e.data.by === by);
+  await deps.attempts.append(record, "lease_returned", { leaseId: attempt.attempt.leaseId!, by, returnId: intent!.data.returnId as string });
   return true;
 }
 
@@ -184,7 +187,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   const fenced = await fenceLaunch(deps, record, options.leaseId);
   if (fenced) return refused("inspect_attempt", fenced, base);
   if (acceptedCommit && accepted?.data.commit !== acceptedCommit) {
-    try { await deps.attempts.append(record, "output_accepted", { commit: acceptedCommit, acceptedBy: "operator" }); }
+    try { await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, "operator"); }
     catch (error) { return stopped(error, "record the operator's output acceptance"); }
   }
   if (integration) {
@@ -197,17 +200,9 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
     try { await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: unrecorded.target, commit: unrecorded.commit }); }
     catch (error) { return stopped(error, `record that ${unrecorded.target} contains the work`); }
   }
-  if (task.state === "done" && !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done")) {
-    try { await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished", category: "done" }); }
-    catch (error) { return stopped(error, "record that the task is done"); }
-  }
-  if (task.state !== "done") {
-    try {
-      const note = JSON.stringify({ attempt: attempt.attempt, finishedBy: "switchboard finish", policy: policy.kind, ...(integration ? { integrated: integration.to } : {}) });
-      const done = await deps.tasks.recordDone(task.id, note, task);
-      if (done.state !== "done") throw new Error("The task store does not show the task as done");
-      await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished", category: "done" });
-    } catch (error) { return stopped(error, "record the task as done"); }
+  if (task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done")) {
+    try { await deps.attempts.finishAttempt(record, task); }
+    catch (error) { return stopped(error, "record the task as done"); }
   }
   // The PRD's condition 2: retention is checked again immediately before the lease is returned.
   const finalRetention = await check().catch((error: unknown) => `The retention check failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -248,9 +243,7 @@ async function discardAttempt(deps: Dependencies, options: { leaseId: string; no
   const fenced = await fenceLaunch(deps, record, options.leaseId);
   if (fenced) return refused("inspect_attempt", fenced, base);
   try {
-    if (!record.entries.some(e => e.kind === "discarded")) await deps.attempts.append(record, "discarded", { ...(options.note ? { note: options.note } : {}) });
-    // Every task not done is left queued and held, so it is not dispatched again until the operator decides.
-    if (hold) await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## ${holdReason}${options.note ? `\n\n${options.note}` : ""}` }, task);
+    await deps.attempts.discardAttempt(record, task, "operator", options.leaseId, options.note);
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard"); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }

@@ -52,7 +52,11 @@ export async function watch(
     const entries = await readActivity(record.directory);
     for (const entry of entries.slice(printed)) options.print(entry);
     printed = Math.max(printed, entries.length);
-    const finished = record.child.status !== "unknown";
+    const identity = record.binding.input.identity;
+    const attempt = (await deps.attempts.forTask(identity.taskId)).find(a => a.entries.some(e => e.kind === "leased" && e.data.leaseId === identity.leaseId));
+    const stopped = attempt && deps.attempts.confirmations(attempt).some(c => c.fact === "worker_stopped" && c.scope.leaseId === identity.leaseId &&
+      (c.scope.sessionId === undefined || c.scope.sessionId === identity.sessionId));
+    const finished = record.child.status !== "unknown" || Boolean(stopped);
     const settled = finished && (entries.some(isFinalNote) || !await dispatcherRunning(record.directory));
     if (!options.follow || settled || options.signal?.aborted) {
       // Print anything written between the last read and the decision to stop.

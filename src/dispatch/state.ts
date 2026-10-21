@@ -1,4 +1,4 @@
-import { holdLabels, type AttemptRecord, type OutcomeCategory } from "../attempts/log.ts";
+import { type AttemptRecord } from "../attempts/log.ts";
 import type { NextAction } from "./result.ts";
 
 /**
@@ -62,15 +62,9 @@ function stateOf(input: StateInput): AttemptState {
   // The recorded outcome decides, and the task store only confirms it: a hold whose reason was changed since is
   // classified as held for another reason, whatever the new reason says.
   if (task.holdReason !== recorded.data.reason) return "held";
-  const category = categoryOf(recorded.data as { outcome: string; reason: string; category?: OutcomeCategory });
+  const category = recorded.data.category;
   if (category === "not_retained") return "not_retained";
   if (category === "review_required") return "awaiting_review";
   return "held";
 }
 
-/** The recorded category, or for an entry written before categories, the one its recorded hold reason ends with. */
-function categoryOf(data: { outcome: string; reason: string; category?: OutcomeCategory }): OutcomeCategory | undefined {
-  if (data.category) return data.category;
-  if (data.outcome === "done") return "done";
-  return (Object.keys(holdLabels) as OutcomeCategory[]).find(key => key !== "done" && data.reason.endsWith(` ${holdLabels[key]}`));
-}

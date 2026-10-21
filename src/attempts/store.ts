@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { requireRetainedStorage } from "../infra/storage.ts";
 import { z } from "zod";
 import { Database } from "../database.ts";
 import type { Task, TaskState } from "../tasks/store.ts";
@@ -29,6 +30,13 @@ export class AttemptStore {
   readonly database: Database;
   readonly contextId: string;
   constructor(database: Database, contextId: string) { this.database = database; this.contextId = nonempty.parse(contextId); }
+
+  async checkStorage(roots: string[]): Promise<void> { await requireRetainedStorage(this.database.path, roots); }
+  async forTask(taskId: string): Promise<AttemptRecord[]> { return this.list().filter(record => record.taskId === taskId); }
+  async findByRequest(requestId: string): Promise<AttemptRecord | undefined> {
+    const row = this.database.get("SELECT task, number FROM attempts WHERE context = ? AND request_id = ?", this.contextId, requestId);
+    return row && row.number !== null ? this.read({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.number) }) : undefined;
+  }
 
   async reserveAttempt(options: {
     taskId: string; requested: EntryData<"requested">; maximum: number; repo?: string | null;
@@ -118,6 +126,15 @@ export class AttemptStore {
       this.requireAttempt(ref);
       this.insert(ref, kind, data);
       if (kind === "halted" || kind === "operator_resolved") this.closeAttempt(ref);
+    });
+  }
+
+  async appendConfirmed<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>, confirmation: Confirmation, confirmedBy: string): Promise<void> {
+    await this.database.transaction(() => {
+      this.requireAttempt(ref);
+      this.confirm(ref, confirmation, confirmedBy);
+      this.insert(ref, kind, data);
+      if (kind === "operator_resolved") this.closeAttempt(ref);
     });
   }
 

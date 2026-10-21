@@ -5,10 +5,10 @@ import type { AttemptLog, AttemptRecord } from "./log.ts";
 import { isMissing, key, readJsonFile, writeOnce } from "../runtime/records.ts";
 import { summarise } from "../dispatch/dispatch.ts";
 
-const reservationSchema = z.strictObject({
+export const reservationSchema = z.strictObject({
   version: z.literal(1), requestId: z.string(), taskId: z.string(), reservedAt: z.iso.datetime(),
 });
-const archiveSchema = z.strictObject({
+export const archiveSchema = z.strictObject({
   version: z.literal(1), contextId: z.string(), taskId: z.string(), attempt: z.number().int().positive(),
   archivedAt: z.iso.datetime(), finishedAt: z.iso.datetime(), leaseId: z.string().optional(), pool: z.string().optional(),
   requestId: z.string().optional(), reservation: reservationSchema.optional(),

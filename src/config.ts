@@ -3,7 +3,7 @@ import { access, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { AttemptLog } from "./attempts/log.ts";
+import { AttemptStore } from "./attempts/store.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
 import { githubBranchProtection } from "./infra/github.ts";
@@ -32,6 +32,7 @@ export const configSchema = z.strictObject({
   runtimeRoot: absolute,
   databasePath: absolute.optional(),
   databaseRetryMs: z.number().int().nonnegative().default(5000),
+  maxAttempts: z.number().int().positive().default(1),
   tasks: z.strictObject({ repo: nonempty }),
   workspaces: z.strictObject({ repository: absolute, poolRoot: absolute, fetch: z.boolean().default(false) }),
   delivery: z.strictObject({
@@ -110,14 +111,16 @@ export async function createDependencies(config: Config, progress?: (message: st
       "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec",
     ]),
   });
+  const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
   return {
     contextId: config.contextId,
-    tasks: await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs }),
+    tasks,
+    maxAttempts: config.maxAttempts,
     workspaces: await TreehouseProvider.open({
       treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
       fetch: config.workspaces.fetch, environment: hostEnvironment,
     }),
-    attempts: new AttemptLog(config.runtimeRoot, config.contextId),
+    attempts: new AttemptStore(tasks.database, config.contextId),
     runtime,
     launch: (input, signal, onRequest) => worker.execute(input, signal, {
       ...(progress ? { onActivity: entry => progress(describeEntry(entry)) } : {}), ...(onRequest ? { onRequest } : {}),
