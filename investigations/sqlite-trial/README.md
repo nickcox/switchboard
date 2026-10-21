@@ -34,4 +34,12 @@ Recorded on 21 October 2026 on macOS 27.0.1 (Apple M1 Pro), Node.js 26.7.0, SQLi
 
 On macOS, `fullfsync` makes SQLite flush with `F_FULLFSYNC`, which forces the drive's own cache to storage, as Node's `FileHandle.sync()` already does for the current file-based records. Without it, `FULL` took 0.1 ms per transaction, because plain `fsync` on macOS does not force the drive's cache. On Linux and Windows the setting has no effect.
 
-Not yet run on Linux or Windows.
+In CI on 21 October 2026 ([run 39573208432](https://github.com/nickcox/switchboard/actions/runs/39573208432)), with Node.js 26.7.0, every check also passed on GitHub's `ubuntu-latest`, `windows-latest` and `macos-latest` runners, including the process killed while holding the write lock and the asynchronous retry:
+
+| Runner | 10,000 entries written | Read | One entry per transaction |
+| --- | --- | --- | --- |
+| `ubuntu-latest` | 20 ms | 15.9 ms | 0.27 ms |
+| `windows-latest` | 11 ms | 9.8 ms | 0.12 ms |
+| `macos-latest` | 13 ms | 8.4 ms | 0.78 ms |
+
+The runners' disks report a flush as complete sooner than the trial machine's, so their per-transaction times are not a guide to durability cost on a workstation.
