@@ -64,3 +64,6 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+
+      # ADR-0007's evidence that SQLite's locking and crash behaviour hold on each platform.
+      - run: node investigations/sqlite-trial/trial.ts

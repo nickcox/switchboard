@@ -10,7 +10,7 @@ From the repository root, using PowerShell:
 node investigations/sqlite-trial/trial.ts
 ```
 
-Each check prints `PASS` or `FAIL`, and the timings are printed last. The databases are created under the ignored `.investigation/sqlite-trial/` folder; nothing else is touched.
+Each check prints `PASS` or `FAIL`, and the timings are printed last. The exit status is 1 if any check failed. CI runs it on every platform after the test suite. The databases are created under the ignored `.investigation/sqlite-trial/` folder; nothing else is touched.
 
 ## What it checks
 

@@ -1,6 +1,6 @@
 // Trial for ADR-0007: Switchboard's tasks and attempt records in one SQLite database, through node:sqlite.
 // Run from the repository root: node investigations/sqlite-trial/trial.ts
-// Each check prints PASS or FAIL; the timings are printed last. Nothing outside .investigation/sqlite-trial/ is touched.
+// Each check prints PASS or FAIL, and the exit status is 1 if any failed; the timings are printed last. Nothing outside .investigation/sqlite-trial/ is touched.
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -116,7 +116,10 @@ if (mode === "hold-lock") {
 async function checks() {
   const root = resolve(".investigation/sqlite-trial");
   mkdirSync(root, { recursive: true });
-  const check = (label: string, ok: boolean, detail = "") => console.log(`${ok ? "PASS" : "FAIL"} ${label}${detail ? ` (${detail})` : ""}`);
+  const check = (label: string, ok: boolean, detail = "") => {
+    console.log(`${ok ? "PASS" : "FAIL"} ${label}${detail ? ` (${detail})` : ""}`);
+    if (!ok) process.exitCode = 1;
+  };
   const fresh = () => { const file = join(mkdtempSync(join(root, "case-")), "switchboard.db"); return { file, db: open(file) }; };
   const add = (db: DatabaseSync, id: string, repo = "fx", hold: string | null = null) =>
     db.prepare("INSERT INTO tasks (id, title, repo, position, hold_reason) VALUES (?, ?, ?, (SELECT coalesce(max(position), 0) + 1 FROM tasks), ?)").run(id, `Task ${id}`, repo, hold);
