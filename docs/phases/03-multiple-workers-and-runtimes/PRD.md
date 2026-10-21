@@ -26,7 +26,7 @@ Out of scope:
 - Running the background dispatcher as a system service (`launchd`, `systemd` or a Windows service).
 - Codex ACP, OpenCode and `pi-acp`. The [ACP runtime survey](acp-runtime-survey.md) ranks Codex ACP next, once a configuration that ignores the operator's own Codex settings has been verified.
 - Forges other than GitHub for the `pull-request` policy.
-- Rebasing or merging output branches automatically when parallel attempts change the same files.
+- Rebasing output branches without the operator's approval, merging them, or resolving conflicts between them.
 - Real-dispatch qualification on Linux and Windows, which stays a Phase 1 platform item. The suite must still pass in CI on both.
 
 Inputs: the [architecture's notes for later phases](../../architecture.md#notes-for-later-phases), the [ACP runtime survey](acp-runtime-survey.md), the [process-ownership survey](../02-reconciliation-and-recovery/process-ownership-survey.md), [ADR-0007](../../adr/0007-one-sqlite-database.md), and the fourth comparison with Pi Durable in [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md#continuing-comparison-with-pi-durable).
@@ -72,7 +72,15 @@ Each context has a maximum number of active attempts, `maxAttempts` in the conte
 
 The heartbeat is only ever a reason to block. A missing or unreadable observation never permits a dispatch.
 
-**Output branches that conflict.** Under `local-merge`, `finish` still refuses a change that is not a fast-forward. When two attempts change the same files, the operator rebases the second output branch, or discards it and dispatches again. Switchboard does not rebase.
+**When the target branch has moved.** Under `local-merge`, `finish` fast-forwards the target branch to the output branch, which is impossible once the target branch has commits the output branch lacks. With several attempts at once this is the normal case: by the time one attempt is finished, another has usually been integrated. Rebasing the output branch by hand does not help either, because the rebased branch no longer contains the result commit the worker recorded, so the attempt stops being retained. So:
+
+- `finish` refuses with a specific reason and next action when the target branch has moved, and changes nothing.
+- `finish --rebase` rebases the output branch onto the target branch in the attempt's workspace, then finishes as usual. It refuses, leaving the branch as it was, if the workspace has uncommitted or untracked files, if the commits to rebase are not exactly those between the attempt's starting commit and its result commit (or its accepted commit), or if the rebase stops on any conflict. Switchboard never resolves a conflict.
+- The rebased head becomes the attempt's accepted commit, recorded as a confirmation whose scope names the original commit, the rebased commit and the target commit it was rebased onto. The retention check, the fast-forward and the rest of `finish` then use the rebased head.
+- `--rebase` needs the operator's approval. The review covered the original commits, and a rebase without conflicts can still combine changes that break each other; Switchboard runs no tests. Phase 4 may let the supervisor rebase without approval where configuration allows it, for example once the result of CI on the rebased branch can be read from the forge.
+- `finish --rebase --dry-run` reports what would be rebased onto what. If the target branch moves again before the fast-forward, `finish --rebase` can be run again.
+
+Choosing between rebasing, dispatching the task again and discarding the work remains the operator's decision, or later the supervisor's.
 
 `status` shows the maximum, the number of active attempts and, when dispatch is blocked for the whole context, the attempt that blocks it.
 
@@ -166,4 +174,5 @@ Each feature is implemented, tested and recorded in the verification record befo
 8. The Claude Agent ACP qualification suite passes against the pinned versions, and a real dispatch with it completes on macOS with a validated result file and an observed process exit.
 9. A real end-to-end run with the background dispatcher and `maxAttempts` of 2 completes two attempts at once, and a real run under `pull-request` opens a pull request and, once it is merged, finishes the attempt.
 10. Tasks, attempts, reservations, requests and the dispatcher's records are in the database, with `synchronous = FULL`, and Switchboard no longer depends on tasks-axi. Every rule in the task-store contract has a test. The import refuses while any attempt is not settled, writes and validates a new file before activating it, can be run again, and leaves the old data unchanged; it is tested against a tasks-axi backlog and file-based records including a pruned attempt and a reservation without an attempt. A process killed while holding the write lock leaves no lock behind. The existing tests that pause a dispatch just before launch while another command resolves or discards its attempt pass against launch rows. `finish`, `discard` and dispatch's finalisation are composed from the shared operations and run through the step runner, and for each a test shows that `--dry-run`, with nothing changed in between, plans the steps a run then takes. No command calls `status` to find or classify an attempt, and the commands' own lists of states are replaced by the safety checks, each with tests of its permissions and refusals. Every confirmation is recorded in the one form, with its scope. `dispatch --once` runs through the dispatcher loop.
-11. The suite passes on macOS, and in CI on Linux and Windows.
+11. Under `local-merge`, `finish` on an attempt whose target branch has moved refuses with its specific reason and changes nothing. `finish --rebase` integrates a cleanly rebased output branch and records the original, rebased and target commits; it refuses without changing the branch on a conflict, on a dirty workspace, or when the branch has commits other than the attempt's own; and it is refused without the operator's approval.
+12. The suite passes on macOS, and in CI on Linux and Windows.
