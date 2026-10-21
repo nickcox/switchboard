@@ -18,7 +18,7 @@ A [trial](../../investigations/sqlite-trial/README.md) with Node's built-in `nod
 
 ## Decision
 
-Switchboard keeps its tasks and its own records in one SQLite database, opened with `node:sqlite`. The database is under the configured runtime root, outside every workspace, on a local filesystem. Every use of `node:sqlite` is in one module.
+Switchboard keeps its tasks and its own records in one SQLite database, opened with `node:sqlite`. The database is under the configured runtime root, outside every workspace, on a local filesystem. Every use of `node:sqlite` is behind one controlled storage boundary, which may span several source files. The boundary offers the transactional operations Switchboard needs, such as reserving an attempt, starting a reserved task, recording an outcome, claiming a request and archiving an attempt, not generic save and load functions that callers would have to combine correctly. Database constraints enforce uniqueness and references: request IDs within a context, attempt numbers within a task, sequence numbers within an attempt, one launch row per attempt, and one winner for a request's claim or withdrawal. Readiness, acceptance, retention and whether a lease can be returned stay in domain code.
 
 **What the database holds:**
 
@@ -26,6 +26,7 @@ Switchboard keeps its tasks and its own records in one SQLite database, opened w
 - **Attempts and their log entries,** with the same meaning as ADR-0006: an attempt's entries are inserted and never changed, and the log records which task, lease, session, commits and outcome belong together.
 - **Request-ID reservations,** unique within a context, including any whose attempt was never created.
 - **What a dispatcher records about the workers it supervises:** the launch binding, the dispatcher heartbeat, the observed exit or the operator's confirmation that the worker stopped, activity events, and stop and steer requests with their claims and results.
+- **The operator's confirmations,** each recorded in one form: the fact confirmed, the attempt, who confirmed it, when, and its scope, such as the commit for accepted output. A confirmation applies only to what it names.
 - **Launch rows and claims,** described below.
 
 **What stays a file:** only what the worker or Pi writes itself: the worker's result file, Pi's session logs and the worker's artefacts, in each attempt's runtime directory. The database records their paths.
@@ -62,6 +63,8 @@ A refused or uncertain acquisition therefore leaves the task queued, with the re
 - **What it moves:** every task with its state, hold, dependencies and order, read with tasks-axi's own parser used as a library; every attempt and its entries; launch bindings, observed exits and the operator's stop confirmations; request-ID reservations, including any without an attempt; the attempt numbers of pruned attempts and their archive summaries; and the paths of result files, Pi session logs and artefacts, which stay where they are.
 - **Into a new file, validated before use.** The import writes a new database file and compares it with the old records: task count and readiness, and each attempt's entries and state. Only then is the new file activated. Running the import again replaces a file that has not been activated.
 - **The old data is kept.** The import never changes or removes the old backlog or files. The operator removes them once satisfied.
+
+- **Old records are converted once.** The import converts older forms to the current schema, for example writing an explicit outcome category where an older `task_recorded` entry has only a hold reason, and normalising old paths and runtime records. The rest of Switchboard reads only the current schema, so no compatibility code remains outside the import.
 
 After the import, Switchboard no longer depends on tasks-axi or on `@toon-format/toon`.
 
