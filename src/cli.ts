@@ -8,6 +8,7 @@ import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
 import { resolveLeaseReturned, resolveStopped } from "./dispatch/resolve.ts";
 import { discard, finish } from "./dispatch/finish.ts";
+import { leaseOfTask } from "./dispatch/select.ts";
 import { prune } from "./dispatch/prune.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
@@ -20,11 +21,13 @@ const usage = `Usage:
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
-  switchboard finish --lease <lease-id> --no-processes [--accept-output] [--dry-run] [--json] [--config <path>]
-  switchboard discard --lease <lease-id> --confirm --no-processes [--note <text>] [--dry-run] [--json] [--config <path>]
-  switchboard watch --lease <lease-id> [--no-follow] [--json] [--config <path>]
-  switchboard stop --lease <lease-id> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
-  switchboard steer --lease <lease-id> [--after] [--as <sender>] [--wait <seconds>] [--json] [--config <path>] "<message>"
+  switchboard finish <attempt> --no-processes [--accept-output] [--dry-run] [--json] [--config <path>]
+  switchboard discard <attempt> --confirm --no-processes [--note <text>] [--dry-run] [--json] [--config <path>]
+  switchboard watch <attempt> [--no-follow] [--json] [--config <path>]
+  switchboard stop <attempt> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
+  switchboard steer <attempt> [--after] [--as <sender>] [--wait <seconds>] [--json] [--config <path>] "<message>"
+
+<attempt> is --lease <lease-id>, or --task <task-id> [--attempt <n>] for a task's attempt (default: its latest).
 
 dispatch --once --dry-run reports the selected task and delivery contract without changing anything or launching a worker.
 
@@ -80,10 +83,11 @@ async function main(argv: string[]): Promise<number> {
     return values.help ? 0 : 2;
   }
   // An option that a command does not use is refused, so that, for example, `stop --dry-run` cannot send a real stop.
+  const selectors = ["lease", "task", "attempt"];
   const allowed: Record<string, string[]> = {
     dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "note"],
-    watch: ["lease", "no-follow"], stop: ["lease", "as", "wait"], steer: ["lease", "after", "as", "wait"],
-    prune: ["older-than", "dry-run"], finish: ["lease", "no-processes", "accept-output", "dry-run"], discard: ["lease", "no-processes", "confirm", "note", "dry-run"],
+    watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
+    prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
   };
   const misplaced = Object.keys(values).filter(name => !["json", "config", ...allowed[command]!].includes(name));
   if (misplaced.length > 0) {
@@ -118,12 +122,13 @@ async function main(argv: string[]): Promise<number> {
     console.error("resolve requires exactly one of --lease or --task; --task requires --lease-returned, and --attempt must be a positive integer with --task.\n\n" + usage);
     return 2;
   }
-  if (values.attempt !== undefined && command !== "resolve") {
-    console.error("--attempt is only supported by resolve --task --lease-returned.");
-    return 2;
-  }
-  if (["watch", "stop", "steer", "finish", "discard"].includes(command) && !values.lease) {
-    console.error(`${command} requires --lease <lease-id>; \`switchboard status\` shows each attempt's lease ID.\n\n${usage}`);
+  const byAttempt = ["watch", "stop", "steer", "finish", "discard"].includes(command);
+  if (byAttempt && (
+    (values.lease !== undefined) === (values.task !== undefined)
+    || values.lease === "" || values.task === ""
+    || (values.attempt !== undefined && (!values.task || !Number.isSafeInteger(attempt) || attempt! <= 0))
+  )) {
+    console.error(`${command} requires exactly one of --lease <lease-id> or --task <task-id>, and --attempt must be a positive integer with --task; \`switchboard status\` shows each attempt's task and lease ID.\n\n${usage}`);
     return 2;
   }
   const configPath = resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json");
@@ -133,6 +138,17 @@ async function main(argv: string[]): Promise<number> {
   } catch (error) {
     console.error(`Configuration error (${configPath}): ${error instanceof Error ? error.message : String(error)}`);
     return 2;
+  }
+
+  // A task's attempt is acted on through its lease, so --task is resolved to the attempt's lease ID first.
+  let leaseId = values.lease;
+  if (byAttempt && values.task !== undefined) {
+    const selected = await leaseOfTask(deps, values.task, attempt);
+    if ("refused" in selected) {
+      console.log(values.json ? JSON.stringify(selected.refused, null, 2) : describe(selected.refused));
+      return 1;
+    }
+    leaseId = selected.leaseId;
   }
 
   if (command === "prune") {
@@ -149,7 +165,7 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "stop" || command === "steer") {
     const value = await requestControl(deps, {
-      leaseId: values.lease!, kind: command === "stop" ? "stop" : values.after ? "follow_up" : "steer",
+      leaseId: leaseId!, kind: command === "stop" ? "stop" : values.after ? "follow_up" : "steer",
       ...(command === "steer" ? { message: positionals[1]! } : {}),
       sender: values.as ?? `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`, waitMs: wait * 1000,
     });
@@ -161,15 +177,15 @@ async function main(argv: string[]): Promise<number> {
     const controller = new AbortController();
     process.once("SIGINT", () => controller.abort());
     const outcome = await watch(deps, {
-      leaseId: values.lease!, follow: values["no-follow"] !== true, signal: controller.signal,
+      leaseId: leaseId!, follow: values["no-follow"] !== true, signal: controller.signal,
       print: entry => console.log(values.json ? JSON.stringify(entry) : describeEntry(entry)),
     });
-    if (!outcome.found) console.error(`No runtime record for lease ${values.lease} in this context. The worker may not have been launched.`);
+    if (!outcome.found) console.error(`No runtime record for lease ${leaseId} in this context. The worker may not have been launched.`);
     return outcome.found ? 0 : 1;
   }
 
   if (command === "finish" || command === "discard") {
-    const common = { leaseId: values.lease!, noProcesses: values["no-processes"] === true, dryRun: values["dry-run"] === true };
+    const common = { leaseId: leaseId!, noProcesses: values["no-processes"] === true, dryRun: values["dry-run"] === true };
     const value = command === "finish" ? await finish(deps, { ...common, acceptOutput: values["accept-output"] === true })
       : await discard(deps, { ...common, confirm: values.confirm === true, ...(values.note ? { note: values.note } : {}) });
     console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));

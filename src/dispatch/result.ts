@@ -31,7 +31,6 @@ export type Stage = "preflight" | "select" | "acquire" | "start" | "launch" | "f
 export const nextActions = {
   none: "Nothing further is needed.",
   dispatch_again: "Run dispatch again when there is ready work.",
-  review_branch: "Review the output branch, integrate it, then record the task as done in the task store. Return the lease after confirming the retention check.",
   inspect_attempt: "Inspect the attempt's task, lease and runtime records, resolve them, then dispatch again.",
   stop_worker: "Confirm the worker has stopped, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
   confirm_lease_returned: "The lease is in a workspace pool the provider no longer lists, for example because the repository's origin remote was added or changed. Inspect the workspace at its recorded path and return the lease through Treehouse by that path, then run `switchboard resolve --lease <lease-id> --lease-returned`. If no lease ID was learned, use `switchboard resolve --task <task-id> --lease-returned` instead, with `--attempt <n>` if it is not the task's latest attempt.",
@@ -39,7 +38,6 @@ export const nextActions = {
   confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>` on macOS or Linux, or Resource Monitor on Windows, then run resolve again with --worker-stopped.",
   apply_task_outcome: "Read the task and the workspace, record the task outcome in the task store, and return the lease once the work is retained.",
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",
-  return_lease: "The task is done. Return the lease through Treehouse once the retention check is confirmed and the workspace is no longer needed.",
   fix_configuration: "Check the configuration and that the task store, Treehouse and runtime are reachable.",
   choose_another_task: "Choose a ready task without an earlier lease, or resolve the earlier attempt first.",
   complete_task_update: "Read the task in the task store and apply the outcome recorded in the attempt log.",

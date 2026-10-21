@@ -131,6 +131,45 @@ test("resolve validates task and lease selectors before loading configuration", 
   }
 });
 
+test("finish, discard, watch, stop and steer validate their attempt selectors before loading configuration", () => {
+  const invalid = [
+    [], ["--lease", "lease-1", "--task", "cli-a1"], ["--lease", "lease-1", "--attempt", "1"], ["--task", ""], ["--lease", ""],
+    ...["0", "-1", "1.5", "bad"].map(n => ["--task", "cli-a1", "--attempt", n]),
+  ];
+  for (const command of ["finish", "discard", "watch", "stop", "steer"]) {
+    for (const args of invalid) {
+      const result = spawnSync(process.execPath, [cli, command, ...args, ...(command === "steer" ? ["message"] : []), "--config", "missing.json"], { encoding: "utf8" });
+      assert.equal(result.status, 2, `${command} ${args.join(" ")}: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /Configuration error/);
+    }
+  }
+});
+
+test("finish, discard, watch, stop and steer select a task's attempt by its lease", () => {
+  const { switchboard } = fixture();
+  const lease = JSON.parse(switchboard(["dispatch", "--once", "--json"]).stdout).attempt.leaseId as string;
+  for (const args of [["--task", "cli-a1"], ["--task", "cli-a1", "--attempt", "1"]]) {
+    const watched = switchboard(["watch", ...args, "--no-follow", "--json"]);
+    assert.equal(watched.status, 0, watched.stderr);
+    for (const command of ["finish", "discard"]) {
+      const planned = switchboard([command, ...args, "--dry-run", "--json"]);
+      assert.equal(planned.status, 0, planned.stdout);
+      assert.equal(JSON.parse(planned.stdout).reason, "planned");
+    }
+  }
+  // No dispatcher owns the finished worker, so the request is not delivered, but it was addressed to the attempt's lease.
+  for (const args of [["stop"], ["steer", "message"]]) {
+    const sent = JSON.parse(switchboard([...args.slice(0, 1), "--task", "cli-a1", ...args.slice(1), "--wait", "0.2", "--json"]).stdout);
+    assert.notEqual(sent.stage, "select", JSON.stringify(sent));
+    assert.equal(sent.attempt?.leaseId, lease, JSON.stringify(sent));
+  }
+  for (const args of [["--task", "cli-a1", "--attempt", "2"], ["--task", "unknown-z9"]]) {
+    const refused = switchboard(["finish", ...args, "--dry-run", "--json"]);
+    assert.equal(refused.status, 1);
+    assert.equal(JSON.parse(refused.stdout).stage, "select");
+  }
+});
+
 test("dispatch --once --dry-run supports JSON, explicit selection and readable output", () => {
   const { switchboard } = fixture();
   const preview = switchboard(["dispatch", "--once", "--dry-run", "--task", "cli-a1", "--json"]);
