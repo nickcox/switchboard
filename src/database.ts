@@ -39,14 +39,15 @@ export class Database {
     const deadline = Date.now() + retryMs;
     let db: DatabaseSync;
     for (;;) {
-      const attempt = new DatabaseSync(path, { timeout: 0 });
+      let attempt: DatabaseSync | undefined;
       try {
+        attempt = new DatabaseSync(path, { timeout: 0 });
         attempt.exec("PRAGMA journal_mode = WAL");
         attempt.exec("PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA checkpoint_fullfsync = ON; PRAGMA foreign_keys = ON");
         db = attempt;
         break;
       } catch (error) {
-        attempt.close();
+        attempt?.close();
         if (!(busy(error) || truncateFailed(error))) throw error;
         if (Date.now() >= deadline) throw new TaskStoreError("busy", `The database could not be opened: ${String(error).split("\n")[0]}`);
         await sleep(20);

@@ -111,15 +111,16 @@ export async function createDependencies(config: Config, progress?: (message: st
       "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec",
     ]),
   });
+  const workspaces = await TreehouseProvider.open({
+    treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
+    fetch: config.workspaces.fetch, environment: hostEnvironment,
+  });
   const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
   return {
     contextId: config.contextId,
     tasks,
     maxAttempts: config.maxAttempts,
-    workspaces: await TreehouseProvider.open({
-      treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
-      fetch: config.workspaces.fetch, environment: hostEnvironment,
-    }),
+    workspaces,
     attempts: new AttemptStore(tasks.database, config.contextId),
     runtime,
     launch: (input, signal, onRequest) => worker.execute(input, signal, {

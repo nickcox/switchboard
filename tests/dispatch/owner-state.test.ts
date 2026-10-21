@@ -8,7 +8,7 @@ import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts"
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { finish } from "../../src/dispatch/finish.ts";
 import type { TaskStore } from "../../src/tasks/store.ts";
-import { fixture, task } from "./fixture.ts";
+import { attemptsWith, fixture, task } from "./fixture.ts";
 
 // Phase 1 review findings 9–15 (docs/phases/01-basic-dispatch/review-2026-10-20.md).
 
@@ -28,16 +28,14 @@ const workspacesWith = (f: Fixture, overrides: Partial<Dependencies["workspaces"
 const delivery = { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code" as const, acceptance: "review_or_integration" as const, requiredEvidence: [], requiredDeliverables: [] };
 
 for (const done of [true, false]) {
-  test(`finding 9: an uncertain ${done ? "done" : "hold"} update that left out its evidence is not confirmed`, async () => {
+  test(`a failing ${done ? "done" : "hold"} entry rolls back the task outcome`, async () => {
     const f = await fixture({ tasks: [task("note-a1")], scenario: "commit-result", acceptance: done ? "independent_deliverable" : "review_or_integration" });
-    // The state change applies, but the note or body carrying the attempt's evidence does not.
-    const tasks = tasksWith(f, {
-      recordDone: async id => { f.tasksCli(["done", id]); throw new Error("note not written"); },
-      recordHold: async (id, hold) => { f.tasksCli(["hold", id, "--reason", hold.reason]); f.tasksCli(["reopen", id]); throw new Error("body not written"); },
-    });
-    const outcome = await dispatchOnce({ ...f.deps, tasks });
+    await f.tasks.database.transaction(() => f.tasks.database.run(`CREATE TRIGGER fail_outcome BEFORE INSERT ON attempt_entries
+      WHEN json_extract(NEW.entry, '$.kind') = 'task_recorded' BEGIN SELECT RAISE(ABORT, 'injected failure'); END`));
+    const outcome = await dispatchOnce(f.deps);
     assert.equal(outcome.reason, "stopped");
-    assert.equal(outcome.nextAction.code, "complete_task_update");
+    assert.equal(outcome.nextAction.code, "inspect_attempt");
+    assert.equal((await f.tasks.read("note-a1"))!.state, "in_flight");
     assert.ok(!(await f.deps.attempts.forTask("note-a1"))[0]!.entries.some(e => e.kind === "task_recorded"));
   });
 }
@@ -63,12 +61,12 @@ test("finding 11: an observed child exit is not overridden by a missing worker_f
   const sessionId = randomUUID();
   const ref = await f.deps.attempts.create("exit-a1", {}, 0);
   await f.deps.attempts.append(ref, "leased", { leaseId: "lease-exit", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
-  await f.deps.attempts.append(ref, "task_started", {});
+  await f.deps.attempts.startReservedTask(ref);
   await f.deps.attempts.append(ref, "launched", { sessionId });
   const reserved = await f.runtime.reserve({ identity: { contextId: "fixture-context", taskId: "exit-a1", leaseId: "lease-exit", sessionId }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
   await f.runtime.recordChildExit(reserved, { started: true, code: 0, signal: null });
 
-  const next = await dispatchOnce(f.deps);
+  const next = await dispatchOnce({ ...f.deps, maxAttempts: 2 });
   assert.equal(next.attempt?.taskId, "next-b1", JSON.stringify(next));
   assert.equal((await dispatchOnce(f.deps, { taskId: "exit-a1", dryRun: true })).reason, "refused");
 });
@@ -112,12 +110,7 @@ test("finding 14: a missing Pi entrypoint is refused when the configuration is l
 
 test("finding 15: an attempt-log failure after acquiring a lease gives a structured stopped result", async () => {
   const f = await fixture({ tasks: [task("journal-a1")], scenario: "commit-result" });
-  const attempts = Object.assign(Object.create(Object.getPrototypeOf(f.deps.attempts)), f.deps.attempts, {
-    append: async (...args: Parameters<Dependencies["attempts"]["append"]>) => {
-      if (args[1] === "task_started") throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
-      return f.deps.attempts.append(...args);
-    },
-  });
+  const attempts = attemptsWith(f, { startReservedTask: async () => { throw Object.assign(new Error("disk full"), { code: "ENOSPC" }); } });
   const outcome = await dispatchOnce({ ...f.deps, attempts });
   assert.equal(outcome.reason, "stopped");
   assert.equal(outcome.lease, "preserved");

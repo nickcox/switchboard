@@ -5,7 +5,7 @@ import { AttemptStore, AttemptStoreError } from "../attempts/store.ts";
 import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
 import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
 import type { RuntimeRecord, RuntimeRecords } from "../runtime/records.ts";
-import { type Task, type TaskStore } from "../tasks/store.ts";
+import { TaskStoreError, type Task, type TaskStore } from "../tasks/store.ts";
 import { WorkspaceError, type Allocation, type Lease, type WorkspaceProvider } from "../workspaces/provider.ts";
 import type { RetentionRequest, RetentionResult } from "../workspaces/retention.ts";
 import type { PolicySources } from "./policy.ts";
@@ -185,6 +185,7 @@ export async function dispatchOnce(
   }
 
   if (options.dryRun) {
+    if (deps.attempts.activeCount() >= (deps.maxAttempts ?? 1)) return refusal("select", "inspect_attempt", "The context's attempt maximum has been reached", { ...observed, reason: "capacity" });
     return result({
       ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
       selection: { taskId, contract: { name: contractName, ...contract } }, nextAction: "none",
@@ -199,7 +200,7 @@ export async function dispatchOnce(
     ref = reservation.ref;
     if (!reservation.created) return existingRequest(deps, deps.attempts.read(ref));
   } catch (error) {
-    if (error instanceof AttemptStoreError) return refusal("select", "inspect_attempt", error.message, { ...observed, reason: error.reason });
+    if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", "inspect_attempt", error.message, { ...observed, reason: error.reason });
     return refusal("select", "fix_configuration", `The attempt store could not be written: ${message(error)}`, observed);
   }
   const summary: AttemptSummary = { contextId: deps.contextId, taskId, attempt: ref.attempt, ...(options.requestId ? { requestId: options.requestId } : {}) };
@@ -409,7 +410,14 @@ export function leaseReturned(attempt: AttemptRecord): boolean {
 
 /** Whether the operator recorded this confirmation for the attempt with `resolve`. */
 export function resolvedBy(attempt: AttemptRecord, action: "worker_stopped" | "lease_returned"): boolean {
-  return attempt.entries.some(e => e.kind === "operator_resolved" && e.data.action === action);
+  const summary = summarise(attempt);
+  return (attempt.confirmations ?? []).some(c => {
+    if (c.fact === "worker_stopped" && action === "worker_stopped") return c.scope.leaseId === summary.leaseId &&
+      (c.scope.sessionId === undefined || c.scope.sessionId === summary.sessionId);
+    if (c.fact === "lease_returned" && action === "lease_returned") return (summary.leaseId === undefined || c.scope.leaseId === summary.leaseId) &&
+      (summary.outputBranch === undefined || c.scope.outputBranch === summary.outputBranch);
+    return false;
+  });
 }
 
 export function summarise(attempt: AttemptRecord): AttemptSummary {

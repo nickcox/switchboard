@@ -25,6 +25,15 @@ export async function requireSettled(config: Config): Promise<void> {
   const attempts = await new AttemptLog(config.runtimeRoot, config.contextId).list();
   if (attempts.some(isOpen)) throw new TaskStoreError("rejected", "Import requires every attempt to be settled");
   const runtime = await new RuntimeRecords(config.runtimeRoot).discover(config.contextId);
+  for (const attempt of attempts) {
+    const leaseId = attempt.entries.find(e => e.kind === "leased")?.data.leaseId;
+    const observedExit = runtime.some(r => r.binding.input.identity.leaseId === leaseId && r.child.status !== "unknown");
+    const confirmed = attempt.entries.some(e => e.kind === "operator_resolved" && e.data.action === "worker_stopped");
+    const finished = attempt.entries.some(e => e.kind === "worker_finished" && e.data.status !== "unresolved");
+    if (attempt.entries.some(e => e.kind === "launched") && !observedExit && !confirmed && !finished) {
+      throw new TaskStoreError("rejected", "Import refuses a worker that may still be running");
+    }
+  }
   for (const record of runtime) {
     const stopped = record.child.status !== "unknown" || attempts.some(a => a.entries.some(e => e.kind === "operator_resolved" && e.data.action === "worker_stopped")
       && a.entries.some(e => e.kind === "leased" && e.data.leaseId === record.binding.input.identity.leaseId));

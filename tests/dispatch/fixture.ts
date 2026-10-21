@@ -87,4 +87,8 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   return { dir, deps, tasks, run, runtime, config, environment, tasksCli };
 }
 
+export function attemptsWith(f: { deps: Dependencies }, overrides: Partial<AttemptStore>): AttemptStore {
+  return Object.assign(Object.create(Object.getPrototypeOf(f.deps.attempts)), f.deps.attempts, overrides);
+}
+
 export const task = (id: string, body = "Implement the fixture change") => ["add", id, `Task ${id}`, "--repo", "fixture", "--body", body];

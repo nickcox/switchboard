@@ -201,6 +201,26 @@ test("confirmation records name their attempt, person, time and exact scope", as
   } finally { tasks.close(); }
 });
 
+test("confirmations authorise only the exact operation and lease return they name", async () => {
+  const { tasks, attempts } = await fixture();
+  try {
+    const { ref } = await reserve(attempts);
+    const returnId = "3c33c74e-3214-440e-af1a-d2ab26d336f7";
+    const otherReturn = "b861179a-8303-47af-adb8-d3cac4e08b10";
+    await assert.rejects(attempts.appendConfirmed(ref, "output_accepted", { commit: "a".repeat(40) },
+      { fact: "output_accepted", scope: { commit: "b".repeat(40) } }, "operator"));
+    assert.deepEqual(attempts.confirmations(ref), []);
+    await attempts.appendConfirmed(ref, "lease_return_started", { leaseId: "lease", by: "finish", returnId },
+      { fact: "no_processes", scope: { leaseId: "lease", returnId } }, "operator");
+    await assert.rejects(attempts.append(ref, "lease_returned", { leaseId: "lease", by: "finish", returnId: otherReturn }));
+    await assert.rejects(attempts.append(ref, "lease_returned", { leaseId: "another-lease", by: "finish", returnId }));
+    await assert.rejects(attempts.appendConfirmed(ref, "lease_return_started", { leaseId: "lease", by: "finish", returnId },
+      { fact: "no_processes", scope: { leaseId: "lease", returnId } }, "operator"));
+    assert.equal(attempts.confirmations(ref).length, 1);
+    await attempts.append(ref, "lease_returned", { leaseId: "lease", by: "finish", returnId });
+  } finally { tasks.close(); }
+});
+
 test("database constraints enforce request, attempt and entry uniqueness and entries cannot be changed", async () => {
   const { tasks, attempts } = await fixture();
   const db = tasks.database;

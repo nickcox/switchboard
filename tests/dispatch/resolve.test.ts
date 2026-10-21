@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
+import { dispatchOnce, inspect } from "../../src/dispatch/dispatch.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { fixture, task } from "./fixture.ts";
@@ -12,11 +12,14 @@ import { startHeartbeat } from "../../src/runtime/heartbeat.ts";
 const delivery = { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code" as const, acceptance: "review_or_integration" as const, requiredEvidence: [], requiredDeliverables: [] };
 
 for (const heartbeat of ["missing", "stale"]) test(`a runtime record with a ${heartbeat} heartbeat blocks dispatch until the operator confirms the worker stopped`, async () => {
-  const { deps, runtime, dir } = await fixture({ tasks: [task("next-a1")], scenario: "commit-result" });
+  const { deps, runtime, dir } = await fixture({ tasks: [task("next-a1"), ["add", "earlier-a1", "Earlier", "--repo", "other"]], scenario: "commit-result" });
   const workspace = join(dir, "orphan-workspace");
   mkdirSync(workspace);
   // As left by a dispatcher that died after launching a worker.
   const reserved = await runtime.reserve({ identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-orphan", sessionId: randomUUID() }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  const ref = await deps.attempts.create("earlier-a1", {}, 0);
+  await deps.attempts.append(ref, "leased", { leaseId: "lease-orphan", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
+  await deps.attempts.append(ref, "launched", { sessionId: reserved.binding.input.identity.sessionId });
   if (heartbeat === "stale") writeFileSync(join(reserved.directory, "heartbeat.json"), JSON.stringify({ version: 1, at: new Date(Date.now() - 60_000).toISOString(), pid: process.pid }));
 
   const view = await status(deps);
@@ -31,8 +34,10 @@ for (const heartbeat of ["missing", "stale"]) test(`a runtime record with a ${he
   const resolved = await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true, note: "Checked with lsof" });
   assert.equal(resolved.reason, "resolved");
   assert.equal(resolved.nextAction.code, "apply_task_outcome");
-  const record = (await runtime.discover("fixture-context")).find(r => r.binding.input.identity.leaseId === "lease-orphan");
-  assert.equal(record?.child.status, "operator_confirmed_stopped");
+  const observed = await inspect(deps);
+  assert.ok(!("failed" in observed));
+  assert.equal(observed.runtime.find(r => r.binding.input.identity.leaseId === "lease-orphan")?.child.status, "operator_confirmed_stopped");
+  assert.equal(deps.attempts.confirmations(ref)[0]!.fact, "worker_stopped");
 
   assert.equal((await dispatchOnce(deps)).nextAction.code, "review_then_finish");
   assert.equal((await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true })).nextAction.code, "none");
@@ -61,8 +66,7 @@ test("an attempt logged as launched but never finished is resolved through the a
   // As left by a dispatcher that died after logging the launch but before the runtime wrote its binding.
   const ref = await deps.attempts.create("logged-a1", {}, 0);
   await deps.attempts.append(ref, "leased", { leaseId: "lease-logged", workspace: "/nowhere", baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
-  await deps.tasks.start("logged-a1");
-  await deps.attempts.append(ref, "task_started", {});
+  await deps.attempts.startReservedTask(ref);
   await deps.attempts.append(ref, "launched", { sessionId: randomUUID() });
   assert.equal((await dispatchOnce(deps)).nextAction.code, "stop_worker");
 

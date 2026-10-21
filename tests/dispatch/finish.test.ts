@@ -9,7 +9,7 @@ import { discard, finish } from "../../src/dispatch/finish.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import type { LeaseIdentity } from "../../src/workspaces/provider.ts";
-import { fixture, task } from "./fixture.ts";
+import { attemptsWith, fixture, task } from "./fixture.ts";
 
 // Phase 2 PRD: finishing an attempt and returning a lease.
 
@@ -36,7 +36,13 @@ for (const policy of ["manual", "local-merge"] as const) {
     const outcome = await finish(deps, { leaseId, noProcesses: true, acceptOutput: true });
     assert.equal(outcome.reason, "finished", outcome.detail ?? "");
     const record = (await f.deps.attempts.forTask("finish-a1"))[0]!;
-    assert.deepEqual(record.entries.find(e => e.kind === "output_accepted")?.data, { commit, acceptedBy: "operator" });
+    assert.deepEqual(record.entries.find(e => e.kind === "output_accepted")?.data, { commit });
+    const accepted = record.confirmations!.find(c => c.fact === "output_accepted")!;
+    assert.deepEqual(accepted.scope, { commit });
+    assert.match(accepted.confirmedBy, /^operator:/);
+    assert.ok(Number.isFinite(Date.parse(accepted.confirmedAt)));
+    const returning = record.entries.find(e => e.kind === "lease_return_started")!;
+    assert.deepEqual(record.confirmations!.find(c => c.fact === "no_processes")!.scope, { leaseId, returnId: returning.data.returnId });
     assert.equal((await f.tasks.read("finish-a1"))?.state, "done");
     assert.equal(await listed(f, leaseId), false);
     if (policy === "local-merge") assert.equal(f.run(["rev-parse", "main"]), commit);
@@ -96,10 +102,10 @@ for (const fault of ["missing branch", "no new commits", "untracked", "uncommitt
 test("accepted output survives a partial failure without needing a worker result on the next run", async () => {
   const { f, leaseId } = await failedOutput();
   let failures = 1;
-  const deps = { ...f.deps, policy: localMerge(f), tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
+  const deps = { ...f.deps, policy: localMerge(f), attempts: attemptsWith(f, {
+    finishAttempt: async (...args) => {
       if (failures-- > 0) throw new Error("Task store unavailable");
-      return f.tasks.recordDone(...args);
+      return f.deps.attempts.finishAttempt(...args);
     },
   }) };
   assert.equal((await finish(deps, { leaseId, noProcesses: true, acceptOutput: true })).reason, "stopped");
@@ -121,8 +127,8 @@ test("accept-output refuses an output branch with no commits beyond its starting
 test("accept-output applies only to a held attempt, not a stopped one with commits on its branch", async () => {
   const f = await fixture({ tasks: [task("finish-a1")] });
   const { TaskStoreError } = await import("../../src/tasks/store.ts");
-  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { start: async () => { throw new TaskStoreError("rejected", "refused"); } });
-  const outcome = await dispatchOnce({ ...f.deps, tasks });
+  const attempts = attemptsWith(f, { startReservedTask: async () => { throw new TaskStoreError("rejected", "refused"); } });
+  const outcome = await dispatchOnce({ ...f.deps, attempts });
   const leaseId = outcome.attempt!.leaseId!, workspace = outcome.attempt!.workspace!;
   const git = (...args: string[]) => execFileSync(onPath("git"), ["-C", workspace, ...args], { env: f.environment });
   writeFileSync(join(workspace, "work.txt"), "committed\n");
@@ -137,10 +143,10 @@ test("accept-output applies only to a held attempt, not a stopped one with commi
 test("a later finish integrates the accepted commit, not commits added to the branch since", async () => {
   const { f, leaseId, workspace } = await failedOutput();
   let failures = 1;
-  const deps = { ...f.deps, policy: localMerge(f), tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
+  const deps = { ...f.deps, policy: localMerge(f), attempts: attemptsWith(f, {
+    finishAttempt: async (...args) => {
       if (failures-- > 0) throw new Error("Task store unavailable");
-      return f.tasks.recordDone(...args);
+      return f.deps.attempts.finishAttempt(...args);
     },
   }) };
   // The first run fails before integrating, so local-merge has nothing recorded yet.
@@ -157,10 +163,10 @@ test("a later finish integrates the accepted commit, not commits added to the br
 
 test("accepted output is checked again immediately before the lease is returned", async () => {
   const { f, leaseId, workspace } = await failedOutput();
-  const deps = { ...f.deps, tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
+  const deps = { ...f.deps, attempts: attemptsWith(f, {
+    finishAttempt: async (...args) => {
       writeFileSync(join(workspace, "late.txt"), "written while finishing\n");
-      return f.tasks.recordDone(...args);
+      return f.deps.attempts.finishAttempt(...args);
     },
   }) };
   const outcome = await finish(deps, { leaseId, noProcesses: true, acceptOutput: true });
@@ -316,10 +322,10 @@ for (const pause of ["before", "after"] as const) {
     const reached = new Promise<void>(resolve => { entered = resolve; });
     let release!: () => void;
     const barrier = new Promise<void>(resolve => { release = resolve; });
-    const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-      start: async (id: string) => {
+    const attempts = attemptsWith(f, {
+      startReservedTask: async ref => {
         if (pause === "before") { entered(); await barrier; }
-        const started = await f.tasks.start(id);
+        const started = await f.deps.attempts.startReservedTask(ref);
         if (pause === "after") { entered(); await barrier; }
         return started;
       },
@@ -329,7 +335,7 @@ for (const pause of ["before", "after"] as const) {
       try { const report = await f.deps.launch(...args); launched = "started"; return report; }
       catch (error) { launched = "refused"; throw error; }
     };
-    const dispatching = dispatchOnce({ ...f.deps, tasks, launch });
+    const dispatching = dispatchOnce({ ...f.deps, attempts, launch });
     await reached;
     const leaseId = (await status(f.deps)).attempts.find(a => a.attempt.taskId === "finish-a1")!.attempt.leaseId!;
     const discarded = await discard(f.deps, { leaseId, noProcesses: true, confirm: true });
@@ -344,13 +350,13 @@ for (const pause of ["before", "after"] as const) {
 
 test("finding 2: an ordinary finish checks retention again immediately before returning the lease", async () => {
   const { f, leaseId, branch } = await reviewed();
-  const deps = { ...f.deps, tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
+  const deps = { ...f.deps, attempts: attemptsWith(f, {
+    finishAttempt: async (...args) => {
       // Point the output branch at a commit with the same tree but not the reported commit: the workspace stays clean,
       // so Treehouse would return it, but the reported work is no longer on the branch.
       const tree = f.run(["rev-parse", `${branch}^{tree}`]);
       f.run(["update-ref", `refs/heads/${branch}`, f.run(["commit-tree", tree, "-m", "Same tree, different commit"])]);
-      return f.tasks.recordDone(...args);
+      return f.deps.attempts.finishAttempt(...args);
     },
   }) };
   const outcome = await finish(deps, { leaseId, noProcesses: true });
@@ -435,11 +441,10 @@ test("finding 8: a not-retained attempt whose output is still not retained is re
   assert.equal(await listed(f, leaseId), true);
 });
 
-test("finding 9: after the operator completes an unconfirmed task update, the attempt can be finished", async () => {
+test("after the operator records reviewed work as done, the attempt can be finished", async () => {
   const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
-  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { recordHold: async () => { throw new Error("lost"); } });
-  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
-  assert.equal(await state(f.deps), "task_update_unconfirmed");
+  const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "awaiting_review");
   await f.tasks.recordDone("finish-a1", "Completed by the operator");
   const outcome = await finish(f.deps, { leaseId, noProcesses: true });
   assert.equal(outcome.reason, "finished", outcome.detail ?? "");
@@ -449,8 +454,8 @@ test("finding 9: after the operator completes an unconfirmed task update, the at
 test("finding 11: discard holds a task that was queued and not held", async () => {
   const f = await fixture({ tasks: [task("finish-a1")] });
   const { TaskStoreError } = await import("../../src/tasks/store.ts");
-  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { start: async () => { throw new TaskStoreError("rejected", "refused"); } });
-  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
+  const attempts = attemptsWith(f, { startReservedTask: async () => { throw new TaskStoreError("rejected", "refused"); } });
+  const leaseId = (await dispatchOnce({ ...f.deps, attempts })).attempt!.leaseId!;
   assert.equal(await state(f.deps), "stopped");
   assert.equal((await f.tasks.read("finish-a1"))?.held, false);
   assert.equal((await discard(f.deps, { leaseId, noProcesses: true, confirm: true })).reason, "discarded");
@@ -459,11 +464,10 @@ test("finding 11: discard holds a task that was queued and not held", async () =
   assert.deepEqual(await f.tasks.ready(), []);
 });
 
-test("finding 9: an unconfirmed task update from a worker that held its task is not finished as done", async () => {
+test("an outcome from a worker that held its task is not finished as done", async () => {
   const f = await fixture({ tasks: [task("finish-a1")], scenario: "hold" });
-  const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { recordHold: async () => { throw new Error("lost"); } });
-  const leaseId = (await dispatchOnce({ ...f.deps, tasks })).attempt!.leaseId!;
-  assert.equal(await state(f.deps), "task_update_unconfirmed");
+  const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "held");
   assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "refused");
   assert.notEqual((await f.tasks.read("finish-a1"))?.state, "done");
   assert.equal(await listed(f, leaseId), true);

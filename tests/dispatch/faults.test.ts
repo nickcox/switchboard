@@ -4,7 +4,7 @@ import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts"
 import type { Reason } from "../../src/dispatch/result.ts";
 import { TaskStoreError, type TaskStore } from "../../src/tasks/store.ts";
 import { WorkspaceError } from "../../src/workspaces/provider.ts";
-import { fixture, task } from "./fixture.ts";
+import { attemptsWith, fixture, task } from "./fixture.ts";
 
 // Each case injects one fault at one boundary of the Phase 1 PRD failure compensation table, using the real
 // adapters. Every case is checked against the same invariants; each also states its expected category.
@@ -40,11 +40,11 @@ const cases: Case[] = [
       return allocation;
     }) },
   { name: "in-flight update refused", reason: "stopped", launches: 0,
-    inject: f => tasksWith(f, { start: () => Promise.reject(new TaskStoreError("rejected", "refused")) }) },
-  { name: "in-flight update applied but its acknowledgement lost", scenario: "commit-result", reason: "held", launches: 1,
-    inject: f => tasksWith(f, { start: async id => { await f.deps.tasks.start(id); throw unknown(); } }) },
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: () => Promise.reject(new TaskStoreError("rejected", "refused")) }) }) },
+  { name: "start transaction committed before the caller stopped", scenario: "commit-result", reason: "stopped", launches: 0,
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: async ref => { await f.deps.attempts.startReservedTask(ref); throw unknown(); } }) }) },
   { name: "in-flight update unknown and not applied", reason: "stopped", launches: 0,
-    inject: f => tasksWith(f, { start: () => Promise.reject(unknown()) }) },
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: () => Promise.reject(unknown()) }) }) },
   { name: "launch fails before a worker exists", reason: "held", launches: 1,
     inject: f => ({ ...f.deps, launch: () => Promise.reject(new Error("executable missing")) }) },
   { name: "worker exit never observed", reason: "stopped", launches: 1,
@@ -52,10 +52,10 @@ const cases: Case[] = [
       ...await f.runtime.reserve(input), status: "unresolved", childExit: undefined, workerTermination: "unverified",
       reason: "termination_unknown", detail: undefined, stderrTail: "", result: undefined,
     }) }) },
-  { name: "final update applied but its acknowledgement lost", scenario: "commit-result", reason: "held", launches: 1,
-    inject: f => tasksWith(f, { recordHold: async (id, hold) => { await f.deps.tasks.recordHold(id, hold); throw unknown(); } }) },
+  { name: "outcome transaction committed before the caller stopped", scenario: "commit-result", reason: "stopped", launches: 1,
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { recordOutcome: async (...args) => { await f.deps.attempts.recordOutcome(...args); throw unknown(); } }) }) },
   { name: "final update not applied", scenario: "commit-result", reason: "stopped", launches: 1,
-    inject: f => tasksWith(f, { recordHold: () => Promise.reject(unknown()) }) },
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { recordOutcome: () => Promise.reject(unknown()) }) }) },
 ];
 
 for (const c of cases) {
@@ -80,6 +80,10 @@ for (const c of cases) {
     assert.ok(leases.length <= 1, "never holds two leases for a task");
     assert.equal(outcome.lease, leases.length > 0 ? "preserved" : "none", "reports the lease accurately and never returns it");
     assert.notEqual((await f.tasks.read("fault-a1"))?.state, "done", "never records done without a confirmed completion");
+    if (c.name === "lease refused" || c.name === "lease created but its acknowledgement lost") {
+      assert.equal((await f.tasks.read("fault-a1"))!.state, "queued", "lease failure never starts the task");
+      assert.equal((await f.tasks.read("fault-a1"))!.held, false);
+    }
     assert.equal(outcome.ok, false);
     assert.ok(outcome.detail, "every stop or hold says why");
     const attempt = (await f.deps.attempts.forTask("fault-a1"))[0];

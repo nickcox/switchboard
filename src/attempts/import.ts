@@ -6,17 +6,17 @@ import { databasePath, type Config } from "../config.ts";
 import { Database } from "../database.ts";
 import { isOpen, summarise } from "../dispatch/dispatch.ts";
 import { requireRetainedStorage } from "../infra/storage.ts";
-import { key, readJsonFile } from "../runtime/records.ts";
+import { key, readJsonFile, RuntimeRecords } from "../runtime/records.ts";
 import { requireSettled } from "../tasks/import.ts";
 import { TaskStoreError } from "../tasks/store.ts";
-import { AttemptLog, holdLabels, parseAttemptEntry, type AttemptRecord, type OutcomeCategory } from "./log.ts";
-import { archiveSchema, reservationSchema } from "./prune.ts";
+import { AttemptLog, holdLabels, parseAttemptEntry, type AttemptEntry, type AttemptRecord, type OutcomeCategory } from "./log.ts";
+import { archiveSchema, reservationSchema, type ArchivedAttempt } from "./prune.ts";
 import { AttemptStore, type Confirmation, type ConfirmationRecord } from "./store.ts";
 
 const names = async (path: string) => readdir(path).catch(error => { if (error.code === "ENOENT") return []; throw error; });
 
 /** Compatibility belongs only here. The old files are never rewritten. */
-function convert(record: AttemptRecord) {
+function convert(record: AttemptRecord, branchPrefix: string) {
   const confirmations: ConfirmationRecord[] = [];
   const summary = summarise(record);
   let returnId: string | undefined;
@@ -41,21 +41,22 @@ function convert(record: AttemptRecord) {
         leaseId: summary.leaseId!, ...(summary.sessionId ? { sessionId: summary.sessionId } : {}),
       } });
       else confirm({ fact: "lease_returned", scope: {
-        outputBranch: summary.outputBranch ?? `switchboard/${record.taskId}/attempt-${record.attempt}`,
+        outputBranch: summary.outputBranch ?? `${branchPrefix}${record.taskId}/attempt-${record.attempt}`,
         ...(summary.leaseId ? { leaseId: summary.leaseId } : {}),
       } });
     }
     if (old.kind === "lease_return_started" || old.kind === "lease_returned") {
-      if (old.kind === "lease_return_started" || returnId === undefined) returnId = randomUUID();
+      const newReturn = old.kind === "lease_return_started" || returnId === undefined;
+      if (newReturn) returnId = randomUUID();
       data.returnId = returnId;
-      if (data.noProcessesConfirmedBy !== undefined && old.kind === "lease_return_started") {
-        confirm({ fact: "no_processes", scope: { leaseId: String(data.leaseId), returnId } }, String(data.noProcessesConfirmedBy));
+      if (data.noProcessesConfirmedBy !== undefined && newReturn) {
+        confirm({ fact: "no_processes", scope: { leaseId: String(data.leaseId), returnId: returnId! } }, String(data.noProcessesConfirmedBy));
       }
       delete data.noProcessesConfirmedBy;
     }
     return parseAttemptEntry({ ...old, data });
   });
-  return { record: { ...record, entries }, confirmations };
+  return { record: { ...record, entries, confirmations }, confirmations };
 }
 
 async function snapshot(config: Config, database: Database) {
@@ -63,7 +64,17 @@ async function snapshot(config: Config, database: Database) {
   const context = config.contextId;
   const legacy = new AttemptLog(root, context);
   const original = await legacy.list();
-  const records = original.map(convert);
+  const records = original.map(record => convert(record, config.delivery.branchPrefix));
+  for (const runtime of await new RuntimeRecords(root).discover(context)) {
+    if (runtime.child.status !== "operator_confirmed_stopped") continue;
+    const identity = runtime.binding.input.identity;
+    const target = records.find(r => r.record.taskId === identity.taskId && summarise(r.record).leaseId === identity.leaseId);
+    if (!target) throw new Error("A runtime stop confirmation has no attempt");
+    if (!target.confirmations.some(c => c.fact === "worker_stopped")) target.confirmations.push({
+      contextId: context, taskId: target.record.taskId, attempt: target.record.attempt, fact: "worker_stopped",
+      scope: { leaseId: identity.leaseId, sessionId: identity.sessionId }, confirmedBy: "operator", confirmedAt: runtime.child.confirmedAt,
+    });
+  }
   const reservations = await Promise.all((await names(join(root, "request-ids", key(context)))).filter(name => !name.startsWith(".")).map(async name => {
     const value = reservationSchema.parse(await readJsonFile(join(root, "request-ids", key(context), name)));
     if (name !== `${key(value.requestId)}.json`) throw new Error("Reservation identity does not match its location");
@@ -79,17 +90,26 @@ async function snapshot(config: Config, database: Database) {
       if (match) numbers.push({ taskId, attempt: Number(match[1] ?? match[2]) });
     }
   }
-  const archives = [];
+  const originalArchives: ArchivedAttempt[] = [];
+  const archives: (ArchivedAttempt & { confirmations: ConfirmationRecord[] })[] = [];
   for (const task of await names(join(root, "archive", key(context)))) {
     for (const name of await names(join(root, "archive", key(context), task))) {
       if (name.startsWith(".")) continue;
       const value = archiveSchema.parse(await readJsonFile(join(root, "archive", key(context), task, name)));
       if (value.contextId !== context || key(value.taskId) !== task || name !== `${value.attempt}.json`) throw new Error("Archive identity does not match its location");
-      archives.push(value);
+      originalArchives.push(value);
+      const facts = value.summary.facts as Record<string, { recordedAt: string; data: Record<string, unknown> }> | undefined;
+      const converted = convert({ contextId: context, taskId: value.taskId, attempt: value.attempt,
+        entries: Object.entries(facts ?? {}).map(([kind, fact], sequence) => ({ version: 1, contextId: context, taskId: value.taskId,
+          attempt: value.attempt, sequence, kind, recordedAt: fact.recordedAt, data: fact.data })) as AttemptEntry[],
+      }, config.delivery.branchPrefix);
+      archives.push({ ...value, confirmations: converted.confirmations, summary: { ...value.summary,
+        ...(facts ? { facts: Object.fromEntries(converted.record.entries.map(entry => [entry.kind, { recordedAt: entry.recordedAt, data: entry.data }])) } : {}),
+      } });
       if (!numbers.some(n => n.taskId === value.taskId && n.attempt === value.attempt)) numbers.push({ taskId: value.taskId, attempt: value.attempt });
     }
   }
-  return { original, records, reservations, numbers, archives };
+  return { original, records, reservations, numbers, archives, originalArchives };
 }
 
 /** Offline migration into a validated VACUUM copy of the database that already owns the tasks. */
@@ -107,6 +127,8 @@ export async function importAttempts(config: Config) {
       throw new TaskStoreError("rejected", "The database already has attempts or reservations");
     }
     const before = await snapshot(config, source);
+    const tasks = source.all("SELECT * FROM tasks ORDER BY position");
+    const dependencies = source.all("SELECT * FROM dependencies ORDER BY task, blocker");
     await source.vacuumInto(staging);
     copy = await Database.open(staging, config.databaseRetryMs);
     const store = new AttemptStore(copy, config.contextId);
@@ -140,12 +162,17 @@ export async function importAttempts(config: Config) {
       [...before.numbers].sort((a, b) => (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : a.attempt - b.attempt)));
     for (const reservation of before.reservations) assert.partialDeepStrictEqual(copy.get("SELECT task, reserved_at FROM attempts WHERE context = ? AND request_id = ?", config.contextId, reservation.requestId), { task: reservation.taskId, reserved_at: reservation.reservedAt });
     for (const archive of before.archives) assert.deepEqual(JSON.parse(String(copy.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", config.contextId, archive.taskId, archive.attempt)!.summary)), archive);
+    assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position"), tasks, "Task fields changed in the copy");
+    assert.deepEqual(copy.all("SELECT * FROM dependencies ORDER BY task, blocker"), dependencies, "Dependencies changed in the copy");
     await requireSettled(config);
+    assert.deepEqual(source.all("SELECT * FROM tasks ORDER BY position"), tasks, "Tasks changed during import");
+    assert.deepEqual(source.all("SELECT * FROM dependencies ORDER BY task, blocker"), dependencies, "Dependencies changed during import");
+    if (source.get("SELECT 1 FROM attempts LIMIT 1") || source.get("SELECT 1 FROM attempt_numbers LIMIT 1")) throw new TaskStoreError("rejected", "Attempts were created during import");
     // Compare the files again without generating new conversion IDs.
     const after = await snapshot(config, source);
     assert.deepEqual(after.reservations, before.reservations);
     assert.deepEqual(after.numbers, before.numbers);
-    assert.deepEqual(after.archives, before.archives);
+    assert.deepEqual(after.originalArchives, before.originalArchives);
     assert.deepEqual(after.original, before.original, "Attempt files changed during import");
     copy.checkpoint();
     copy.close();

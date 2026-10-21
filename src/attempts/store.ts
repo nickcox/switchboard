@@ -33,6 +33,9 @@ export class AttemptStore {
 
   async checkStorage(roots: string[]): Promise<void> { await requireRetainedStorage(this.database.path, roots); }
   async forTask(taskId: string): Promise<AttemptRecord[]> { return this.list().filter(record => record.taskId === taskId); }
+  activeCount(): number {
+    return Number(this.database.get("SELECT count(*) AS n FROM attempts WHERE context = ? AND number IS NOT NULL AND closed = 0", this.contextId)!.n);
+  }
   async findByRequest(requestId: string): Promise<AttemptRecord | undefined> {
     const row = this.database.get("SELECT task, number FROM attempts WHERE context = ? AND request_id = ?", this.contextId, requestId);
     return row && row.number !== null ? this.read({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.number) }) : undefined;
@@ -52,7 +55,7 @@ export class AttemptStore {
           return { created: false, ref: { contextId: this.contextId, taskId: String(existing.task), attempt: Number(existing.number) } };
         }
       }
-      const count = Number(this.database.get("SELECT count(*) AS n FROM attempts WHERE context = ? AND number IS NOT NULL AND closed = 0", this.contextId)!.n);
+      const count = this.activeCount();
       if (count >= options.maximum) throw new AttemptStoreError("capacity", "The context's attempt maximum has been reached");
       const task = this.task(options.taskId);
       if (!task || (options.repo != null && task.repo !== options.repo) || task.state !== "queued" || task.held || task.blocked ||
@@ -121,17 +124,31 @@ export class AttemptStore {
   }
 
   async append<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>): Promise<void> {
-    if (["requested", "task_started", "task_recorded", "discarded"].includes(kind)) throw new Error("Use the transactional task/attempt operation");
+    if (["requested", "task_started", "task_recorded", "discarded", "output_accepted", "lease_return_started", "operator_resolved"].includes(kind)) throw new Error("Use the transactional task/attempt operation");
     await this.database.transaction(() => {
       this.requireAttempt(ref);
+      if (kind === "lease_returned") {
+        const value = data as EntryData<"lease_returned">;
+        const intended = this.read(ref).entries.some(e => e.kind === "lease_return_started" && e.data.leaseId === value.leaseId && e.data.returnId === value.returnId && e.data.by === value.by);
+        const confirmed = this.confirmations(ref).some(c => c.fact === "no_processes" && c.scope.leaseId === value.leaseId && c.scope.returnId === value.returnId);
+        if (!intended || !confirmed) throw new Error("Lease return has no matching intent and confirmation");
+      }
       this.insert(ref, kind, data);
-      if (kind === "halted" || kind === "operator_resolved") this.closeAttempt(ref);
+      if (kind === "halted") this.closeAttempt(ref);
     });
   }
 
-  async appendConfirmed<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>, confirmation: Confirmation, confirmedBy: string): Promise<void> {
+  async appendConfirmed<K extends "output_accepted" | "lease_return_started" | "operator_resolved">(ref: AttemptRef, kind: K, data: EntryData<K>, confirmation: Confirmation, confirmedBy: string): Promise<void> {
     await this.database.transaction(() => {
       this.requireAttempt(ref);
+      const payload = data as Record<string, unknown>;
+      const matches = kind === "output_accepted" ? confirmation.fact === "output_accepted" && confirmation.scope.commit === payload.commit
+        : kind === "lease_return_started" ? confirmation.fact === "no_processes" && confirmation.scope.leaseId === payload.leaseId && confirmation.scope.returnId === payload.returnId
+        : confirmation.fact === payload.action;
+      if (!matches) throw new Error("The confirmation does not name this operation");
+      if (kind === "lease_return_started" && this.read(ref).entries.some(e => e.kind === "lease_return_started" && e.data.returnId === payload.returnId)) {
+        throw new Error("Each lease return requires its own confirmation");
+      }
       this.confirm(ref, confirmation, confirmedBy);
       this.insert(ref, kind, data);
       if (kind === "operator_resolved") this.closeAttempt(ref);
@@ -157,7 +174,7 @@ export class AttemptStore {
       ref.contextId, ref.taskId, ref.attempt).map(row => parseAttemptEntry(JSON.parse(String(row.entry))));
     if (entries.length === 0 || entries[0]!.kind !== "requested" || entries.some((entry, sequence) => entry.sequence !== sequence ||
       (sequence > 0 && entry.kind === "requested") || entry.contextId !== ref.contextId || entry.taskId !== ref.taskId || entry.attempt !== ref.attempt)) throw new Error("Inconsistent attempt entries");
-    return { ...identity(ref), entries };
+    return { ...identity(ref), entries, confirmations: this.confirmations(ref) };
   }
 
   list(): AttemptRecord[] {
@@ -169,7 +186,9 @@ export class AttemptStore {
     if (directories.some(directory => !isAbsolute(directory))) throw new Error("Deletion paths must be absolute");
     await this.database.transaction(() => {
       const current = this.read(expected);
-      if (JSON.stringify(current.entries) !== JSON.stringify(expected.entries)) throw new AttemptStoreError("attempt_changed", "The attempt changed after the archive was planned");
+      if (JSON.stringify(current.entries) !== JSON.stringify(expected.entries) || JSON.stringify(current.confirmations) !== JSON.stringify(expected.confirmations)) {
+        throw new AttemptStoreError("attempt_changed", "The attempt changed after the archive was planned");
+      }
       const row = this.requireAttempt(expected);
       if (!row.closed) throw new AttemptStoreError("attempt_changed", "An open attempt cannot be archived");
       const reservation = this.database.get("SELECT request_id, reserved_at FROM attempts WHERE context = ? AND task = ? AND number = ?",
@@ -179,7 +198,11 @@ export class AttemptStore {
         archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected),
         ...(reservation.request_id === null ? {} : { reservation: { requestId: reservation.request_id, reservedAt: reservation.reserved_at } }),
       };
-      this.database.run("INSERT INTO archived_attempts VALUES(?,?,?,?)", expected.contextId, expected.taskId, expected.attempt, JSON.stringify(archive));
+      const existing = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", expected.contextId, expected.taskId, expected.attempt);
+      if (existing) {
+        const previous = JSON.parse(String(existing.summary)) as { finishedAt: string };
+        if (previous.finishedAt !== archive.finishedAt) throw new AttemptStoreError("attempt_changed", "The attempt changed after its earlier archive");
+      } else this.database.run("INSERT INTO archived_attempts VALUES(?,?,?,?)", expected.contextId, expected.taskId, expected.attempt, JSON.stringify(archive));
       for (const directory of new Set(directories)) this.database.run("INSERT INTO pending_attempt_deletions VALUES(?,?,?,?)", expected.contextId, expected.taskId, expected.attempt, directory);
       this.database.run("DELETE FROM attempts WHERE context = ? AND task = ? AND number = ?", expected.contextId, expected.taskId, expected.attempt);
     });

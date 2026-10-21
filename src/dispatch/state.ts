@@ -6,7 +6,7 @@ import type { NextAction } from "./result.ts";
  * PRD, attempt states). It is the single source of an attempt's next action and of whether a command may change it.
  */
 export type AttemptState =
-  | "running" | "possibly_running" | "unfinished" | "lease_in_other_pool" | "task_update_unconfirmed"
+  | "running" | "possibly_running" | "unfinished" | "lease_in_other_pool"
   | "not_retained" | "awaiting_review" | "awaiting_finish" | "held" | "stopped" | "finished" | "unknown";
 
 export type TaskView = { state: string; held: boolean; holdReason: string | null } | "missing" | "unreadable";
@@ -29,7 +29,6 @@ const nextActionFor: Record<AttemptState, NextAction> = {
   possibly_running: "stop_worker",
   unfinished: "confirm_attempt_stopped",
   lease_in_other_pool: "confirm_lease_returned",
-  task_update_unconfirmed: "complete_task_update",
   not_retained: "fix_or_discard",
   awaiting_review: "review_then_finish",
   awaiting_finish: "finish_attempt",
@@ -53,7 +52,6 @@ function stateOf(input: StateInput): AttemptState {
   if (input.unfinished && !input.leaseHeld) return "unfinished";
   const entries = input.record.entries;
   const recorded = [...entries].reverse().find(e => e.kind === "task_recorded");
-  if (!recorded && entries.some(e => e.kind === "halted" && e.data.stage === "finalise")) return "task_update_unconfirmed";
   const task = input.task;
   if (!input.leaseHeld) return task.state === "in_flight" ? "stopped" : "finished";
   if (!recorded) return "stopped";

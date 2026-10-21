@@ -2,6 +2,8 @@ import { inspect, isOpen, resolvedBy, summarise, type Dependencies } from "./dis
 import { result, type DispatchResult } from "./result.ts";
 import { dispatcherRunning } from "../runtime/heartbeat.ts";
 
+const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
+
 /**
  * Operator-only: records that a worker with no observed exit has stopped, so its attempt stops blocking dispatch.
  * Without `confirmed` it only reports what each owner holds. It never changes the task or the lease; the operator
@@ -37,23 +39,16 @@ export async function resolveStopped(
   }
   if (!options.confirmed) return result({ ok: false, reason: "refused", ...common, detail: "Resolving needs the operator's confirmation that the worker has stopped", nextAction: "confirm_worker_stopped" });
 
+  if (!attempt) return result({ ok: false, reason: "refused", ...common, detail: "The runtime has no attempt to record this confirmation against; restore or import its attempt records first", nextAction: "inspect_attempt" });
+
   // A launch logged without runtime records may still be about to start its worker. Claim its runtime directory
   // first: the dispatcher reserves that directory exclusively before starting a worker, so it can then no longer start
   // one. If the directory already exists, the dispatcher is starting the worker now.
   if (!runtime && attempt?.entries.some(e => e.kind === "launched") && !await deps.runtime.fence(deps.contextId, options.leaseId)) {
     return result({ ok: false, reason: "refused", ...common, detail: "The dispatcher is starting this worker now; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
   }
-  if (attempt) {
-    await deps.attempts.recordConfirmation(attempt, { fact: "worker_stopped", scope: {
-      leaseId: options.leaseId, ...(runtime ? { sessionId: runtime.binding.input.identity.sessionId } : {}),
-    } }, "operator");
-  }
-  if (attempt) {
-    const kinds = attempt.entries.map(e => e.kind);
-    if (kinds.includes("launched") && !kinds.includes("worker_finished") && !resolvedBy(attempt, "worker_stopped")) {
-      await deps.attempts.append(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) });
-    }
-  }
+  await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) },
+    { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(summary.sessionId ? { sessionId: summary.sessionId } : {}) } }, operator);
   return result({ ok: true, reason: "resolved", ...common, nextAction: "apply_task_outcome" });
 }
 
@@ -98,6 +93,6 @@ export async function resolveLeaseReturned(
     return result({ ok: false, reason: "refused", ...common, lease: held ? "preserved" : "none", detail: "This lease is in the workspace pool Switchboard currently lists, so its state is read from the provider and needs no confirmation", nextAction: "none" });
   }
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "lease_returned", ...(options.note ? { note: options.note } : {}) },
-    { fact: "lease_returned", scope: { outputBranch: summarise(attempt).outputBranch ?? `${deps.delivery.branchPrefix}${attempt.taskId}/attempt-${attempt.attempt}`, ...(leaseId ? { leaseId } : {}) } }, "operator");
+    { fact: "lease_returned", scope: { outputBranch: summarise(attempt).outputBranch ?? `${deps.delivery.branchPrefix}${attempt.taskId}/attempt-${attempt.attempt}`, ...(leaseId ? { leaseId } : {}) } }, operator);
   return result({ ok: true, reason: "resolved", ...common, lease: "unknown", nextAction: "dispatch_again" });
 }

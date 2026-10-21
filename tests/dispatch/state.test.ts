@@ -10,7 +10,7 @@ import { classify } from "../../src/dispatch/state.ts";
 import type { AttemptRecord } from "../../src/attempts/log.ts";
 import { WorkspaceError } from "../../src/workspaces/provider.ts";
 import type { TaskStore } from "../../src/tasks/store.ts";
-import { fixture, task } from "./fixture.ts";
+import { attemptsWith, fixture, task } from "./fixture.ts";
 
 // Phase 2 PRD, attempt states: each state built from real owners, with its next action and whether it may be changed.
 
@@ -97,7 +97,7 @@ test("held: an attempt held for review whose hold reason was changed since is he
   expect(await only(f.deps, "changed-a1"), "held", "inspect_attempt", true);
 });
 
-test("an outcome recorded before categories is classified from the hold reason Switchboard recorded", () => {
+test("only an explicit category classifies a recorded outcome", () => {
   // The classification is pure, so build the attempt as an earlier version recorded it, without a category.
   const entry = (sequence: number, kind: string, data: Record<string, unknown>) => ({
     version: 1 as const, contextId: "c", taskId: "legacy-a1", attempt: 1, sequence, kind, recordedAt: new Date().toISOString(), data,
@@ -105,6 +105,8 @@ test("an outcome recorded before categories is classified from the hold reason S
   const reason = "Switchboard attempt 1 review required";
   const record = { contextId: "c", taskId: "legacy-a1", attempt: 1, entries: [entry(0, "requested", {}), entry(1, "task_recorded", { outcome: "hold", reason })] } as unknown as AttemptRecord;
   const input = { record, possiblyRunning: false, dispatcherRunning: false, leaseHeld: true, leaseInOtherPool: false, unfinished: false };
+  assert.equal(classify({ ...input, task: { state: "queued", held: true, holdReason: reason } }).state, "held");
+  record.entries[1]!.data.category = "review_required";
   assert.equal(classify({ ...input, task: { state: "queued", held: true, holdReason: reason } }).state, "awaiting_review");
   // The task store's current hold reason is never read for the category: an edited reason makes the attempt held.
   assert.equal(classify({ ...input, task: { state: "queued", held: true, holdReason: "Switchboard attempt 1 failed" } }).state, "held");
@@ -123,15 +125,15 @@ test("lease in another pool: the origin remote changed after the lease was acqui
   expect(await only(f.deps, "moved-a1"), "lease_in_other_pool", "confirm_lease_returned", true);
 });
 
-test("task update unconfirmed: the final task update could not be confirmed", async () => {
+test("a failed outcome transaction leaves the attempt stopped, not half recorded", async () => {
   const f = await fixture({ tasks: [task("update-a1")], scenario: "commit-result" });
-  await dispatchOnce({ ...f.deps, tasks: tasksWith(f, { recordHold: async () => { throw new Error("lost"); } }) });
-  expect(await only(f.deps, "update-a1"), "task_update_unconfirmed", "complete_task_update", true);
+  await dispatchOnce({ ...f.deps, attempts: attemptsWith(f, { recordOutcome: async () => { throw new Error("lost"); } }) });
+  expect(await only(f.deps, "update-a1"), "stopped", "inspect_attempt", true);
 });
 
 test("stopped: an attempt that halted after leasing, with its lease preserved", async () => {
   const f = await fixture({ tasks: [task("halt-a1")] });
-  await dispatchOnce({ ...f.deps, tasks: tasksWith(f, { start: async () => { throw new (await import("../../src/tasks/store.ts")).TaskStoreError("rejected", "refused"); } }) });
+  await dispatchOnce({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: async () => { throw new Error("refused"); } }) });
   expect(await only(f.deps, "halt-a1"), "stopped", "inspect_attempt", true);
 });
 

@@ -27,8 +27,7 @@ test("completed code work is held for review, retained on its branch, and the le
   assert.equal(held?.state, "queued");
   assert.equal(held?.held, true);
   assert.equal(held?.holdReason, "Switchboard attempt 1 review required");
-  assert.ok(held?.body.startsWith("Implement the fixture change\n\n## Switchboard attempt 1"));
-  assert.ok(held?.body.includes(outcome.attempt!.resultCommit!));
+  assert.equal(held?.body, "Implement the fixture change");
   const entries = (await deps.attempts.forTask("work-a1"))[0]!.entries.map(e => e.kind);
   assert.deepEqual(entries, ["requested", "leased", "task_started", "launched", "worker_finished", "retention_checked", "task_recorded"]);
   assert.equal((await deps.workspaces.leases()).filter(l => l.holder === "work-a1").length, 1);
@@ -60,7 +59,7 @@ test("a worker with no valid result is held as failed", async () => {
   assert.equal((await tasks.read("fail-a1"))?.holdReason, "Switchboard attempt 1 failed");
 });
 
-test("a provider error reaches the dispatch report, attempt log and task hold body", async () => {
+test("a provider error reaches the dispatch report and attempt log without changing instructions", async () => {
   const { deps, tasks } = await fixture({ tasks: [task("error-a1")], scenario: "model-error" });
   const outcome = await dispatchOnce(deps);
   const detail = "The model request ended with stop reason error: WebSocket error";
@@ -73,7 +72,7 @@ test("a provider error reaches the dispatch report, attempt log and task hold bo
   assert.equal(finished.data.detail, detail);
   const held = await tasks.read("error-a1");
   assert.equal(held?.held, true);
-  assert.ok(held?.body.includes(detail));
+  assert.equal(held?.body, "Implement the fixture change");
 });
 
 test("a held task is not dispatched again, and naming it explicitly is refused because of its lease", async () => {
@@ -135,6 +134,6 @@ for (const done of [true, false]) {
     assert.equal(outcome.reason, done ? "done" : "held", String(outcome.detail).slice(0, 1500));
     const recorded = await f.tasks.read("long-a1");
     assert.equal(recorded?.state, done ? "done" : "queued");
-    if (!done) assert.ok(recorded!.body.includes("s".repeat(1000)));
+    assert.equal(recorded!.body, "Implement the fixture change");
   });
 }

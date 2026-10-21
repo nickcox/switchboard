@@ -123,7 +123,7 @@ test("finding 4: a stop confirmation made before the worker starts prevents the 
   assert.equal(resolved.reason, "resolved");
   assert.equal(runtime.length, 0, "no worker may start after its stop was confirmed");
   assert.ok(!(outcome instanceof Error), String(outcome));
-  assert.equal(outcome.worker?.status, "not_started");
+  assert.equal(outcome.reason, "stopped");
 });
 
 test("finding 4: a stop confirmation is refused while the dispatcher is claiming the worker's runtime records", async () => {

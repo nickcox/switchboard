@@ -11,13 +11,14 @@ const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 /** Why a task outcome was recorded. The attempt's state is classified from this, never from the task store's text. */
 export const outcomeCategories = ["done", "review_required", "not_retained", "held_by_worker", "failed", "interrupted", "over_budget"] as const;
 export type OutcomeCategory = (typeof outcomeCategories)[number];
-/** The end of each hold reason dispatch writes, by category. Entries written before categories are read with it. */
+/** Hold reason labels written by dispatch. Only import uses them to interpret older entries. */
 export const holdLabels: Record<OutcomeCategory, string> = {
   done: "done", review_required: "review required", not_retained: "not retained", held_by_worker: "held by worker",
   failed: "failed", interrupted: "interrupted", over_budget: "over budget",
 };
 
 /** Entry payloads by kind. New kinds are added as dispatch stages are implemented. */
+// Legacy file schemas also accept old confirmation fields. parseAttemptEntry enforces the database form.
 const entrySchemas = {
   requested: z.strictObject({
     requestId: nonempty.optional(),
@@ -43,7 +44,7 @@ const entrySchemas = {
     outcome: z.enum(["done", "hold"]),
     /** The hold reason written to the task store, or why the task was recorded as done. */
     reason: nonempty,
-    /** Absent in entries written before it was recorded; those are classified from `reason`. */
+    /** The legacy file reader permits absence; import supplies it before database activation. */
     category: z.enum(outcomeCategories).optional(),
     /** False when a newer operator decision kept the task unchanged. */
     applied: z.boolean().optional(),
@@ -78,7 +79,11 @@ const entrySchemas = {
   lease_returned: z.strictObject({ leaseId: nonempty, by: z.enum(["finish", "discard"]), returnId: z.uuid().optional(), noProcessesConfirmedBy: z.literal("operator").optional() }),
 } as const;
 export type EntryKind = keyof typeof entrySchemas;
-export type EntryData<K extends EntryKind> = z.infer<(typeof entrySchemas)[K]>;
+type LegacyEntryData<K extends EntryKind> = z.infer<(typeof entrySchemas)[K]>;
+export type EntryData<K extends EntryKind> = K extends "output_accepted" ? Omit<LegacyEntryData<K>, "acceptedBy">
+  : K extends "lease_return_started" | "lease_returned" ? Omit<LegacyEntryData<K>, "noProcessesConfirmedBy" | "returnId"> & { returnId: string }
+  : K extends "task_recorded" ? LegacyEntryData<K> & { category: OutcomeCategory }
+  : LegacyEntryData<K>;
 
 const entryKinds = Object.keys(entrySchemas) as [EntryKind, ...EntryKind[]];
 const envelopeSchema = z.strictObject({
@@ -95,11 +100,15 @@ export type AttemptEntry = z.infer<typeof envelopeSchema>;
 
 export function parseAttemptEntry(value: unknown): AttemptEntry {
   const entry = envelopeSchema.parse(value);
-  return { ...entry, data: entrySchemas[entry.kind].parse(entry.data) };
+  const data = entrySchemas[entry.kind].parse(entry.data);
+  if ("acceptedBy" in data || "noProcessesConfirmedBy" in data) throw new Error("Legacy confirmations require import");
+  if (entry.kind === "task_recorded" && !("category" in data && data.category !== undefined)) throw new Error("Outcomes require a category");
+  if ((entry.kind === "lease_return_started" || entry.kind === "lease_returned") && !("returnId" in data && data.returnId !== undefined)) throw new Error("Lease returns require a scoped confirmation ID");
+  return { ...entry, data };
 }
 
 export type AttemptRef = { contextId: string; taskId: string; attempt: number };
-export type AttemptRecord = AttemptRef & { entries: AttemptEntry[] };
+export type AttemptRecord = AttemptRef & { entries: AttemptEntry[]; confirmations?: import("./store.ts").ConfirmationRecord[] };
 
 /** Another invocation created this attempt first. Nothing was written by the caller. */
 export class AttemptConflict extends Error {
@@ -170,7 +179,7 @@ export class AttemptLog {
     return ref;
   }
 
-  async append<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>): Promise<void> {
+  async append<K extends EntryKind>(ref: AttemptRef, kind: K, data: LegacyEntryData<K>): Promise<void> {
     const record = await this.read(ref);
     await this.write(ref, record.entries.length, kind, data);
   }
@@ -247,7 +256,7 @@ export class AttemptLog {
     return (await this.list()).find(record => record.entries[0]?.data.requestId === requestId);
   }
 
-  private async write<K extends EntryKind>(ref: AttemptRef, sequence: number, kind: K, data: EntryData<K>, into?: string) {
+  private async write<K extends EntryKind>(ref: AttemptRef, sequence: number, kind: K, data: LegacyEntryData<K>, into?: string) {
     const entry = envelopeSchema.parse({
       // Only the identity fields: callers may pass a full AttemptRecord as the reference.
       version: 1, contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt, sequence, kind, recordedAt: new Date().toISOString(),

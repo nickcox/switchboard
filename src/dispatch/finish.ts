@@ -18,6 +18,7 @@ import { status, type AttemptStatus } from "./status.ts";
  */
 
 type Located = { attempt: AttemptStatus; record: AttemptRecord };
+const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
 /** The lease's state after a failed step: `returnLease` marks its errors, and every earlier step leaves the lease held. */
 const leaseAfter = (error: unknown): DispatchResult["lease"] =>
   typeof error === "object" && error !== null && "lease" in error && (error.lease === "none" || error.lease === "unknown") ? error.lease : "preserved";
@@ -57,7 +58,7 @@ async function returnLease(deps: Dependencies, record: AttemptRecord, attempt: A
   const leaseId = attempt.attempt.leaseId!;
   const returnId = randomUUID();
   await deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by, returnId },
-    { fact: "no_processes", scope: { leaseId, returnId } }, "operator");
+    { fact: "no_processes", scope: { leaseId, returnId } }, operator);
   try { await deps.workspaces.returnLease({ leaseId, holder: attempt.attempt.taskId, path: attempt.attempt.workspace! }, { discardChanges: by === "discard" }); }
   catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { lease: error instanceof WorkspaceError && error.reason === "outcome_unknown" ? "unknown" : "preserved" }); }
   try { await deps.attempts.append(record, "lease_returned", { leaseId, by, returnId }); }
@@ -119,13 +120,12 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   if (!attempt.changeable) return refused(attempt.nextAction.code, `The attempt is ${attempt.state.replaceAll("_", " ")}, so it cannot be finished`, base);
   if (!options.dryRun && await completeReturn(deps, record, attempt, "finish")) return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: {}, ...base, nextAction: "none" });
   if (attempt.state === "finished") return refused("none", "The attempt is already finished", { ...base, lease: "none" });
-  const accepted = [...record.entries].reverse().find(e => e.kind === "output_accepted");
+  const accepted = [...(record.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
   const accepting = options.acceptOutput || accepted !== undefined;
-  // A not-retained attempt whose output was fixed, and an unconfirmed task update, are finished from the worker's
-  // completed result once retention passes now; finish then records the task as done itself.
-  const finishable = ["awaiting_review", "awaiting_finish", "not_retained", "task_update_unconfirmed"].includes(attempt.state) && attempt.leaseHeld;
+  // Work whose retention was fixed can be finished from the worker's completed result.
+  const finishable = ["awaiting_review", "awaiting_finish", "not_retained"].includes(attempt.state) && attempt.leaseHeld;
   if (!finishable && !(accepting && attempt.state === "held" && attempt.leaseHeld)) {
-    return refused(attempt.nextAction.code, `Only an attempt awaiting review or finish, not retained or with an unconfirmed task update, or a held attempt with --accept-output, can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
+    return refused(attempt.nextAction.code, `Only an attempt awaiting review or finish, not retained, or a held attempt with --accept-output, can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
   }
 
   let policy: ResolvedPolicy;
@@ -138,7 +138,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   if (accepting) {
     try {
       const git = { git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? {}, repository: deps.repository };
-      acceptedCommit = options.acceptOutput ? await branchHead(git, attempt.attempt.outputBranch!) : accepted!.data.commit as string;
+      acceptedCommit = options.acceptOutput ? await branchHead(git, attempt.attempt.outputBranch!) : accepted!.scope.commit;
       const start = leased?.data.startingCommit as string | undefined;
       if (!acceptedCommit || !start || acceptedCommit === start || !await isAncestor(git, start, acceptedCommit)) {
         return refused("inspect_attempt", "The output branch must exist and have commits beyond the attempt's starting commit", base);
@@ -186,8 +186,8 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   });
   const fenced = await fenceLaunch(deps, record, options.leaseId);
   if (fenced) return refused("inspect_attempt", fenced, base);
-  if (acceptedCommit && accepted?.data.commit !== acceptedCommit) {
-    try { await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, "operator"); }
+  if (acceptedCommit && accepted?.scope.commit !== acceptedCommit) {
+    try { await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, operator); }
     catch (error) { return stopped(error, "record the operator's output acceptance"); }
   }
   if (integration) {
@@ -215,7 +215,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: { policy }, ...base, retention, nextAction: "none" });
 }
 
-const discardable = ["awaiting_review", "awaiting_finish", "held", "not_retained", "stopped", "task_update_unconfirmed"];
+const discardable = ["awaiting_review", "awaiting_finish", "held", "not_retained", "stopped"];
 
 async function discardAttempt(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {
   if (!options.confirm && !options.dryRun) return refused("confirm_discard", "Discarding the attempt's work needs your explicit confirmation (--confirm)");
@@ -243,7 +243,7 @@ async function discardAttempt(deps: Dependencies, options: { leaseId: string; no
   const fenced = await fenceLaunch(deps, record, options.leaseId);
   if (fenced) return refused("inspect_attempt", fenced, base);
   try {
-    await deps.attempts.discardAttempt(record, task, "operator", options.leaseId, options.note);
+    await deps.attempts.discardAttempt(record, task, operator, options.leaseId, options.note);
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard"); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }

@@ -40,7 +40,6 @@ export const nextActions = {
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",
   fix_configuration: "Check the configuration and that the task store, Treehouse and runtime are reachable.",
   choose_another_task: "Choose a ready task without an earlier lease, or resolve the earlier attempt first.",
-  complete_task_update: "Read the task in the task store and apply the outcome recorded in the attempt log.",
   watch_attempt: "Follow the attempt with `switchboard watch --lease <lease-id>`.",
   review_then_finish: "Review the output branch. To integrate it, record the task as done and return the lease, run `switchboard finish --lease <lease-id> --no-processes` once no worker process remains.",
   finish_attempt: "The task is done. Run `switchboard finish --lease <lease-id> --no-processes` to return the lease once no worker process remains.",

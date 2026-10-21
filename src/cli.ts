@@ -20,7 +20,7 @@ import { requireRetainedStorage } from "./infra/storage.ts";
 const usage = `Usage:
   switchboard --version
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
-  switchboard import --tasks-axi <backlog.md> [--archive <done-archive.md>] [--json] [--config <path>]
+  switchboard import (--attempts | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
   switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
@@ -36,8 +36,8 @@ const usage = `Usage:
 
 dispatch --once --dry-run reports the selected task and delivery contract without changing anything or launching a worker.
 
-watch prints an attempt's worker activity and follows it until the worker's exit is recorded. It reads files
-only, so it works from any terminal and after the dispatcher has stopped. status shows each attempt's lease ID.
+watch prints an attempt's worker activity and follows it until the worker's exit is recorded. It reads the database
+and runtime files, so it works from any terminal and after the dispatcher has stopped. status shows each attempt's lease ID.
 
 stop and steer ask the dispatcher that owns a running worker to stop it, or to pass it a message (with --after,
 once it finishes its current work). A request no dispatcher takes within --wait seconds (default 10) is withdrawn
