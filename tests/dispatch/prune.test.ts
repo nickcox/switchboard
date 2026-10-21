@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { AttemptPruner } from "../../src/attempts/prune.ts";
 import { prune } from "../../src/dispatch/prune.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
@@ -35,6 +36,9 @@ async function setup(options: { open?: boolean; launched?: boolean; settled?: bo
     }
   }
   if (!options.open) await log.append(ref, "task_recorded", { outcome: "hold", reason: "fixture finished" });
+  // `old` puts the cutoff at the moment prune starts, and entry times have millisecond precision, so make sure the
+  // last entry is strictly older than that moment.
+  await sleep(5);
   return { ...f, ref, reserved: runtime, pruner: new AttemptPruner(log) };
 }
 async function snapshot(root: string): Promise<unknown> {
@@ -162,7 +166,9 @@ test("finding 4: a second prune refuses while one is cleaning up, so a reservati
     },
   });
   const first = prune({ ...f.deps, attempts }, old);
-  await reached;
+  // Fail with the first prune's result, rather than waiting for the test timeout, if it finishes without pausing.
+  const early = await Promise.race([reached.then(() => undefined), first]);
+  assert.equal(early, undefined, `The first prune finished without reaching the pause: ${JSON.stringify(early)}`);
   const second = await prune(f.deps, old);
   const claimed = await f.deps.attempts.reserveRequest("request", "new-task");
   release();
