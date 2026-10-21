@@ -116,6 +116,14 @@ export class RuntimeRecords {
     this.write = write;
   }
 
+  /** Whether `directory`, once its links are resolved, is strictly inside this runtime root. */
+  async owns(directory: string): Promise<boolean> {
+    const root = await realpath(this.root).catch(error => { if (isMissing(error)) return undefined; throw error; });
+    if (root === undefined) return false;
+    const path = await realpath(directory);
+    return path !== root && inside(root, path);
+  }
+
   async checkStorage(recyclableRoots: string[]): Promise<void> {
     await requireRetainedStorage(this.root, recyclableRoots);
   }

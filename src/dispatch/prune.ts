@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { lstat, rm } from "node:fs/promises";
+import { isMissing } from "../runtime/records.ts";
 import { inspect, isOpen, type Dependencies } from "./dispatch.ts";
 import { result, type DispatchResult } from "./result.ts";
 import { status } from "./status.ts";
@@ -37,11 +38,25 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
       removed.push({ taskId: record.taskId, attempt: record.attempt, archive: deps.attempts.database.path });
     }
     if (!options.dryRun) for (const deletion of deps.attempts.pendingDeletions()) {
-      await rm(deletion.directory, { recursive: true, force: true });
+      await removeRuntimeDirectory(deps, deletion.directory);
       await deps.attempts.completeDeletion(deletion);
     }
     return report(true, options.dryRun ? "planned" : "pruned", `${options.dryRun ? "Would remove" : "Removed"} ${removed.length} attempt(s). Preserved ${skipped.length} ineligible attempt(s)`);
   } catch (error) {
     return report(false, changed ? "stopped" : "refused", `${error instanceof Error ? error.message : String(error)}. Run prune again after checking the records`);
   }
+}
+
+/**
+ * Deletes a recorded runtime directory only if it is a real directory, not a link, inside the runtime root. A missing
+ * directory is already gone. Anything else is refused and its deletion record kept, for the operator to inspect.
+ */
+async function removeRuntimeDirectory(deps: Dependencies, directory: string): Promise<void> {
+  let found;
+  try { found = await lstat(directory); }
+  catch (error) { if (isMissing(error)) return; throw error; }
+  if (!found.isDirectory() || found.isSymbolicLink() || !await deps.runtime.owns(directory)) {
+    throw new Error(`Refusing to delete ${directory}: it is not a directory inside the runtime root`);
+  }
+  await rm(directory, { recursive: true, force: true });
 }
