@@ -161,7 +161,7 @@ test("database durability, schema version, absolute canonical regular paths", as
   assert.equal(store.database.get("PRAGMA synchronous")?.synchronous, 2);
   assert.equal(store.database.get("PRAGMA fullfsync")?.fullfsync, 1);
   assert.equal(store.database.get("PRAGMA busy_timeout")?.timeout, 0);
-  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 1);
+  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 2);
   store.close();
   await assert.rejects(SqliteTaskStore.open({ path: "relative.db" }), /absolute/);
   await assert.rejects(SqliteTaskStore.open({ path: dir }), /regular file/);

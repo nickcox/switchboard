@@ -93,6 +93,11 @@ const envelopeSchema = z.strictObject({
 });
 export type AttemptEntry = z.infer<typeof envelopeSchema>;
 
+export function parseAttemptEntry(value: unknown): AttemptEntry {
+  const entry = envelopeSchema.parse(value);
+  return { ...entry, data: entrySchemas[entry.kind].parse(entry.data) };
+}
+
 export type AttemptRef = { contextId: string; taskId: string; attempt: number };
 export type AttemptRecord = AttemptRef & { entries: AttemptEntry[] };
 

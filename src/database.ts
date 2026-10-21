@@ -54,7 +54,7 @@ export class Database {
     const result = new Database(db, retryMs);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 1) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 2) throw new Error(`Unsupported database schema version ${version}`);
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
         if (Number(result.get("PRAGMA user_version")!.user_version) !== 0) return;
@@ -68,6 +68,43 @@ export class Database {
             task TEXT NOT NULL REFERENCES tasks(id), blocker TEXT NOT NULL REFERENCES tasks(id),
             PRIMARY KEY(task, blocker), CHECK(task <> blocker));
           PRAGMA user_version = 1;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 2) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 2) return;
+        db.exec(`
+          CREATE TABLE attempt_numbers (
+            context TEXT NOT NULL, task TEXT NOT NULL REFERENCES tasks(id), number INTEGER NOT NULL CHECK(number > 0),
+            PRIMARY KEY(context, task, number));
+          CREATE TABLE attempts (
+            context TEXT NOT NULL, task TEXT NOT NULL REFERENCES tasks(id), number INTEGER,
+            request_id TEXT, reserved_at TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0 CHECK(closed IN (0,1)),
+            UNIQUE(context, task, number), UNIQUE(context, request_id),
+            FOREIGN KEY(context, task, number) REFERENCES attempt_numbers(context, task, number),
+            CHECK(number IS NOT NULL OR request_id IS NOT NULL), CHECK(number IS NULL OR number > 0));
+          CREATE UNIQUE INDEX open_attempt_per_task ON attempts(task) WHERE number IS NOT NULL AND closed = 0;
+          CREATE TABLE attempt_entries (
+            context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL,
+            sequence INTEGER NOT NULL CHECK(sequence >= 0), entry TEXT NOT NULL CHECK(json_valid(entry)),
+            PRIMARY KEY(context, task, attempt, sequence),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempts(context, task, number) ON DELETE CASCADE);
+          CREATE TRIGGER attempt_entries_immutable BEFORE UPDATE ON attempt_entries BEGIN
+            SELECT RAISE(ABORT, 'Attempt entries cannot be changed');
+          END;
+          CREATE TABLE confirmations (
+            id INTEGER PRIMARY KEY, context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL,
+            fact TEXT NOT NULL, confirmed_by TEXT NOT NULL, confirmed_at TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK(json_valid(scope)),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempts(context, task, number) ON DELETE CASCADE);
+          CREATE TABLE archived_attempts (
+            context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL,
+            summary TEXT NOT NULL CHECK(json_valid(summary)), PRIMARY KEY(context, task, attempt),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempt_numbers(context, task, number));
+          CREATE TABLE pending_attempt_deletions (
+            context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL, directory TEXT NOT NULL UNIQUE,
+            PRIMARY KEY(context, task, attempt, directory),
+            FOREIGN KEY(context, task, attempt) REFERENCES archived_attempts(context, task, attempt));
+          PRAGMA user_version = 2;
         `);
       });
       return result;

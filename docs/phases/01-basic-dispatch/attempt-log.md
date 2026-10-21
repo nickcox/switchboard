@@ -71,6 +71,14 @@ Readers ignore names beginning with `.`, which are writes in progress. They pars
 - an entry whose context, task or attempt does not match its location
 - an attempt directory with no entries
 
+## Database migration boundary – not yet used by commands
+
+`src/attempts/store.ts` provides the transactional operations for the ADR-0007 migration. Database schema version 2 adds attempts, immutable log entries, scoped confirmation records, archive summaries, pending directory deletions and retained attempt numbers. A request-ID reservation is a unique column of an attempt row; an imported reservation without an attempt can have a null attempt number.
+
+The storage operations reserve an attempt while leaving its task queued, start the reserved task with `task_started`, record an outcome and close the attempt, and finish or discard against an expected task state. Outcome recording preserves a newer operator state or hold decision and does not append evidence to the task body. Archiving removes the attempt, entries, confirmations and reservation while recording its summary and directories to delete in the same transaction. Retained numbers are not removed. External checks and deleting the directories remain the caller's responsibility.
+
+This boundary is not wired into dispatch, finish, discard, resolve, prune or import yet. The file format and command behaviour described above still apply, including the legacy confirmation fields, task-body summaries, prune lock and recovery states. They must not be removed until those callers and the settled-record import use the database operations.
+
 ## Limits
 
 The log does not hold a task lifecycle, a queue, retry state or schedules. Like the runtime records, it is not protected from a malicious worker running as the same operating-system user.
