@@ -1,6 +1,6 @@
 # ADR-0001: tasks-axi is the task source of truth
 
-Status: accepted architecture decision. Applies from Phase 1.
+Status: superseded by [ADR-0007](0007-one-sqlite-database.md) on 21 October 2026, which moves tasks into Switchboard's own database with the same readiness rules. Describes the design through Phase 2.
 
 ## Context
 

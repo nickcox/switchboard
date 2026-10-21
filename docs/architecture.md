@@ -19,7 +19,7 @@ Node.js runs Switchboard and its external CLIs; Pi is the worker runtime that ru
 ```mermaid
 flowchart TD
     Operator[Operator] --> Switchboard[Switchboard: orchestration and policy]
-    Switchboard --> Tasks[tasks-axi: work and readiness]
+    Switchboard --> Database[Switchboard database: tasks, readiness and attempts]
     Switchboard --> Treehouse[Treehouse: durable workspace leases]
     Switchboard --> Runtime[Runtime adapter: worker lifecycle]
     Runtime --> Pi[Pi worker in leased workspace]
@@ -29,7 +29,7 @@ flowchart TD
 
 | Concern | Authority | Switchboard responsibility |
 | --- | --- | --- |
-| Work items, dependencies, readiness and task status | tasks-axi | Query and apply supported transitions |
+| Work items, dependencies, readiness and task status | Switchboard's database ([ADR-0007](adr/0007-one-sqlite-database.md)) | Change tasks only through the task operations, in the same transaction as the attempt records they affect |
 | Workspace allocation, isolation and durable leases | Treehouse | Acquire, inspect, preserve or return leases |
 | Worker/session identity, liveness and termination | Runtime adapter | Request execution and interpret observations |
 | Dispatch, reconciliation and policy | Switchboard | Decide permitted actions across these owners |
@@ -41,7 +41,7 @@ Worker liveness does not prove task completion. A lease does not prove a worker 
 
 ## Identity
 
-Use the unchanged tasks-axi task ID as Treehouse's `lease_holder` and propagate it into runtime metadata, worker instructions, logs and future supervisor references. Record the task-store/repository context alongside it; Phase 1 operates within one configured context and does not assume task IDs are globally unique.
+Use the unchanged task ID as Treehouse's `lease_holder` and propagate it into runtime metadata, worker instructions, logs and future supervisor references. Record the task-store/repository context alongside it; Phase 1 operates within one configured context and does not assume task IDs are globally unique.
 
 Treehouse's `lease_id` identifies an allocation/attempt. Runtime observations and results must carry both task ID and lease ID, plus the runtime's session identifier. A result from a different lease or session cannot complete the current attempt. Paths and process IDs alone are insufficient identity.
 
@@ -55,17 +55,17 @@ Resolve one delivery/completion contract before acquisition and use it for both 
 
 ## Main flow
 
-1. Query the explicitly configured authoritative tasks-axi store for ready work, select one task and resolve its delivery/completion contract.
+1. Query the database for ready work, select one task and resolve its delivery/completion contract.
 2. Check that the task has no existing unresolved lease or worker; acquire a Treehouse workspace with `lease_holder = task ID`.
-3. Revalidate readiness and mark the task in flight through tasks-axi.
+3. Revalidate readiness and mark the task in flight.
 4. Launch Pi through the runtime adapter in the exact leased workspace.
-5. Validate the worker result, direct-child exit and completion contract. Record done or hold, including failure reasons and retained work references, through tasks-axi. Run the retention check and preserve the lease. Lease return is potentially destructive recycling, so Phase 1 leaves it to the operator; automatic return requires verified retention, confirmed whole-worker termination and identity-conditional return.
+5. Validate the worker result, direct-child exit and completion contract. Record done or hold, with failure reasons and retained work references in the attempt, in the same transaction as the attempt's outcome. Run the retention check and preserve the lease. Lease return is potentially destructive recycling, so Phase 1 leaves it to the operator; automatic return requires verified retention, confirmed whole-worker termination and identity-conditional return.
 
-These operations are not one transaction. Each successful side effect must be checked before proceeding; uncertain outcomes must be inspected before retrying. The PRD specifies compensation for each boundary.
+Changes to tasks and attempts are transactions in one database, but acquiring a lease and launching a worker are not part of them. Each successful side effect outside the database must be checked before proceeding; uncertain outcomes must be inspected before retrying. The PRD specifies compensation for each boundary.
 
 ## Recovery and persistence
 
-Phase 1's only persistent Switchboard state is an append-only attempt log ([ADR-0006](adr/0006-switchboard-attempt-log.md)). It records which task, lease, session, commits and outcome belong to each attempt, and is not authoritative for any of them. Phase 1 has no durable queue or Pi Durable dependency. Its transient orchestration context joins task state, Treehouse leases and runtime observations. Diagnostic logs are not an authoritative task or allocation store.
+Through Phase 2, Switchboard's only persistent state was an append-only attempt log in files ([ADR-0006](adr/0006-switchboard-attempt-log.md)), and tasks lived in tasks-axi. [ADR-0007](adr/0007-one-sqlite-database.md) replaces both with one SQLite database holding tasks, attempts and their log entries, request-ID reservations, and what a dispatcher records about its workers; only the files a worker or Pi writes stay on disk. The attempt log keeps its meaning: it records which task, lease, session, commits and outcome belong to each attempt. Phase 1 has no durable queue or Pi Durable dependency. Its transient orchestration context joins task state, Treehouse leases and runtime observations. Diagnostic logs are not an authoritative task or allocation store.
 
 Phase 1 handles failures observed during its foreground run and stops safely when outcomes are unknown. It does not promise automatic recovery after dispatcher or host failure. A fresh invocation finds unresolved attempts in the attempt log and checks each owner's state. An attempt whose worker may still be running blocks all dispatch; one whose worker has stopped blocks only its own task until the operator resolves it. Crash safety means refusal, not reconstruction, adoption or resumption of orchestration. Document the attempt log and runtime-owned session metadata, their storage location, and how sessions can be discovered without the dispatcher's in-memory identifiers. Unknown observations do not authorise replacement workers, task completion or cleanup.
 
@@ -93,15 +93,15 @@ Supervision is expected to be done by an agent from Phase 4. Phase 1 has only a 
 
 ## Extension boundaries
 
-Dispatch and reconciliation policy depend on task-store, workspace-provider and worker-runtime interfaces. tasks-axi, Treehouse and Pi are the initial implementations, not permanent dependencies. Keep their commands, transport formats and implementation-specific types inside their adapters.
+Dispatch and reconciliation policy depend on task-store, workspace-provider and worker-runtime interfaces. Switchboard's database, Treehouse and Pi are the current implementations, not permanent dependencies. Keep their commands, transport formats and implementation-specific types inside their adapters.
 
-The initial interfaces may adopt tasks-axi's task model and Treehouse's lease model where these fit Switchboard's requirements. Do not invent a more general model solely for hypothetical replacements. A replacement provider must satisfy the same ownership, identity and safety contracts, mapping its own model within its adapter. Phase 1 requires neither multiple implementations nor a plugin system.
+The interfaces keep the task model adopted from tasks-axi and Treehouse's lease model where these fit Switchboard's requirements. Do not invent a more general model solely for hypothetical replacements. A replacement provider must satisfy the same ownership, identity and safety contracts, mapping its own model within its adapter. Phase 1 requires neither multiple implementations nor a plugin system.
 
 Keep task access, workspace operations and runtime operations separate. Phase 1 uses a separate Pi CLI process with built-in RPC and a validated result file, without a custom Pi extension or external process supervisor. [ADR-0005](adr/0005-pi-rpc-worker-and-result-file.md) records this initial choice and the continuing comparison with Pi Durable. Additional runtimes can implement the same responsibilities later. Herdr may implement a runtime adapter but is not an architectural dependency and does not own workspace leases.
 
 The preferred second runtime is a general adapter for the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP), the editor-to-agent protocol that Claude, Codex, opencode and other agents support. It is not a replacement for the Pi adapter. Pi has no built-in ACP support: the main adapter, `pi-acp`, starts Pi in its RPC mode and translates. Going through it would lose what Phase 1 relies on: steering mid-turn, which `pi-acp` does not expose (it queues follow-up prompts instead); control of Pi's startup flags and session identity; and isolation from the operator's own Pi configuration. ACP itself defines neither steering nor queued messages. The Claude and Codex adapters offer steering through a non-standard `_session/steering` extension, and the [ACP runtime survey](phases/03-multiple-workers-and-runtimes/acp-runtime-survey.md) recommends Claude's adapter as the first ACP runtime because it can also be told to ignore the user's own settings. To keep an ACP adapter straightforward, keep the runtime interface independent of Pi, and treat steering as a capability a runtime may lack, so that `steer` refuses clearly where it is unsupported.
 
-Pi Durable will support the supervisor and durable orchestration. A Pi Durable computational task is distinct from a tasks-axi work item. Switchboard mailbox and schedule interfaces must remain independent of Pi Durable's internal types. Durable execution does not make external task, lease and runtime mutations atomic or exactly once.
+Pi Durable will support the supervisor and durable orchestration. A Pi Durable computational task is distinct from a Switchboard task, which is a project work item. Switchboard mailbox and schedule interfaces must remain independent of Pi Durable's internal types. Durable execution does not make external task, lease and runtime mutations atomic or exactly once.
 
 ## Roadmap
 
@@ -136,9 +136,10 @@ These come from comparing Switchboard with related projects, and from using Swit
 
 ## Decisions
 
-- [ADR-0001: tasks-axi is the task source of truth](adr/0001-tasks-axi-is-task-source-of-truth.md)
+- [ADR-0001: tasks-axi is the task source of truth](adr/0001-tasks-axi-is-task-source-of-truth.md) (superseded by ADR-0007)
 - [ADR-0002: Treehouse owns workspace leases](adr/0002-treehouse-owns-workspace-leases.md)
 - [ADR-0003: Pi Durable for the supervisor and later durable orchestration](adr/0003-pi-durable-for-durable-orchestration.md)
 - [ADR-0004: TypeScript and Node.js for the Switchboard CLI](adr/0004-typescript-and-node-for-switchboard-cli.md)
 - [ADR-0005: Pi RPC subprocess and result-file contract](adr/0005-pi-rpc-worker-and-result-file.md)
-- [ADR-0006: Switchboard keeps an append-only attempt log](adr/0006-switchboard-attempt-log.md)
+- [ADR-0006: Switchboard keeps an append-only attempt log](adr/0006-switchboard-attempt-log.md) (superseded by ADR-0007)
+- [ADR-0007: Switchboard keeps its tasks and records in one SQLite database](adr/0007-one-sqlite-database.md)

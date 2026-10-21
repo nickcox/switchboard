@@ -60,6 +60,8 @@ The fourth comparison, on 21 October 2026, was made before writing the Phase 3 P
 
 So Phase 3, as scoped, gives no reason to adopt Pi Durable, provided its PRD keeps to the following: no queue of Switchboard's own, no automatic restart of workers or retry of attempts, a cross-process maximum held in files, and whether a pull request has merged read from GitHub each time an attempt's state is worked out, with no stored schedule of when to check it. If the PRD needs to break any of these limits, compare again before implementing that part. The Phase 4 supervisor remains where Pi Durable is expected to be adopted.
 
+[ADR-0007](0007-one-sqlite-database.md), accepted the same day, moves tasks and Switchboard's records into one SQLite database. The Phase 3 PRD restates the first and third limits for it: the ready order of project tasks in the database is the order of work, not a queue of dispatch requests, and the maximum is enforced by transactions in the database. Neither adds state of the kind Pi Durable supplies.
+
 ## Alternatives considered
 
 - **Custom Pi extension:** schema-aware reporting is convenient but adds an agent integration to maintain. Prefer the standard write tool and host-side validation first.

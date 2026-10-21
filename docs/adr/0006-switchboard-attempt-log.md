@@ -1,6 +1,6 @@
 # ADR-0006: Switchboard keeps an append-only attempt log
 
-Status: accepted architecture decision. Applies from Phase 1.
+Status: superseded by [ADR-0007](0007-one-sqlite-database.md) on 21 October 2026, which keeps the attempt log's meaning but stores it in Switchboard's database instead of files. Describes the design through Phase 2.
 
 ## Context
 
