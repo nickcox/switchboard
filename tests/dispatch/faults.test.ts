@@ -12,7 +12,7 @@ import { attemptsWith, fixture, task } from "./fixture.ts";
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 type Case = { name: string; scenario?: string; inject: (f: Fixture) => Dependencies; reason: Reason; launches: number };
 
-const unknown = () => new TaskStoreError("outcome_unknown", "lost acknowledgement");
+const stopped = () => new Error("caller stopped after commit");
 const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): Dependencies => {
   const real = f.deps.tasks;
   return { ...f.deps, tasks: {
@@ -41,9 +41,9 @@ const cases: Case[] = [
   { name: "in-flight update refused", reason: "stopped", launches: 0,
     inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: () => Promise.reject(new TaskStoreError("rejected", "refused")) }) }) },
   { name: "start transaction committed before the caller stopped", scenario: "commit-result", reason: "stopped", launches: 0,
-    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: async ref => { await f.deps.attempts.startReservedTask(ref); throw unknown(); } }) }) },
-  { name: "in-flight update unknown and not applied", reason: "stopped", launches: 0,
-    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: () => Promise.reject(unknown()) }) }) },
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: async ref => { await f.deps.attempts.startReservedTask(ref); throw stopped(); } }) }) },
+  { name: "start transaction busy and not applied", reason: "stopped", launches: 0,
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { startReservedTask: () => Promise.reject(new TaskStoreError("busy", "writer busy")) }) }) },
   { name: "launch fails before a worker exists", reason: "held", launches: 1,
     inject: f => ({ ...f.deps, launch: () => Promise.reject(new Error("executable missing")) }) },
   { name: "worker exit never observed", reason: "stopped", launches: 1,
@@ -52,9 +52,9 @@ const cases: Case[] = [
       reason: "termination_unknown", detail: undefined, stderrTail: "", result: undefined,
     }) }) },
   { name: "outcome transaction committed before the caller stopped", scenario: "commit-result", reason: "stopped", launches: 1,
-    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { recordOutcome: async (...args) => { await f.deps.attempts.recordOutcome(...args); throw unknown(); } }) }) },
-  { name: "final update not applied", scenario: "commit-result", reason: "stopped", launches: 1,
-    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { recordOutcome: () => Promise.reject(unknown()) }) }) },
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { recordOutcome: async (...args) => { await f.deps.attempts.recordOutcome(...args); throw stopped(); } }) }) },
+  { name: "outcome transaction busy and not applied", scenario: "commit-result", reason: "stopped", launches: 1,
+    inject: f => ({ ...f.deps, attempts: attemptsWith(f, { recordOutcome: () => Promise.reject(new TaskStoreError("busy", "writer busy")) }) }) },
 ];
 
 for (const c of cases) {

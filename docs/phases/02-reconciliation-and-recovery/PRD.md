@@ -47,19 +47,18 @@ Every attempt is classified from its attempt-log entries and each owner's curren
 | Held for another reason | Task held as failed, interrupted, over budget or held by the worker, or its hold reason changed since the attempt recorded it; lease preserved | Inspect, then `finish --accept-output`, dispatch again or `discard` |
 | Not retained | Attempt recorded a hold because the retention check failed and the task still has that hold; lease preserved | Fix the output, then `finish`, or `discard` with confirmation |
 | Lease in another pool | Lease recorded in a pool Treehouse no longer lists | Return it by path, then `resolve --lease-returned` |
-| Task update unconfirmed | Final task update not confirmed | Complete the update, then `finish` |
-| Stopped | Halted after acquiring its lease, or its task is still in flight with no lease | Inspect the attempt |
+| Stopped | Halted after acquiring its lease, no task outcome recorded with its lease still held, or its task is still in flight with no lease | Inspect; a completed worker result can be checked again by `finish` |
 | Finished | Task outcome recorded and lease returned or never acquired | Nothing |
 
-`status` shows each attempt's state, in its text output and as the `state` and `changeable` fields of its JSON. Unaccounted leases and orphaned in-flight tasks remain separate findings, as in Phase 1. A state that cannot be determined because an owner is unreadable is reported as unknown and blocks every command that would change that attempt.
+`status` shows each attempt's state, in its text output and as the `state` and `changeable` fields of its JSON. Task changes and their outcome entries now share one transaction under [ADR-0007](../../adr/0007-one-sqlite-database.md), so there is no task-update-unconfirmed state. Unaccounted leases and orphaned in-flight tasks remain separate findings: legacy task import can preserve an in-flight task without attempt files, even though dispatch now starts a task and records `task_started` atomically. A state that cannot be determined because an owner is unreadable is reported as unknown and blocks every command that would change that attempt.
 
 ## Finishing an attempt
 
-`switchboard finish --lease <lease-id>` completes an attempt according to the context's finalisation policy. It applies to an attempt awaiting review or awaiting finish, and to one that is not retained or has an unconfirmed task update, once its worker's completed result passes the retention check again. It is the operator's statement that the work has been reviewed and should be integrated; it never runs for an attempt that is running, possibly running, unfinished or unknown.
+`switchboard finish --lease <lease-id>` completes an attempt according to the context's finalisation policy. It applies to an attempt awaiting review or awaiting finish, and to one that is not retained, or stopped after starting its task but before recording an outcome, once its worker's completed result passes the retention check again. It is the operator's statement that the work has been reviewed and should be integrated; it never runs for an attempt that is running, possibly running, unfinished or unknown.
 
 **Accepting committed output.** A worker can commit its work and then fail before writing its result, for example when its last provider request fails. For a held attempt (including failed, interrupted and over-budget attempts), `finish --lease <lease-id> --accept-output --no-processes` is the operator's decision to accept the output branch's current head instead of the worker's result. The branch must exist in the backing repository, and its head must be a strict descendant of the attempt's starting commit. Retention checks that the branch contains that commit and that the workspace has no uncommitted or untracked files; no worker result is needed. Running, possibly running, unfinished, unknown and other-pool attempts remain ineligible. Dry runs do not record acceptance.
 
-Before integrating or changing the task, `finish` records `output_accepted` with the commit and `acceptedBy: "operator"`. After a partial failure, a later `finish` can use that recorded acceptance without the flag or a worker result, checking retention against the accepted commit again. With the flag, the current branch head is checked and accepted afresh if it has changed. Acceptance does not skip the finalisation policy, task update, process confirmation or conditional lease return. Without the flag or a previous operator acceptance, the worker-result checks remain unchanged.
+Before integrating or changing the task, `finish` records `output_accepted` with the commit and a scoped operator confirmation. After a partial failure, a later `finish` can use that recorded acceptance without the flag or a worker result, checking retention against the accepted commit again. With the flag, the current branch head is checked and accepted afresh if it has changed. Acceptance does not skip the finalisation policy, task update, process confirmation or conditional lease return. Without the flag or a previous operator acceptance, the worker-result checks remain unchanged.
 
 **Finalisation policy.** Each context has one finalisation policy, separate from the delivery contracts, which say what a worker must produce. A policy is one of a fixed set of kinds built into Switchboard, because each kind is a sequence of steps that move or publish work and needs its own read-back, uncertain-outcome handling and retention check. Documents choose the kind and its settings, such as the target branch; they cannot define new kinds or run commands. Phase 2's kinds are:
 
@@ -80,7 +79,7 @@ Operator-level layers (the global defaults and the context configuration) can al
 
 **Facts from the forge.** Where Switchboard can read them, for example whether the target branch is protected on GitHub, facts from the repository's forge are used to refuse a policy that cannot work, not to choose one: `local-merge` into a protected branch fails before any step, with the reason, rather than partway through.
 
-Each step reads back its owner's state, and `finish` can be run again after any failure to complete the remaining steps, as Phase 1's hold update already can. Every step is recorded in the attempt log with new entry kinds (for example `integrated`, `lease_returned`).
+Each step reads back its owner's state, and `finish` can be run again after any failure to complete the remaining steps. Task outcomes and their entries are atomic; external effects still need read-back. Every step is recorded in the attempt log with new entry kinds (for example `integrated`, `lease_returned`).
 
 ## Returning a lease
 
@@ -95,7 +94,7 @@ Returning a lease recycles the workspace and is the only routine action that can
 
 ## Retention of attempt records
 
-`switchboard prune` removes the records of finished attempts older than a configured age, after writing a summary of each to an archive file under the runtime root. It never removes an attempt that is unfinished, holds a lease, may have a running worker or is unknown, and removes a request-ID reservation only together with the attempt it points to. It is run by the operator; Phase 2 has no background cleanup.
+`switchboard prune` removes the records of finished attempts older than a configured age, archiving each summary in the database in the same transaction that removes the attempt and its reservation and schedules its runtime directory for deletion. Directory deletion follows outside the transaction; a later prune finishes interrupted cleanup. No prune lock is needed. It never removes an attempt that is unfinished, holds a lease, may have a running worker or is unknown, and removes a request-ID reservation only together with the attempt it points to. It is run by the operator; Phase 2 has no background cleanup.
 
 ## Acceptance criteria
 

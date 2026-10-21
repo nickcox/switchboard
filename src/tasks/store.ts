@@ -22,11 +22,7 @@ export type TaskStoreFailure =
   | "unreadable"
   | "busy"
   /** The store refused the change. Nothing was applied. */
-  | "rejected"
-  /** The command did not report a result. Read the task back before deciding anything. */
-  | "outcome_unknown"
-  /** The store reported success but reading the task back showed a different state. */
-  | "unexpected_state";
+  | "rejected";
 
 export class TaskStoreError extends Error {
   readonly reason: TaskStoreFailure;

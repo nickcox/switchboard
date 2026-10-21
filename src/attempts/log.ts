@@ -9,7 +9,7 @@ const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 /** Why a task outcome was recorded. The attempt's state is classified from this, never from the task store's text. */
 export const outcomeCategories = ["done", "review_required", "not_retained", "held_by_worker", "failed", "interrupted", "over_budget"] as const;
 export type OutcomeCategory = (typeof outcomeCategories)[number];
-/** Hold reason labels written by dispatch. Only import uses them to interpret older entries. */
+/** Hold reason labels written by dispatch; import also uses them to interpret older entries. */
 export const holdLabels: Record<OutcomeCategory, string> = {
   done: "done", review_required: "review required", not_retained: "not retained", held_by_worker: "held by worker",
   failed: "failed", interrupted: "interrupted", over_budget: "over budget",

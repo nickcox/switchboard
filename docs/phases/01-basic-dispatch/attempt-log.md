@@ -1,12 +1,12 @@
 # Attempt records
 
-Status: commands use `src/attempts/store.ts`, under [ADR-0007](../../adr/0007-one-sqlite-database.md). `src/attempts/log.ts` retains the file reader and writer for migration fixtures; commands never use it for storage.
+Status: commands use `src/attempts/store.ts`, under [ADR-0007](../../adr/0007-one-sqlite-database.md). `src/attempts/log.ts` retains only the legacy file reader for import; commands never use it for storage. `src/attempts/prune.ts` retains only the legacy reservation and archive schemas, with no file writer, lock or pruning operations.
 
 Attempts link tasks, leases, sessions, commits and outcomes. Tasks and attempts share the configured SQLite database, normally `<runtimeRoot>/switchboard.db`, outside every recyclable workspace. Treehouse still owns leases, and runtime observations still decide whether a worker may be running.
 
 ## Database records
 
-Schema version 2 holds attempts, entries, request-ID reservations, retained attempt numbers, confirmations, archive summaries and pending directory deletions. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID.
+Schema version 3 holds attempts, entries, request-ID reservations, retained attempt numbers, confirmations, archive summaries and pending directory deletions. Opening an older database migrates it automatically. Version 3 removes the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID.
 
 Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequence`, `kind`, `recordedAt` (an ISO time) and validated `data`. Database references enforce ownership, and a trigger refuses entry updates. Corrections are new entries.
 
@@ -33,7 +33,7 @@ Outcome categories are `done`, `review_required`, `not_retained`, `held_by_worke
 
 Every write starts with `BEGIN IMMEDIATE`. SQLite uses WAL, `synchronous = FULL`, `fullfsync` and a zero busy timeout. Writers retry busy transactions asynchronously up to `databaseRetryMs`; a timeout changes nothing. No transaction calls Git, Treehouse, GitHub or a worker. Each command closes its database before exit.
 
-Dispatch checks capacity, readiness and task exclusion while reserving the attempt, its number, first entry and request ID in one transaction. The task stays queued. Lease acquisition follows outside the transaction. A second transaction checks readiness again, starts the task and records `task_started`. Refused or uncertain lease acquisition leaves the task queued.
+Dispatch checks capacity, readiness and task exclusion while reserving the attempt, its number, first entry and request ID in one transaction. The task stays queued. Lease acquisition follows outside the transaction. A second transaction checks readiness again, starts the task and records `task_started`. Refused or uncertain lease acquisition leaves the task queued. No separate task-store operation can start a task. `status` still reports an in-flight task with no attempt, worker or lease because the legacy task import can preserve that state without attempt files.
 
 Recording an outcome writes `task_recorded` and closes the attempt in the same transaction as its task change. The task changes only if it is still in flight and has not been held since starting, including a hold subsequently released. Otherwise `applied: false` records the disagreement and preserves the operator's decision. `finish` and `discard` compare the expected task state, hold and hold revision before changing the task and recording their entries together. If an outcome transaction fails, it changes nothing; `finish` can still check a completed worker result and record the task as done, without an uncertain-update state.
 

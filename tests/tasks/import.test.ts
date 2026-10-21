@@ -42,6 +42,9 @@ test("import uses tasks-axi's parser, includes its archive and preserves fields,
     assert.partialDeepStrictEqual(await store.read("archived"), { state: "done", body: "Retained archived body" });
     assert.partialDeepStrictEqual(await store.read("later"), { state: "done", title: "Archived later" });
     assert.partialDeepStrictEqual(await store.read("held"), { state: "queued", holdReason: "Operator", held: true });
+    // Import can preserve an in-flight task without any attempt, which status must still report.
+    assert.deepEqual(await store.inFlight(), ["running"]);
+    assert.equal(Number(store.database.get("SELECT count(*) AS n FROM attempts")!.n), 0);
     assert.deepEqual((await store.read("b"))?.blockedBy, ["archived"]);
     assert.deepEqual((await store.read("missing"))?.blockedBy, []);
     // Archived tasks are done, and tasks-axi treats a blocker it cannot find as done, so the backlog alone gives tasks-axi's ready list.

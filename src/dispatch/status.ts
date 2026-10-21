@@ -81,7 +81,7 @@ export type StatusResult = {
   inFlight: string[];
   /** Leases in this context's pool that no attempt in the log accounts for. */
   unaccountedLeases: { leaseId: string; holder: string; path: string }[];
-  /** Tasks in flight with no attempt in the log, no runtime record and no lease, so nothing accounts for them. */
+  /** Imported tasks can be in flight with no attempt, runtime record or lease accounting for them. */
   orphanedInFlight: string[];
   attempts: AttemptStatus[];
   /** The context's resolved finalisation policy, or why it could not be resolved. Absent when none is configured. */

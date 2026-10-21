@@ -138,14 +138,17 @@ test("recording an outcome changes the task and closes the attempt together with
   } finally { tasks.close(); }
 });
 
-for (const operatorChange of ["hold", "done"] as const) test(`outcome preserves the operator's ${operatorChange} decision`, async () => {
+for (const operatorChange of ["hold", "released hold", "done", "reopen"] as const) test(`outcome preserves the operator's ${operatorChange} decision`, async () => {
   const { tasks, attempts } = await fixture();
   try {
     const { ref } = await reserve(attempts);
     await attempts.append(ref, "leased", lease);
     await attempts.startReservedTask(ref);
-    if (operatorChange === "hold") { await tasks.hold("task", "operator decision"); await tasks.release("task"); }
-    else await tasks.done("task");
+    if (operatorChange === "hold" || operatorChange === "released hold") {
+      await tasks.hold("task", "operator decision");
+      if (operatorChange === "released hold") await tasks.release("task");
+    } else if (operatorChange === "done") await tasks.done("task");
+    else await tasks.reopen("task");
     const before = await tasks.read("task");
     const outcome = await attempts.recordOutcome(ref, held);
     assert.equal(outcome.applied, false);
