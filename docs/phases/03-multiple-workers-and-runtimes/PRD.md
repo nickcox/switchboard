@@ -1,6 +1,6 @@
 # Phase 3: Multiple workers and runtimes
 
-Status: draft for review, written on 21 October 2026. Requirements, not a description of existing behaviour.
+Status: agreed on 21 October 2026; not yet implemented. Requirements, not a description of existing behaviour.
 
 ## Objective and scope
 
