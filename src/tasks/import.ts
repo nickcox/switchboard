@@ -4,6 +4,7 @@ import { link, lstat, readFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { MarkdownStore } from "tasks-axi/dist/src/backends/markdown.js";
+import { parseBacklog } from "tasks-axi/dist/src/backends/markdown-grammar.js";
 import { isHoldActive, readyTasks } from "tasks-axi/dist/src/derive.js";
 import { AttemptLog } from "../attempts/log.ts";
 import { databasePath, loadConfig, type Config } from "../config.ts";
@@ -40,7 +41,16 @@ export async function importTasks(config: Config, backlog: string, archive = joi
   const source = await readFile(backlog, "utf8");
   const archiveSource = await exists(archive) ? await readFile(archive, "utf8") : undefined;
   const active = (await new MarkdownStore({ path: backlog }).list({})).items;
-  const archived = archiveSource === undefined ? [] : (await new MarkdownStore({ path: archive, archivePath: backlog }).list({})).items;
+  // tasks-axi writes its archive but never reads it: entries use the backlog's format under `## Archived <date>`
+  // headings, which its parser does not recognise as a section. Read them as a Done section.
+  const archived = archiveSource === undefined ? [] : parseBacklog(archiveSource.replace(/^## Archived\b.*$/gm, "## Done")).sections
+    .flatMap(section => section.entries.flatMap(entry => (entry.kind === "task" ? [entry.task] : [])));
+  // An independent count: every task line in either file must have been parsed, so an unrecognised format is refused
+  // rather than skipped.
+  const taskLines = (text: string) => text.split("\n").filter(line => /^- \[.\] /.test(line)).length;
+  if (taskLines(source) !== active.length || taskLines(archiveSource ?? "") !== archived.length) {
+    throw new TaskStoreError("rejected", `Parsed ${active.length} of ${taskLines(source)} backlog tasks and ${archived.length} of ${taskLines(archiveSource ?? "")} archived tasks`);
+  }
   const tasks = [...active, ...archived];
   const ids = new Set(tasks.map(t => t.id));
   if (ids.size !== tasks.length) throw new TaskStoreError("rejected", "Duplicate task IDs in backlog and archive");

@@ -9,6 +9,10 @@ declare module "tasks-axi/dist/src/backends/markdown.js" {
     list(query: object): Promise<{ items: AxiTask[]; total: number }>;
   }
 }
+declare module "tasks-axi/dist/src/backends/markdown-grammar.js" {
+  import type { AxiTask } from "tasks-axi/dist/src/backends/markdown.js";
+  export function parseBacklog(source: string): { sections: { entries: ({ kind: "task"; task: AxiTask } | { kind: "note" | "blank" | "other" })[] }[] };
+}
 declare module "tasks-axi/dist/src/derive.js" {
   import type { AxiTask } from "tasks-axi/dist/src/backends/markdown.js";
   export function readyTasks(tasks: AxiTask[]): AxiTask[];

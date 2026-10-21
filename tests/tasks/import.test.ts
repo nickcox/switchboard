@@ -21,7 +21,8 @@ async function fixture() {
   const archive = join(dir, "done-archive.md");
   const source = `# Backlog\n\n## In flight\n- [ ] running - Running (repo: fixture)\n  Running body\n\n## Queued\n- [ ] b - Second (repo: fixture) blocked-by: archived\n  Body α\n- [ ] a - First (repo: fixture)\n- [ ] held - Waiting (repo: fixture) (hold: Operator)\n- [ ] blocked - Blocked (repo: fixture) blocked-by: a\n- [ ] missing - Missing blocker (repo: fixture) blocked-by: absent\n- [ ] other - Other (repo: other) (kind: scout)\n\n## Done\n- [x] complete - Complete (repo: fixture)\n`;
   await writeFile(backlog, source);
-  await writeFile(archive, "# Archive\n\n## Done\n- [x] archived - Archived (repo: fixture)\n  Retained archived body\n");
+  // The format tasks-axi writes: entries under `## Archived <date>` headings, which its own parser does not read.
+  await writeFile(archive, "\n## Archived 2026-10-20\n- [x] archived - Archived (repo: fixture)\n  Retained archived body\n\n## Archived 2026-10-21\n- [x] later - Archived later (repo: fixture)\n");
   const config = configSchema.parse({ contextId: "import-fixture", runtimeRoot: join(dir, "runtime"), tasks: { repo: "fixture" },
     workspaces: { repository: join(dir, "repository"), poolRoot: join(dir, "pool") }, delivery: { baseRef: "main" },
     worker: { piEntrypoint: cli, provider: "fixture", model: "fixture" } });
@@ -34,15 +35,17 @@ test("import uses tasks-axi's parser, includes its archive and preserves fields,
   const f = await fixture();
   const archiveBefore = await readFile(f.archive, "utf8");
   const result = await importTasks(f.config, f.backlog);
-  assert.equal(result.count, 9);
+  assert.equal(result.count, 10);
   assert.deepEqual(result.dropped, [{ task: "missing", blocker: "absent" }]);
   const store = await SqliteTaskStore.open({ path: f.path, repo: "fixture" });
   try {
     assert.partialDeepStrictEqual(await store.read("archived"), { state: "done", body: "Retained archived body" });
+    assert.partialDeepStrictEqual(await store.read("later"), { state: "done", title: "Archived later" });
     assert.partialDeepStrictEqual(await store.read("held"), { state: "queued", holdReason: "Operator", held: true });
     assert.deepEqual((await store.read("b"))?.blockedBy, ["archived"]);
     assert.deepEqual((await store.read("missing"))?.blockedBy, []);
-    const tasks = [...(await new MarkdownStore({ path: f.backlog }).list({})).items, ...(await new MarkdownStore({ path: f.archive, archivePath: f.backlog }).list({})).items];
+    // Archived tasks are done, and tasks-axi treats a blocker it cannot find as done, so the backlog alone gives tasks-axi's ready list.
+    const tasks = (await new MarkdownStore({ path: f.backlog }).list({})).items;
     assert.deepEqual(await store.ready(), readyTasks(tasks).filter(t => t.repo === "fixture").map(t => t.id));
     const ready = spawnSync(process.execPath, [cli, "task", "ready", "--json", "--config", f.configFile], { encoding: "utf8" });
     assert.equal(ready.status, 0, ready.stderr);
@@ -59,17 +62,24 @@ test("import CLI validates usage and reports activation and repeat refusal as JS
   assert.equal(run().status, 2);
   const activated = run("--tasks-axi", f.backlog, "--archive", f.archive);
   assert.equal(activated.status, 0, activated.stderr + activated.stdout);
-  assert.equal(JSON.parse(activated.stdout).count, 9);
+  assert.equal(JSON.parse(activated.stdout).count, 10);
   const repeat = run("--tasks-axi", f.backlog);
   assert.equal(repeat.status, 1, repeat.stderr);
   assert.equal(JSON.parse(repeat.stdout).reason, "rejected");
+});
+
+test("a task line the parser does not read refuses the import instead of skipping the task", async () => {
+  const f = await fixture();
+  await writeFile(f.archive, "\n## Unrecognised heading\n- [x] lost - Lost (repo: fixture)\n");
+  await assert.rejects(importTasks(f.config, f.backlog), /Parsed .* of 1 archived tasks/);
+  await assert.rejects(readFile(f.path), { code: "ENOENT" });
 });
 
 test("an explicit archive path is read, missing default archive is allowed", async () => {
   for (const explicit of [true, false]) {
     const f = await fixture();
     const result = await importTasks(f.config, f.backlog, explicit ? f.archive : join(f.dir, "missing.md"));
-    assert.equal(result.count, explicit ? 9 : 8);
+    assert.equal(result.count, explicit ? 10 : 8);
   }
 });
 
