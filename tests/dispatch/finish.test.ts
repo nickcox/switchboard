@@ -97,9 +97,9 @@ test("accepted output survives a partial failure without needing a worker result
   const { f, leaseId } = await failedOutput();
   let failures = 1;
   const deps = { ...f.deps, policy: localMerge(f), tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (id: string, note: string) => {
+    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
       if (failures-- > 0) throw new Error("Task store unavailable");
-      return f.tasks.recordDone(id, note);
+      return f.tasks.recordDone(...args);
     },
   }) };
   assert.equal((await finish(deps, { leaseId, noProcesses: true, acceptOutput: true })).reason, "stopped");
@@ -138,9 +138,9 @@ test("a later finish integrates the accepted commit, not commits added to the br
   const { f, leaseId, workspace } = await failedOutput();
   let failures = 1;
   const deps = { ...f.deps, policy: localMerge(f), tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (id: string, note: string) => {
+    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
       if (failures-- > 0) throw new Error("Task store unavailable");
-      return f.tasks.recordDone(id, note);
+      return f.tasks.recordDone(...args);
     },
   }) };
   // The first run fails before integrating, so local-merge has nothing recorded yet.
@@ -158,9 +158,9 @@ test("a later finish integrates the accepted commit, not commits added to the br
 test("accepted output is checked again immediately before the lease is returned", async () => {
   const { f, leaseId, workspace } = await failedOutput();
   const deps = { ...f.deps, tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (id: string, note: string) => {
+    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
       writeFileSync(join(workspace, "late.txt"), "written while finishing\n");
-      return f.tasks.recordDone(id, note);
+      return f.tasks.recordDone(...args);
     },
   }) };
   const outcome = await finish(deps, { leaseId, noProcesses: true, acceptOutput: true });
@@ -345,12 +345,12 @@ for (const pause of ["before", "after"] as const) {
 test("finding 2: an ordinary finish checks retention again immediately before returning the lease", async () => {
   const { f, leaseId, branch } = await reviewed();
   const deps = { ...f.deps, tasks: Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, {
-    recordDone: async (id: string, note: string) => {
+    recordDone: async (...args: Parameters<typeof f.tasks.recordDone>) => {
       // Point the output branch at a commit with the same tree but not the reported commit: the workspace stays clean,
       // so Treehouse would return it, but the reported work is no longer on the branch.
       const tree = f.run(["rev-parse", `${branch}^{tree}`]);
       f.run(["update-ref", `refs/heads/${branch}`, f.run(["commit-tree", tree, "-m", "Same tree, different commit"])]);
-      return f.tasks.recordDone(id, note);
+      return f.tasks.recordDone(...args);
     },
   }) };
   const outcome = await finish(deps, { leaseId, noProcesses: true });

@@ -16,7 +16,7 @@ The adapter:
 4. Requests structured state and checks session identity, session-file location and the exact selected provider/model. Records the reported startup thinking level before checking an optional configured level. Idle startup does not establish task completion.
 5. Disables Pi's automatic model retry setting for this initial integration and sends exactly one prompt, with event observation already installed. Operator messages and stop requests are separate and forwarded once each ([ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md)).
 6. Requires prompt disposition `started`, a current agent run, a non-aborted settlement, a successful terminal assistant response and an empty idle queue afterwards.
-7. Closes RPC stdin, observes direct-child exit and stream closure, then validates the worker result file. A zero process exit alone is insufficient. If a process the worker started still holds the output pipes after the bounded wait, the adapter releases its own end of them rather than waiting; that is not evidence the process stopped. Commands run by the adapters likewise return shortly after the command exits, with each output stream bounded to its last 16 MiB; output cut short is flagged, and the task-store adapter then treats the outcome as unknown rather than misreading it.
+7. Closes RPC stdin, observes direct-child exit and stream closure, then validates the worker result file. A zero process exit alone is insufficient. If a process the worker started still holds the output pipes after the bounded wait, the adapter releases its own end of them rather than waiting; that is not evidence the process stopped. Commands run by the adapters likewise return shortly after the command exits, with each output stream bounded to its last 16 MiB; output cut short is flagged rather than misread. Task-store calls now run directly against SQLite, not through a subprocess.
 8. On interruption/failure, requests queue clearing and abort when the channel permits, closes stdin, and escalates direct-child termination within a bounded stop budget. Sending a signal is never treated as an observed exit.
 
 Optional `worker.thinking` accepts exactly `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` and supplies `--thinking <level>`. Pi 1.2.0's `get_state` reports the actual level as `thinkingLevel`; the adapter reads it before prompting, whether configured or not. A configured mismatch fails with `thinking_identity` without sending a prompt, just as a model mismatch does. Pi clamps levels to model capabilities, so an unsupported configured level fails rather than silently using another level. The final idle-state check also checks the configured level. Without configuration, no flag is passed and Pi's own settings select the level.
@@ -25,7 +25,7 @@ The write-once `session-start.json` retains the reported startup level even on a
 
 Request timeouts never cause another prompt or replacement launch. Responses are correlated by request ID and command. Late acknowledgements are ignored rather than retried. Protocol framing splits only on LF, accepts CRLF, preserves split UTF-8 and Unicode line separators, and bounds each record.
 
-Task-store and workspace operations, the attempt log, dispatch policy and retention checks are implemented outside this module, in `src/tasks/`, `src/workspaces/`, `src/attempts/` and `src/dispatch/`.
+Task-store and workspace operations, the attempt log, dispatch policy and retention checks are implemented outside this module, in `src/tasks/`, `src/workspaces/`, `src/attempts/` and `src/dispatch/`. Tasks use the SQLite store in `src/tasks/sqlite.ts`, with all SQLite access in `src/database.ts` ([configuration](../../configuration.md)). tasks-axi is used only as an import parser; the earlier real runs below used the former subprocess adapter.
 
 ## Result contract
 
@@ -104,7 +104,7 @@ This gate is not bypassed by asking the worker not to create background processe
 
 **Required review checkpoints:** add a short comparison entry when process ownership is selected, when the first real Pi run passes, and before implementing reconciliation. Stop and propose Pi Durable instead of adding custom durable retries, restart/resume, queues, schedules or a persistent worker service. Bringing Durable forward would be an explicit revision to ADR-0003, not an unrecorded dependency change. The entry for the first real Pi runs is in ADR-0005.
 
-Pi Durable and Pi coding-agent are distinct runtimes. Neither runtime's internal completion is automatically tasks-axi done or permission to recycle a Treehouse workspace.
+Pi Durable and Pi coding-agent are distinct runtimes. Neither runtime's internal completion is automatically a task recorded as done or permission to recycle a Treehouse workspace.
 
 ## Real Pi run
 

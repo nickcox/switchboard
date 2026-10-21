@@ -85,7 +85,7 @@ test("held: a hold reason edited to end in \"review required\" does not make the
   const f = await fixture({ tasks: [task("edited-a1")], scenario: "model-error" });
   await dispatchOnce(f.deps);
   expect(await only(f.deps, "edited-a1"), "held", "inspect_attempt", true);
-  f.tasksCli(["unhold", "edited-a1"]);
+  f.tasksCli(["release", "edited-a1"]);
   f.tasksCli(["hold", "edited-a1", "--reason", "Switchboard attempt 1 review required"]);
   assert.equal((await f.tasks.read("edited-a1"))?.holdReason, "Switchboard attempt 1 review required");
   expect(await only(f.deps, "edited-a1"), "held", "inspect_attempt", true);
@@ -95,7 +95,7 @@ test("held: an attempt held for review whose hold reason was changed since is he
   const f = await fixture({ tasks: [task("changed-a1")], scenario: "commit-result" });
   await dispatchOnce(f.deps);
   expect(await only(f.deps, "changed-a1"), "awaiting_review", "review_then_finish", true);
-  f.tasksCli(["unhold", "changed-a1"]);
+  f.tasksCli(["release", "changed-a1"]);
   f.tasksCli(["hold", "changed-a1", "--reason", "Waiting for a design decision"]);
   expect(await only(f.deps, "changed-a1"), "held", "inspect_attempt", true);
 });

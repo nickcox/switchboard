@@ -43,3 +43,22 @@ In CI on 21 October 2026 ([run 39573208432](https://github.com/nickcox/switchboa
 | `macos-latest` | 13 ms | 8.4 ms | 0.78 ms |
 
 The runners' disks report a flush as complete sooner than the trial machine's, so their per-transaction times are not a guide to durability cost on a workstation.
+
+## Concurrent opens on Windows
+
+In CI the trial's eight-process check failed on Windows in two of three runs, with `disk I/O error` (`SQLITE_IOERR_TRUNCATE`, code 1546) while a process opened the database. `stress.ts` was written to find out why:
+
+```powershell
+node investigations/sqlite-trial/stress.ts 200
+```
+
+Each round creates a database, then starts eight processes at once that each open it and commit one row. Variants differ in whether WAL is set on every open or only when the database is created, whether memory mapping is off, whether SQLite's own busy timeout is used, whether an I/O error while opening is retried, and whether each process exits straight after committing without closing the database, as the trial's processes did and as a crashed process would. `STRESS_VARIANTS` (a comma-separated list) selects variants.
+
+Results on GitHub's runners on 21 October 2026, Node.js 26.7.0:
+
+- **Processes that close the database:** no failures in any variant on any platform (3,840 to 4,000 opens per variant and platform).
+- **Processes that exit without closing it, on Windows:** 29 of 1,600 opens failed with code 1546 when WAL was set on every open, and 31 of 1,600 when it was set only once; 12 and 8 of 800 in an earlier run, with and without SQLite's busy timeout. With the error retried while opening, 0 of 1,600 failed, whether WAL was set on every open or once.
+- **Linux and macOS:** no failures in any variant.
+- **No reported commit was ever missing.**
+
+So on Windows, a process that exits without closing the database can briefly leave SQLite's shared-memory file in a state in which another process's open fails; a fresh attempt a moment later succeeds. Switchboard's `Database.open` therefore retries this error while opening, within the same time as a busy database, and closes the database when a command exits. `tests/database.test.ts` checks it with the real `Database.open`, and the trial's processes retry the same way.

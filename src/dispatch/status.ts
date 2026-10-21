@@ -10,6 +10,7 @@ import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch
 import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
 export type AttemptStatus = {
+  taskDisagreement?: boolean;
   attempt: AttemptSummary;
   /** The attempt's state across every owner (Phase 2 PRD, attempt states). */
   state: AttemptState;
@@ -116,6 +117,7 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     const unfinished = isOpen(record) && state.openTasks.includes(summary.taskId);
     const classified = classify({ record, possiblyRunning, dispatcherRunning: running, leaseHeld, leaseInOtherPool: otherPool !== undefined, unfinished, task });
     attempts.push({
+      ...(record.entries.some(e => e.kind === "task_recorded" && e.data.applied === false) ? { taskDisagreement: true } : {}),
       attempt: summary, state: classified.state, changeable: classified.changeable, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, ...(otherPool === undefined ? {} : { leaseInOtherPool: otherPool }), task,
       ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs, state.leases), nextAction: action(classified.nextAction),
     });
@@ -178,6 +180,7 @@ export function describeStatus(value: StatusResult): string {
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
       : `lease ${a.attempt.leaseId} not held`;
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: ${a.state.replaceAll("_", " ")}; last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
+    if (a.taskDisagreement) lines.push("  Task unchanged: a newer operator decision disagrees with the attempt outcome");
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;
     if (a.activity?.lastActivity) {
       const usage = a.activity.tokens === null ? "" : `; ${a.activity.tokens} tokens, $${(a.activity.cost ?? 0).toFixed(2)}`;

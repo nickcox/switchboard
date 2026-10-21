@@ -204,7 +204,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   if (task.state !== "done") {
     try {
       const note = JSON.stringify({ attempt: attempt.attempt, finishedBy: "switchboard finish", policy: policy.kind, ...(integration ? { integrated: integration.to } : {}) });
-      const done = await deps.tasks.recordDone(task.id, note);
+      const done = await deps.tasks.recordDone(task.id, note, task);
       if (done.state !== "done") throw new Error("The task store does not show the task as done");
       await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished", category: "done" });
     } catch (error) { return stopped(error, "record the task as done"); }
@@ -250,7 +250,7 @@ async function discardAttempt(deps: Dependencies, options: { leaseId: string; no
   try {
     if (!record.entries.some(e => e.kind === "discarded")) await deps.attempts.append(record, "discarded", { ...(options.note ? { note: options.note } : {}) });
     // Every task not done is left queued and held, so it is not dispatched again until the operator decides.
-    if (hold) await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## ${holdReason}${options.note ? `\n\n${options.note}` : ""}` });
+    if (hold) await deps.tasks.recordHold(task.id, { reason: holdReason, body: `${task.body}\n\n## ${holdReason}${options.note ? `\n\n${options.note}` : ""}` }, task);
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard"); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }

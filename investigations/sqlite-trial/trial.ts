@@ -100,7 +100,17 @@ function claimLaunch(db: DatabaseSync, context: string, task: string, attempt: n
 // Child-process modes, started by the checks below.
 const [mode, path, arg] = process.argv.slice(2);
 if (mode === "create") {
-  process.stdout.write(`${JSON.stringify(createAttempt(open(path!), "ctx", Number(arg)))}\n`);
+  // These processes exit without closing the database. On Windows that can make another process's open fail for a
+  // moment with SQLITE_IOERR_TRUNCATE (1546), so opening retries it, as Switchboard's Database.open does.
+  let db: DatabaseSync | undefined;
+  for (const deadline = Date.now() + 5000; !db;) {
+    try { db = open(path!); }
+    catch (error) {
+      if ((error as { errcode?: number }).errcode !== 1546 || Date.now() > deadline) throw error;
+      await sleep(20);
+    }
+  }
+  process.stdout.write(`${JSON.stringify(createAttempt(db, "ctx", Number(arg)))}\n`);
   process.exit(0);
 }
 if (mode === "hold-lock") {

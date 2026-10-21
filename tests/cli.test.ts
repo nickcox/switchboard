@@ -9,7 +9,6 @@ import { onPath } from "../src/infra/executables.ts";
 // Runs the real CLI with a configuration file that points at disposable fixtures and the synthetic Pi peer.
 const git = onPath("git");
 const cli = resolve(import.meta.dirname, "../src/cli.ts");
-const tasksAxi = resolve(import.meta.dirname, "../node_modules/tasks-axi/dist/bin/tasks-axi.js");
 const evidence = resolve(import.meta.dirname, "../.investigation/cli-unit");
 mkdirSync(evidence, { recursive: true });
 
@@ -31,14 +30,10 @@ function fixture() {
   run(["add", "."]);
   // Commits exist only in disposable fixture repositories.
   run(["commit", "-q", "--no-gpg-sign", "-m", "Fixture base"]);
-  const file = join(dir, "backlog.md");
-  for (const args of [["add", "seed-z9", "Seed", "--repo", "other"], ["add", "cli-a1", "CLI task", "--repo", "fixture", "--body", "Change the fixture"]]) {
-    execFileSync(process.execPath, [tasksAxi, ...args, "--json", "--backend", "markdown", "--file", file], { env: environment });
-  }
   const config = join(dir, "switchboard.json");
   writeFileSync(config, JSON.stringify({
     contextId: "cli-fixture", runtimeRoot: join(dir, "runtime"),
-    tasks: { file, repo: "fixture" },
+    tasks: { repo: "fixture" },
     workspaces: { repository, poolRoot: join(dir, "pool") },
     delivery: { baseRef: "main", requiredEvidence: ["tests"], requiredDeliverables: ["code"] },
     worker: {
@@ -50,6 +45,10 @@ function fixture() {
   const switchboard = (args: string[]) => spawnSync(process.execPath, [cli, ...args, "--config", config], {
     env: { ...process.env, ...gitEnvironment, HOME: home }, encoding: "utf8",
   });
+  for (const args of [["add", "seed-z9", "Seed", "--repo", "other"], ["add", "cli-a1", "CLI task", "--repo", "fixture", "--body", "Change the fixture"]]) {
+    const added = switchboard(["task", ...args, "--json"]);
+    assert.equal(added.status, 0, added.stderr);
+  }
   return { switchboard, run };
 }
 

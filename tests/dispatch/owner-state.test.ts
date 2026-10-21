@@ -32,7 +32,7 @@ for (const done of [true, false]) {
     const f = await fixture({ tasks: [task("note-a1")], scenario: "commit-result", acceptance: done ? "independent_deliverable" : "review_or_integration" });
     // The state change applies, but the note or body carrying the attempt's evidence does not.
     const tasks = tasksWith(f, {
-      recordDone: async id => { f.tasksCli(["done", id, "--no-prune"]); throw new Error("note not written"); },
+      recordDone: async id => { f.tasksCli(["done", id]); throw new Error("note not written"); },
       recordHold: async (id, hold) => { f.tasksCli(["hold", id, "--reason", hold.reason]); f.tasksCli(["reopen", id]); throw new Error("body not written"); },
     });
     const outcome = await dispatchOnce({ ...f.deps, tasks });
@@ -85,7 +85,7 @@ test("finding 12: status asks for attention when an attempt's task cannot be rea
 
 test("finding 12: status asks for attention when a task is in flight with no attempt, worker or lease", async () => {
   const f = await fixture({ tasks: [task("orphan-a1")] });
-  f.tasksCli(["start", "orphan-a1"]);
+  await f.tasks.start("orphan-a1");
   const view = await status(f.deps);
   assert.equal(view.reason, "attention");
   assert.deepEqual(view.orphanedInFlight, ["orphan-a1"]);

@@ -1,4 +1,4 @@
-/** Provider-independent task-store interface. tasks-axi is the initial implementation (ADR-0001). */
+/** Task-store boundary. SQLite is the implementation (ADR-0007). */
 
 export type TaskState = "queued" | "in_flight" | "done";
 
@@ -13,6 +13,8 @@ export type Task = {
   held: boolean;
   holdReason: string | null;
   body: string;
+  /** Used to compare a finalisation plan with later operator holds. */
+  holdRevision?: number;
 };
 
 export type Hold = {
@@ -25,6 +27,7 @@ export type Hold = {
 export type TaskStoreFailure =
   /** The store could not be read, so its state is unknown. */
   | "unreadable"
+  | "busy"
   /** The store refused the change. Nothing was applied. */
   | "rejected"
   /** The command did not report a result. Read the task back before deciding anything. */
@@ -54,7 +57,7 @@ export interface TaskStore {
   /** The task, or undefined when the store has no task with this ID. */
   read(id: string): Promise<Task | undefined>;
   start(id: string): Promise<Task>;
-  recordDone(id: string, note: string): Promise<Task>;
-  /** Leaves the task queued and held, so it is neither ready nor in flight and its dependants stay blocked. */
-  recordHold(id: string, hold: Hold): Promise<Task>;
+  recordDone(id: string, note: string, expected?: Task): Promise<Task>;
+  /** Records an outcome only while in flight with no newer hold, or against finalisation's expected task. */
+  recordHold(id: string, hold: Hold, expected?: Task): Promise<Task>;
 }

@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AttemptLog } from "./attempts/log.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
@@ -12,7 +12,7 @@ import { requireRetainedStorage } from "./infra/storage.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { PiWorker } from "./runtime/pi/worker.ts";
 import { RuntimeRecords, thinkingLevelSchema } from "./runtime/records.ts";
-import { TasksAxiStore } from "./tasks/tasks-axi.ts";
+import { SqliteTaskStore } from "./tasks/sqlite.ts";
 import { checkRetention } from "./workspaces/retention.ts";
 import { TreehouseProvider } from "./workspaces/treehouse.ts";
 
@@ -30,7 +30,9 @@ export const configSchema = z.strictObject({
   contextId: nonempty,
   /** Holds runtime records and the attempt log. Must be outside every workspace. */
   runtimeRoot: absolute,
-  tasks: z.strictObject({ file: absolute, repo: nonempty }),
+  databasePath: absolute.optional(),
+  databaseRetryMs: z.number().int().nonnegative().default(5000),
+  tasks: z.strictObject({ repo: nonempty }),
   workspaces: z.strictObject({ repository: absolute, poolRoot: absolute, fetch: z.boolean().default(false) }),
   delivery: z.strictObject({
     baseRef: nonempty,
@@ -77,7 +79,7 @@ export async function loadConfig(path: string): Promise<Config> {
   return configSchema.parse(JSON.parse(text));
 }
 
-const tasksAxiEntrypoint = resolve(import.meta.dirname, "../node_modules/tasks-axi/dist/bin/tasks-axi.js");
+export const databasePath = (config: Config) => config.databasePath ?? join(config.runtimeRoot, "switchboard.db");
 
 function inherited(names: string[]): Record<string, string> {
   return Object.fromEntries(names.flatMap(name => (process.env[name] === undefined ? [] : [[name, process.env[name]!]])));
@@ -91,6 +93,7 @@ export async function createDependencies(config: Config, progress?: (message: st
   if (!entrypoint?.isFile()) throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`);
   await access(config.worker.piEntrypoint, constants.R_OK).catch(() => { throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`); });
   await requireRetainedStorage(config.runtimeRoot, [config.workspaces.poolRoot]);
+  await requireRetainedStorage(databasePath(config), [config.workspaces.poolRoot]);
   const git = onPath("git");
   // Git and Treehouse use the operator's own environment, including their Git identity and credentials.
   const hostEnvironment = Object.fromEntries(Object.entries(process.env).flatMap(([k, v]) => (v === undefined ? [] : [[k, v]])));
@@ -109,9 +112,7 @@ export async function createDependencies(config: Config, progress?: (message: st
   });
   return {
     contextId: config.contextId,
-    tasks: await TasksAxiStore.open({
-      node: process.execPath, entrypoint: tasksAxiEntrypoint, file: config.tasks.file, repo: config.tasks.repo, home: homedir(),
-    }),
+    tasks: await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs }),
     workspaces: await TreehouseProvider.open({
       treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
       fetch: config.workspaces.fetch, environment: hostEnvironment,

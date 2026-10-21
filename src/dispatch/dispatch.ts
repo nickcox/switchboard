@@ -343,8 +343,7 @@ async function finalise(
     evidence: report?.result?.validationEvidence ?? [], workReferences: report?.result?.workReferences ?? [],
   };
   const holdReason = `Switchboard attempt ${ref.attempt} ${holdLabels[outcome.category]}`;
-  // The done note is passed as one command-line argument, which tasks-axi offers no file option for, so it is kept
-  // short enough for every supported platform. The worker's full result stays in its runtime records.
+  // Keep the task note short; the worker's full result stays in its runtime records.
   const note = doneNote(record, report);
   const holdBody = `${task.body}\n\n## Switchboard attempt ${ref.attempt}\n\n${JSON.stringify(record, null, 2)}`;
   let recorded: Task | undefined;
@@ -364,11 +363,13 @@ async function finalise(
     }
     recorded = now!;
   }
-  await deps.attempts.append(ref, "task_recorded", { outcome: outcome.done ? "done" : "hold", reason: outcome.done ? "done" : holdReason, category: outcome.category });
+  const applied = outcome.done ? recorded.state === "done" && recorded.body.includes(note)
+    : recorded.state === "queued" && recorded.holdReason === holdReason && recorded.body.endsWith(holdBody.slice(task.body.length));
+  await deps.attempts.append(ref, "task_recorded", { outcome: outcome.done ? "done" : "hold", reason: outcome.done ? "done" : holdReason, category: outcome.category, ...(!applied ? { applied: false } : {}) });
   return result({
     ok: outcome.done, reason: outcome.done ? "done" : "held", stage: "finalise", lease: "preserved", observed, attempt: summary, worker, retention,
     task: { id: recorded.id, state: recorded.state, held: recorded.held, holdReason: recorded.holdReason },
-    ...(outcome.done ? {} : { detail: holdReason }),
+    ...(!applied ? { detail: "The attempt outcome was recorded, but a newer operator decision left the task unchanged" } : outcome.done ? {} : { detail: holdReason }),
     nextAction: outcome.done ? "finish_attempt" : outcome.category === "review_required" ? "review_then_finish" : "inspect_attempt",
   });
 }

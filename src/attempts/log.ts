@@ -45,6 +45,8 @@ const entrySchemas = {
     reason: nonempty,
     /** Absent in entries written before it was recorded; those are classified from `reason`. */
     category: z.enum(outcomeCategories).optional(),
+    /** False when a newer operator decision kept the task unchanged. */
+    applied: z.boolean().optional(),
   }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
   halted: z.strictObject({

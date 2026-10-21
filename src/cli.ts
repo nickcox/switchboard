@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createDependencies, loadConfig } from "./config.ts";
+import { createDependencies, databasePath, loadConfig } from "./config.ts";
 import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
@@ -13,9 +13,14 @@ import { prune } from "./dispatch/prune.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
+import { taskCommand } from "./tasks/cli.ts";
+import { SqliteTaskStore } from "./tasks/sqlite.ts";
+import { requireRetainedStorage } from "./infra/storage.ts";
 
 const usage = `Usage:
   switchboard --version
+  switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
+  switchboard import --tasks-axi <backlog.md> [--archive <done-archive.md>] [--json] [--config <path>]
   switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
@@ -62,6 +67,16 @@ attempt was finished, discarded or its dry run planned (finish, discard), or pru
 1 for any other outcome, described by the report's reason; 2 for usage or configuration errors.`;
 
 async function main(argv: string[]): Promise<number> {
+  let commandIndex = 0;
+  while (commandIndex < argv.length) {
+    const option = argv[commandIndex]!;
+    if (option === "--json" || option.startsWith("--config=")) commandIndex++;
+    else if (option === "--config" && argv[commandIndex + 1] && !argv[commandIndex + 1]!.startsWith("--")) commandIndex += 2;
+    else break;
+  }
+  const taskArgs = [...argv.slice(0, commandIndex), ...argv.slice(commandIndex + 1)];
+  if (argv[commandIndex] === "task") return taskCommand(taskArgs);
+  if (argv[commandIndex] === "import") return (await import("./tasks/import.ts")).importCommand(taskArgs);
   const { values, positionals } = parseArgs({
     args: argv, allowPositionals: true, strict: true,
     options: {
@@ -134,7 +149,13 @@ async function main(argv: string[]): Promise<number> {
   const configPath = resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json");
   let deps;
   try {
-    deps = await createDependencies(await loadConfig(configPath), message => { if (!values.json) console.error(message); });
+    const config = await loadConfig(configPath);
+    await requireRetainedStorage(config.runtimeRoot, [config.workspaces.poolRoot]);
+    await requireRetainedStorage(databasePath(config), [config.workspaces.poolRoot]);
+    deps = await createDependencies(config, message => { if (!values.json) console.error(message); });
+    // Close the database however the process ends, so it never exits with the database open unless it crashes.
+    const tasks = deps.tasks;
+    if (tasks instanceof SqliteTaskStore) process.once("exit", () => tasks.close());
   } catch (error) {
     console.error(`Configuration error (${configPath}): ${error instanceof Error ? error.message : String(error)}`);
     return 2;

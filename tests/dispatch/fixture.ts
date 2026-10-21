@@ -1,20 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { AttemptLog } from "../../src/attempts/log.ts";
 import type { ContractSpec, Dependencies } from "../../src/dispatch/dispatch.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import type { DeliveryContract } from "../../src/runtime/contracts.ts";
 import { PiWorker, type PiWorkerOptions } from "../../src/runtime/pi/worker.ts";
 import { RuntimeRecords } from "../../src/runtime/records.ts";
-import { TasksAxiStore } from "../../src/tasks/tasks-axi.ts";
+import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { checkRetention } from "../../src/workspaces/retention.ts";
 import { TreehouseProvider } from "../../src/workspaces/treehouse.ts";
 
-// End to end with real tasks-axi, Treehouse and Git, and the synthetic Pi peer as the worker.
+// End to end with SQLite, Treehouse and Git, and the synthetic Pi peer as the worker.
 const git = onPath("git");
 const treehouse = onPath("treehouse");
-const entrypoint = resolve(import.meta.dirname, "../../node_modules/tasks-axi/dist/bin/tasks-axi.js");
+const entrypoint = resolve(import.meta.dirname, "../../src/cli.ts");
 const evidence = resolve(import.meta.dirname, "../../.investigation/dispatch-unit");
 mkdirSync(evidence, { recursive: true });
 
@@ -36,10 +37,6 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   // Commits exist only in disposable fixture repositories.
   run(["commit", "-q", "--no-gpg-sign", "-m", "Fixture base"]);
 
-  const file = join(dir, "backlog.md");
-  for (const args of [["add", "seed-z9", "Seed", "--repo", "other"], ...(options.tasks ?? [])]) {
-    execFileSync(process.execPath, [entrypoint, ...args, "--json", "--backend", "markdown", "--file", file], { env: { PATH: environment.PATH, HOME: home } });
-  }
   const runtimeRoot = join(dir, "runtime");
   const runtime = new RuntimeRecords(runtimeRoot);
   const log = join(dir, "requests.jsonl");
@@ -49,7 +46,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
     ...options.worker,
   });
-  const tasks = await TasksAxiStore.open({ node: process.execPath, entrypoint, file, repo: "fixture", home });
+  const tasks = await SqliteTaskStore.open({ path: join(dir, "tasks.db"), repo: "fixture" });
   const deps: Dependencies = {
     contextId: "fixture-context", tasks,
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
@@ -65,7 +62,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   // The same setup as a configuration file, for tests that run Switchboard in a separate process.
   const config = join(dir, "switchboard.json");
   writeFileSync(config, JSON.stringify({
-    contextId: "fixture-context", runtimeRoot, tasks: { file, repo: "fixture" },
+    contextId: "fixture-context", runtimeRoot, databasePath: join(dir, "tasks.db"), tasks: { repo: "fixture" },
     workspaces: { repository, poolRoot: join(dir, "pool") },
     delivery: { baseRef: deps.delivery.baseRef, branchPrefix: deps.delivery.branchPrefix, ...deps.delivery.default, byTaskKind: deps.delivery.byTaskKind },
     worker: {
@@ -73,8 +70,13 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
       environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
     },
   }));
-  // Changes the store directly with the tasks-axi CLI, as an operator or another tool would.
-  const tasksCli = (args: string[]) => execFileSync(process.execPath, [entrypoint, ...args, "--json", "--backend", "markdown", "--file", file], { env: { PATH: environment.PATH, HOME: home }, encoding: "utf8" });
+  // Changes tasks through Switchboard, as an operator would.
+  const tasksCli = (args: string[]) => execFileSync(process.execPath, [entrypoint, "task", ...args, "--json", "--config", config], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  // Tasks are given as `task add` arguments and added through the store, without starting a process for each.
+  for (const args of [["add", "seed-z9", "Seed", "--repo", "other"], ...(options.tasks ?? [])]) {
+    const { positionals: [, id, title], values } = parseArgs({ args, allowPositionals: true, options: { repo: { type: "string" }, body: { type: "string" }, kind: { type: "string" } } });
+    await tasks.add({ id: id!, title: title!, ...(values.body === undefined ? {} : { body: values.body }), repo: values.repo ?? null, ...(values.kind === undefined ? {} : { kind: values.kind }) });
+  }
   return { dir, deps, tasks, run, runtime, config, environment, tasksCli };
 }
 

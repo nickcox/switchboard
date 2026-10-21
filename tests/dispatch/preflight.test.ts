@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { status } from "../../src/dispatch/status.ts";
@@ -11,7 +11,7 @@ for (const failure of ["not exclusive", "not writable", "unexpected error"] as c
   test(`preflight refuses runtime storage that is ${failure} before selection`, async () => {
     const f = await fixture({ tasks: [task("probe-a1")] });
     const root = join(f.dir, "runtime");
-    const before = await readFile(join(f.dir, "backlog.md"), "utf8");
+    const before = await f.tasks.list();
     let writes = 0;
     f.deps.runtime = new RuntimeRecords(root, async (path, value) => {
       writes += 1;
@@ -30,7 +30,7 @@ for (const failure of ["not exclusive", "not writable", "unexpected error"] as c
     assert.deepEqual(await readdir(root), []);
     assert.deepEqual(await f.deps.attempts.list(), []);
     assert.deepEqual(await f.deps.workspaces.leases(), []);
-    assert.equal(await readFile(join(f.dir, "backlog.md"), "utf8"), before);
+    assert.deepEqual(await f.tasks.list(), before);
   });
 }
 

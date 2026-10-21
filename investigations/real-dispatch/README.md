@@ -9,7 +9,7 @@ Builds a fresh, disposable demo and runs one real `switchboard dispatch --once` 
 Each run makes a new directory under the ignored `.investigation/real-dispatch/` folder, containing:
 
 - `repo/`: a disposable Git repository with one commit on `main`. Commits use your normal Git identity.
-- `backlog.md`: a tasks-axi store with one ready task: `hello-a1` (commit a file), or `survey-a1` with kind `scout` (write a report) when `--kind scout` is given.
+- `runtime/switchboard.db`: a SQLite store with one ready task: `hello-a1` (commit a file), or `survey-a1` with kind `scout` (write a report) when `--kind scout` is given.
 - `switchboard.json`: the configuration, with every path inside the demo directory.
 - `runtime/` and `pool/`: created by Switchboard and Treehouse during dispatch.
 

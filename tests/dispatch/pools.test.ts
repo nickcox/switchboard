@@ -22,7 +22,7 @@ test("a lease in a workspace pool that is no longer listed is unknown and blocks
   assert.equal(view.attempts[0]?.nextAction.code, "confirm_lease_returned");
 
   // Even once the task is ready again, it is not dispatched while its earlier lease may still be held.
-  f.tasksCli(["unhold", "pool-a1"]);
+  f.tasksCli(["release", "pool-a1"]);
   assert.deepEqual(await f.deps.tasks.ready(), ["pool-a1"]);
   assert.equal((await dispatchOnce(f.deps)).reason, "no_ready_work");
   const named = await dispatchOnce(f.deps, { taskId: "pool-a1" });

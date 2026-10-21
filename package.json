@@ -17,7 +17,6 @@
     "test": "node --test --test-timeout=30000 \"tests/**/*.test.ts\""
   },
   "dependencies": {
-    "@toon-format/toon": "2.3.1",
     "tasks-axi": "0.2.6",
     "zod": "4.6.7"
   },

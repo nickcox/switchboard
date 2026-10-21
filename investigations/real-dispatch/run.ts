@@ -1,4 +1,4 @@
-// Builds a fresh disposable demo (Git repository, tasks-axi store, Switchboard configuration) and, unless
+// Builds a fresh disposable demo (Git repository, SQLite task store, Switchboard configuration) and, unless
 // --setup-only is given, runs one real dispatch with a real Pi worker and checks the result independently.
 // Nothing outside the new demo directory is changed. A real dispatch makes model calls on your account.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { onPath } from "../../src/infra/executables.ts";
 import { isArtefactPath } from "./paths.ts";
+import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 
 const usage = `Usage: node investigations/real-dispatch/run.ts --provider <provider> --model <model> [--kind code|scout] [--pi-entrypoint <path>] [--setup-only]
 
@@ -29,7 +30,6 @@ if (values.help || !values.provider || !values.model || !["code", "scout"].inclu
 
 const root = resolve(import.meta.dirname, "../..");
 const cli = join(root, "src/cli.ts");
-const tasksAxi = join(root, "node_modules/tasks-axi/dist/bin/tasks-axi.js");
 const git = onPath("git");
 const piEntrypoint = values["pi-entrypoint"] ? resolve(values["pi-entrypoint"]) : realpathSync(onPath("pi"));
 
@@ -37,7 +37,7 @@ const evidence = join(root, ".investigation/real-dispatch");
 mkdirSync(evidence, { recursive: true });
 const demo = realpathSync(mkdtempSync(join(evidence, "run-")));
 const repository = join(demo, "repo");
-const backlog = join(demo, "backlog.md");
+const database = join(demo, "runtime", "switchboard.db");
 const config = join(demo, "switchboard.json");
 const run = (args: string[]) => execFileSync(git, ["-c", "core.hooksPath=/dev/null", ...args], { cwd: repository, encoding: "utf8" }).trim();
 
@@ -52,18 +52,19 @@ const base = run(["rev-parse", "main"]);
 const scout = values.kind === "scout";
 const taskId = scout ? "survey-a1" : "hello-a1";
 const expected = "hello from switchboard";
-execFileSync(process.execPath, [
-  tasksAxi, "add", taskId, scout ? "Survey the repository" : "Add a hello file", "--repo", "demo", "--json", "--backend", "markdown", "--file", backlog,
-  ...(scout ? ["--kind", "scout"] : []),
-  "--body", scout
+const tasks = await SqliteTaskStore.open({ path: database, repo: "demo" });
+await tasks.add({
+  id: taskId, title: scout ? "Survey the repository" : "Add a hello file", kind: scout ? "scout" : null,
+  body: scout
     ? "Write a short Markdown report that lists the files in this repository and summarises README.md. Do not change the repository."
     : `Create a file named hello.txt containing exactly the line '${expected}', then commit it on the current branch.`,
-], { stdio: "ignore" });
+});
+tasks.close();
 
 writeFileSync(config, `${JSON.stringify({
   contextId: "real-dispatch-demo",
   runtimeRoot: join(demo, "runtime"),
-  tasks: { file: backlog, repo: "demo" },
+  tasks: { repo: "demo" },
   workspaces: { repository, poolRoot: join(demo, "pool") },
   delivery: {
     baseRef: "main", requiredEvidence: ["file-check"], requiredDeliverables: ["hello-change"],
@@ -92,14 +93,16 @@ console.log(`\nDispatch: ${report.reason}${report.detail ? ` – ${report.detail
 const branch = report.attempt?.outputBranch as string | undefined;
 const show = (args: string[]) => { try { return run(args); } catch { return undefined; } };
 const branchHead = branch ? show(["rev-parse", `refs/heads/${branch}`]) : undefined;
-const task = spawnSync(process.execPath, [tasksAxi, "show", taskId, "--full", "--backend", "markdown", "--file", backlog], { encoding: "utf8" }).stdout;
+const taskStore = await SqliteTaskStore.open({ path: database, repo: "demo" });
+const task = await taskStore.read(taskId);
+taskStore.close();
 const nextAction = JSON.parse(switchboard(["status"]).stdout).attempts?.[0]?.nextAction?.code;
 // Reports written by the worker into any attempt's artefacts directory, outside the workspace.
 const reports = (readdirSync(join(demo, "runtime"), { recursive: true }) as string[])
   .filter(isArtefactPath).map(path => join(demo, "runtime", path));
 const checks: [string, boolean][] = scout ? [
   ["dispatch recorded the task as done", report.reason === "done"],
-  ["task store shows the task done", /state: done/.test(task)],
+  ["task store shows the task done", task?.state === "done"],
   ["a non-empty report exists in the attempt's artefacts directory", reports.some(path => readFileSync(path, "utf8").trim() !== "")],
   ["the output branch has no new commits", branchHead === undefined || branchHead === base],
   ["main is unchanged", show(["rev-parse", "main"]) === base],
@@ -110,7 +113,7 @@ const checks: [string, boolean][] = scout ? [
   ["output branch head is the reported result commit", branchHead !== undefined && branchHead === report.attempt?.resultCommit],
   ["hello.txt on the output branch has the exact line", (branch ? show(["show", `${branch}:hello.txt`]) : undefined) === expected],
   ["main is unchanged", show(["rev-parse", "main"]) === base],
-  ["task store shows the task queued and held", /state: queued/.test(task) && /held: yes/.test(task)],
+  ["task store shows the task queued and held", task?.state === "queued" && task.held],
   ["retention check passed", report.retention?.retained === true],
   ["status asks for review", nextAction === "review_then_finish"],
 ];
