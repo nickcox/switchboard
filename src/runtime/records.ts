@@ -8,6 +8,7 @@ export { inside } from "../infra/storage.ts";
 import { identitySchema, sameIdentity, workerInputSchema, type WorkerInput } from "./contracts.ts";
 
 export const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export type ThinkingLevel = z.infer<typeof thinkingLevelSchema>;
 const sessionStartSchema = z.strictObject({
   version: z.literal(1), identity: identitySchema, observedAt: z.iso.datetime(), thinkingLevel: thinkingLevelSchema,
 });

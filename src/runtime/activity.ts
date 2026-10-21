@@ -15,7 +15,7 @@ export const activityEntrySchema = z.discriminatedUnion("kind", [
   z.strictObject({ v: z.literal(1), ts: z.iso.datetime(), kind: z.literal("note"), text: z.string() }),
 ]);
 export type ActivityEntry = z.infer<typeof activityEntrySchema>;
-type Payload = ActivityEntry extends infer E ? E extends ActivityEntry ? Omit<E, "v" | "ts"> : never : never;
+export type Payload = ActivityEntry extends infer E ? E extends ActivityEntry ? Omit<E, "v" | "ts"> : never : never;
 
 export const activityFile = "activity.jsonl";
 const textLimit = 200;
