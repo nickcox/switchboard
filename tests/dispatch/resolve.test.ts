@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { dispatchOnce, inspect } from "../../src/dispatch/dispatch.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
@@ -12,15 +12,17 @@ import { startHeartbeat } from "../../src/runtime/heartbeat.ts";
 const delivery = { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code" as const, acceptance: "review_or_integration" as const, requiredEvidence: [], requiredDeliverables: [] };
 
 for (const heartbeat of ["missing", "stale"]) test(`a runtime record with a ${heartbeat} heartbeat blocks dispatch until the operator confirms the worker stopped`, async () => {
-  const { deps, runtime, dir } = await fixture({ tasks: [task("next-a1"), ["add", "earlier-a1", "Earlier", "--repo", "other"]], scenario: "commit-result" });
+  const { deps, runtime, dir, tasks } = await fixture({ tasks: [task("next-a1"), ["add", "earlier-a1", "Earlier", "--repo", "other"]], scenario: "commit-result" });
   const workspace = join(dir, "orphan-workspace");
   mkdirSync(workspace);
   // As left by a dispatcher that died after launching a worker.
-  const reserved = await runtime.reserve({ identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-orphan", sessionId: randomUUID() }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  const sessionId = randomUUID();
   const ref = await deps.attempts.create("earlier-a1", {}, 0);
   await deps.attempts.append(ref, "leased", { leaseId: "lease-orphan", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
-  await deps.attempts.append(ref, "launched", { sessionId: reserved.binding.input.identity.sessionId });
-  if (heartbeat === "stale") writeFileSync(join(reserved.directory, "heartbeat.json"), JSON.stringify({ version: 1, at: new Date(Date.now() - 60_000).toISOString(), pid: process.pid }));
+  await deps.attempts.append(ref, "launched", { sessionId });
+  const reserved = await runtime.reserve({ identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-orphan", sessionId }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  if (heartbeat === "stale") await tasks.database.transaction(() => tasks.database.run("UPDATE worker_claims SET heartbeat_at = ? WHERE id = ?", new Date(Date.now() - 60_000).toISOString(), reserved.claimId));
+  else await reserved.storage.releaseClaim(reserved.claimId);
 
   const view = await status(deps);
   assert.equal(view.nextAction.code, "stop_worker");
@@ -43,12 +45,14 @@ for (const heartbeat of ["missing", "stale"]) test(`a runtime record with a ${he
   assert.equal((await resolveStopped(deps, { leaseId: "lease-orphan", confirmed: true })).nextAction.code, "none");
 });
 
-test("a fresh heartbeat also protects a runtime record with no attempt log", async () => {
-  const { deps, runtime, dir } = await fixture();
+test("a fresh claim protects a runtime record before the attempt logs its launch", async () => {
+  const { deps, runtime, dir } = await fixture({ tasks: [task("earlier-a1")] });
   const workspace = join(dir, "orphan-workspace");
   mkdirSync(workspace);
+  const ref = await deps.attempts.create("earlier-a1", {}, 0);
+  await deps.attempts.append(ref, "leased", { leaseId: "lease-orphan", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
   const reserved = await runtime.reserve({ identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-orphan", sessionId: randomUUID() }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
-  const stop = await startHeartbeat(reserved.directory);
+  const stop = await startHeartbeat(reserved);
   try {
     const view = await status(deps);
     assert.equal(view.reason, "clear");
@@ -57,7 +61,7 @@ test("a fresh heartbeat also protects a runtime record with no attempt log", asy
     assert.equal(refused.reason, "refused");
     assert.match(refused.detail!, /owning dispatcher appears to be running/);
     assert.equal((await runtime.discover("fixture-context"))[0]?.child.status, "unknown");
-    assert.equal((await deps.attempts.list()).length, 0);
+    assert.equal((await deps.attempts.list()).length, 1);
   } finally { await stop(); }
 });
 

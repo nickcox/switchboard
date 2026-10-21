@@ -49,7 +49,8 @@ test("possibly running: no observed exit and no fresh heartbeat", async () => {
   const ref = await f.deps.attempts.create("maybe-a1", {}, 0);
   await f.deps.attempts.append(ref, "leased", { leaseId: "lease-maybe", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
   await f.deps.attempts.append(ref, "launched", { sessionId });
-  await f.runtime.reserve({ identity: { contextId: "fixture-context", taskId: "maybe-a1", leaseId: "lease-maybe", sessionId }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  const runtime = await f.runtime.reserve({ identity: { contextId: "fixture-context", taskId: "maybe-a1", leaseId: "lease-maybe", sessionId }, workspace, instructions: "Earlier", acceptanceCriteria: [], delivery });
+  await runtime.storage.releaseClaim(runtime.claimId);
   expect(await only(f.deps, "maybe-a1"), "possibly_running", "stop_worker", false);
 });
 

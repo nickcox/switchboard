@@ -34,16 +34,15 @@ export async function resolveStopped(
   if (!state.possiblyRunning.some(p => p.leaseId === options.leaseId)) {
     return result({ ok: false, reason: "refused", ...common, detail: "No worker for this lease is waiting for confirmation that it has stopped", nextAction: "none" });
   }
-  if (runtime && await dispatcherRunning(runtime.directory)) {
+  if (runtime && await dispatcherRunning(runtime)) {
     return result({ ok: false, reason: "refused", ...common, detail: "The owning dispatcher appears to be running; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
   }
   if (!options.confirmed) return result({ ok: false, reason: "refused", ...common, detail: "Resolving needs the operator's confirmation that the worker has stopped", nextAction: "confirm_worker_stopped" });
 
   if (!attempt) return result({ ok: false, reason: "refused", ...common, detail: "The runtime has no attempt to record this confirmation against; restore or import its attempt records first", nextAction: "inspect_attempt" });
 
-  // A launch logged without runtime records may still be about to start its worker. Claim its runtime directory
-  // first: the dispatcher reserves that directory exclusively before starting a worker, so it can then no longer start
-  // one. If the directory already exists, the dispatcher is starting the worker now.
+  // Fence a pending launch by inserting its launch row first. If permission was already inserted, refuse rather
+  // than assuming a dispatcher that is about to start its worker has stopped.
   if (!runtime && attempt?.entries.some(e => e.kind === "launched") && !await deps.runtime.fence(deps.contextId, options.leaseId)) {
     return result({ ok: false, reason: "refused", ...common, detail: "The dispatcher is starting this worker now; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
   }

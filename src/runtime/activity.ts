@@ -1,5 +1,4 @@
-import { open, readFile, type FileHandle } from "node:fs/promises";
-import { join } from "node:path";
+import type { RuntimeAddress } from "./store.ts";
 import { z } from "zod";
 
 /**
@@ -29,14 +28,14 @@ export function shorten(text: string, limit = textLimit): string {
 
 /** Appends entries in order. Write failures are swallowed: losing diagnostics must never affect the worker. */
 export class ActivityWriter {
-  private handle: Promise<FileHandle | undefined>;
   private chain: Promise<void> = Promise.resolve();
   private written = 0;
   private full = false;
   private readonly onEntry: ((entry: ActivityEntry) => void) | undefined;
 
-  constructor(directory: string, onEntry?: (entry: ActivityEntry) => void) {
-    this.handle = open(join(directory, activityFile), "a", 0o600).catch(() => undefined);
+  private readonly record: RuntimeAddress;
+  constructor(record: RuntimeAddress, onEntry?: (entry: ActivityEntry) => void) {
+    this.record = record;
     this.onEntry = onEntry;
   }
 
@@ -52,28 +51,18 @@ export class ActivityWriter {
     this.written += Buffer.byteLength(line);
     this.onEntry?.(JSON.parse(line) as ActivityEntry);
     this.chain = this.chain.then(async () => {
-      const handle = await this.handle;
-      await handle?.appendFile(line).catch(() => {});
+      await this.record.storage.appendActivity(this.record.directory, JSON.parse(line) as ActivityEntry).catch(() => {});
     });
   }
 
   async close(): Promise<void> {
     await this.chain;
-    await (await this.handle)?.close().catch(() => {});
   }
 }
 
-/** Reads an attempt's activity entries, skipping lines that are partial or invalid. Missing means no activity yet. */
-export async function readActivity(directory: string): Promise<ActivityEntry[]> {
-  let text: string;
-  try { text = await readFile(join(directory, activityFile), "utf8"); }
-  catch { return []; }
-  const entries: ActivityEntry[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try { entries.push(activityEntrySchema.parse(JSON.parse(line))); } catch { /* A partial last line or foreign content. */ }
-  }
-  return entries;
+/** Activity is diagnostic; missing observations do not decide liveness or task state. */
+export async function readActivity(record: RuntimeAddress): Promise<ActivityEntry[]> {
+  return (await record.storage.activity(record.directory)).map(entry => activityEntrySchema.parse(entry));
 }
 
 export function describeEntry(entry: ActivityEntry): string {

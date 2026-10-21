@@ -7,6 +7,7 @@ import { Database } from "../database.ts";
 import { isOpen, summarise } from "../dispatch/dispatch.ts";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { key, readJsonFile, RuntimeRecords } from "../runtime/records.ts";
+import { readLegacyRuntime } from "./runtime-import.ts";
 import { requireSettled } from "../tasks/import.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 import { AttemptLog, holdLabels, parseAttemptEntry, type AttemptEntry, type AttemptRecord, type OutcomeCategory } from "./log.ts";
@@ -67,7 +68,8 @@ async function snapshot(config: Config, database: Database) {
   const legacy = new AttemptLog(root, context);
   const original = await legacy.list();
   const records = original.map(record => convert(record, config.delivery.branchPrefix));
-  for (const runtime of await new RuntimeRecords(root).discover(context)) {
+  const runtimeRecords = await readLegacyRuntime(root, context);
+  for (const runtime of runtimeRecords.records) {
     if (runtime.child.status !== "operator_confirmed_stopped") continue;
     const identity = runtime.binding.input.identity;
     const target = records.find(r => r.record.taskId === identity.taskId && summarise(r.record).leaseId === identity.leaseId);
@@ -111,7 +113,7 @@ async function snapshot(config: Config, database: Database) {
       if (!numbers.some(n => n.taskId === value.taskId && n.attempt === value.attempt)) numbers.push({ taskId: value.taskId, attempt: value.attempt });
     }
   }
-  return { original, records, reservations, numbers, archives, originalArchives };
+  return { original, records, reservations, numbers, archives, originalArchives, runtimeRecords };
 }
 
 /** Offline migration into a validated VACUUM copy of the database that already owns the tasks. */
@@ -146,6 +148,23 @@ export async function importAttempts(config: Config) {
         for (const confirmation of confirmations) copy!.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope) VALUES(?,?,?,?,?,?,?)",
           config.contextId, record.taskId, record.attempt, confirmation.fact, confirmation.confirmedBy, confirmation.confirmedAt, JSON.stringify(confirmation.scope));
       }
+      for (const { record } of before.records) {
+        const summary = summarise(record);
+        if (!summary.leaseId) continue;
+        const runtime = before.runtimeRecords.records.find(r => r.binding.input.identity.leaseId === summary.leaseId);
+        const directory = runtime?.directory ?? join(config.runtimeRoot, key(config.contextId), key(summary.leaseId));
+        const claimId = runtime ? randomUUID() : null;
+        const at = runtime?.binding.createdAt ?? record.entries[0]!.recordedAt;
+        if (claimId) copy!.run("INSERT INTO worker_claims VALUES(?,?,?,?,?,?,?,?)", claimId, config.contextId, record.taskId, record.attempt, 0, at, at, at);
+        copy!.run("INSERT INTO launches VALUES(?,?,?,?,?,?,?,?,?)", config.contextId, record.taskId, record.attempt, summary.leaseId,
+          at, runtime ? "launch" : "fence", directory, runtime ? JSON.stringify(runtime.binding) : null, claimId);
+        if (runtime?.exit) copy!.run("INSERT INTO worker_observations VALUES(?,?,?)", directory, "exit", JSON.stringify(runtime.exit.childExit));
+        if (runtime?.stop) copy!.run("INSERT INTO worker_observations VALUES(?,?,?)", directory, "operator_stop", JSON.stringify({ confirmedAt: runtime.stop.confirmedAt, ...(runtime.stop.note ? { note: runtime.stop.note } : {}) }));
+        if (runtime?.thinkingLevel) copy!.run("INSERT INTO worker_observations VALUES(?,?,?)", directory, "session_start", JSON.stringify(runtime.thinkingLevel));
+      }
+      for (const runtime of before.runtimeRecords.records) {
+        if (!before.records.some(({ record }) => summarise(record).leaseId === runtime.binding.input.identity.leaseId)) throw new Error("A runtime binding has no attempt");
+      }
       for (const reservation of before.reservations) {
         if (before.records.some(r => r.record.entries[0]!.data.requestId === reservation.requestId)) continue;
         copy!.run("INSERT INTO attempts(context,task,request_id,reserved_at,closed) VALUES(?,?,?,?,1)", config.contextId, reservation.taskId, reservation.requestId, reservation.reservedAt);
@@ -159,6 +178,9 @@ export async function importAttempts(config: Config) {
       assert.deepEqual(store.read(record), record, "Imported entries differ");
       assert.deepEqual(store.confirmations(record), confirmations, "Imported confirmations differ");
     }
+    const importedRuntime = await new RuntimeRecords(config.runtimeRoot, copy).discover(config.contextId);
+    assert.deepEqual(importedRuntime.map(({ storage: _storage, claimId: _claimId, ...record }) => record),
+      before.runtimeRecords.records.map(({ exit: _exit, stop: _stop, ...record }) => record), "Imported runtime records and paths differ");
     assert.equal(store.list().length, before.records.length);
     assert.deepEqual(copy.all("SELECT task, number FROM attempt_numbers WHERE context = ? ORDER BY task, number", config.contextId).map(row => ({ taskId: String(row.task), attempt: Number(row.number) })),
       [...before.numbers].sort((a, b) => (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : a.attempt - b.attempt)));
@@ -178,6 +200,7 @@ export async function importAttempts(config: Config) {
     assert.deepEqual(after.numbers, before.numbers);
     assert.deepEqual(after.originalArchives, before.originalArchives);
     assert.deepEqual(after.original, before.original, "Attempt files changed during import");
+    assert.deepEqual(after.runtimeRecords, before.runtimeRecords, "Runtime files changed during import");
     copy.checkpoint();
     copy.close();
     source.checkpoint();

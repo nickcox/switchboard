@@ -98,7 +98,8 @@ export async function createDependencies(config: Config, progress?: (message: st
   const git = onPath("git");
   // Git and Treehouse use the operator's own environment, including their Git identity and credentials.
   const hostEnvironment = Object.fromEntries(Object.entries(process.env).flatMap(([k, v]) => (v === undefined ? [] : [[k, v]])));
-  const runtime = new RuntimeRecords(config.runtimeRoot);
+  const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
+  const runtime = new RuntimeRecords(config.runtimeRoot, tasks.database);
   const worker = new PiWorker(runtime, {
     executable: process.execPath, entrypoint: config.worker.piEntrypoint,
     provider: config.worker.provider, model: config.worker.model, shellTool: config.worker.shellTool, runMs: config.worker.runMs,
@@ -115,7 +116,6 @@ export async function createDependencies(config: Config, progress?: (message: st
     treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
     fetch: config.workspaces.fetch, environment: hostEnvironment,
   });
-  const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
   return {
     contextId: config.contextId,
     tasks,

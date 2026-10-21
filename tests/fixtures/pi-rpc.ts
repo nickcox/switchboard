@@ -1,6 +1,6 @@
 // Synthetic RPC peer only. No Pi agent or model is created.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { RuntimeBinding } from "../../src/runtime/records.ts";
@@ -14,7 +14,7 @@ function flag(name: string): string {
 const scenario = process.env.FAKE_PI_SCENARIO;
 const sessionId = flag("--session-id");
 const sessions = flag("--session-dir");
-const binding = JSON.parse(readFileSync(join(dirname(sessions), "binding.json"), "utf8")) as RuntimeBinding;
+let binding: RuntimeBinding;
 writeFileSync(join(dirname(sessions), "fixture-launch.json"), JSON.stringify({ argv: process.argv, cwd: process.cwd() }));
 const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
 function respond(request: Record<string, unknown>, data?: unknown) {
@@ -85,6 +85,9 @@ function handle(request: Record<string, unknown>) {
       isStreaming: false, isCompacting: false, pendingMessageCount: 0,
     });
   } else if (request.type === "prompt") {
+    const input = JSON.parse(String(request.message).split("Use this instruction snapshot and resolved delivery contract unchanged:\n\n")[1]!.split("\n\nBefore your final response")[0]!);
+    binding = { version: 1, createdAt: new Date().toISOString(), input, sessionDirectory: sessions,
+      resultPath: join(dirname(sessions), "result.json"), artefactDirectory: join(dirname(sessions), "artefacts") };
     if (scenario === "bad-json") { process.stdout.write("not json\n"); return; }
     if (scenario === "wrong-response") {
       send({ type: "response", id: request.id, command: "other", success: true }); return;

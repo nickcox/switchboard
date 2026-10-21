@@ -45,7 +45,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   run(["commit", "-q", "--no-gpg-sign", "-m", "Fixture base"]);
 
   const runtimeRoot = join(dir, "runtime");
-  const runtime = new RuntimeRecords(runtimeRoot);
+  const runtime = new RuntimeRecords(runtimeRoot, join(dir, "tasks.db"));
   const log = join(dir, "requests.jsonl");
   const worker = new PiWorker(runtime, {
     executable: process.execPath, entrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"),

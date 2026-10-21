@@ -56,7 +56,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 3) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 4) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -113,6 +113,46 @@ export class Database {
       if (Number(result.get("PRAGMA user_version")!.user_version) < 3) await result.transaction(() => {
         if (Number(result.get("PRAGMA user_version")!.user_version) >= 3) return;
         db.exec("ALTER TABLE tasks DROP COLUMN started_body; PRAGMA user_version = 3");
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 4) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 4) return;
+        db.exec(`
+          CREATE TABLE worker_claims (
+            id TEXT PRIMARY KEY, context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL,
+            owner_pid INTEGER NOT NULL, owner_started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT,
+            UNIQUE(context, task, attempt),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempts(context, task, number) ON DELETE CASCADE);
+          CREATE TABLE launches (
+            context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL, lease_id TEXT NOT NULL,
+            created_at TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('launch','fence')),
+            directory TEXT NOT NULL UNIQUE, binding TEXT CHECK(binding IS NULL OR json_valid(binding)),
+            claim_id TEXT UNIQUE REFERENCES worker_claims(id),
+            PRIMARY KEY(context, task, attempt), UNIQUE(context, lease_id),
+            CHECK((kind = 'launch' AND binding IS NOT NULL AND claim_id IS NOT NULL) OR
+                  (kind = 'fence' AND binding IS NULL AND claim_id IS NULL)),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempts(context, task, number) ON DELETE CASCADE);
+          CREATE TRIGGER launches_immutable BEFORE UPDATE ON launches BEGIN
+            SELECT RAISE(ABORT, 'Launch rows cannot be changed');
+          END;
+          CREATE TRIGGER launches_not_removed BEFORE DELETE ON launches
+            WHEN EXISTS(SELECT 1 FROM attempts WHERE context = OLD.context AND task = OLD.task AND number = OLD.attempt)
+            BEGIN SELECT RAISE(ABORT, 'Launch rows cannot be removed while the attempt exists'); END;
+          CREATE TABLE worker_observations (
+            directory TEXT NOT NULL REFERENCES launches(directory) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN ('exit','session_start','operator_stop')),
+            value TEXT NOT NULL CHECK(json_valid(value)), PRIMARY KEY(directory, kind));
+          CREATE TABLE worker_activity (
+            directory TEXT NOT NULL REFERENCES launches(directory) ON DELETE CASCADE, sequence INTEGER NOT NULL,
+            entry TEXT NOT NULL CHECK(json_valid(entry)), PRIMARY KEY(directory, sequence));
+          CREATE TABLE control_requests (
+            id TEXT PRIMARY KEY, claim_id TEXT NOT NULL REFERENCES worker_claims(id) ON DELETE CASCADE,
+            request TEXT NOT NULL CHECK(json_valid(request)), created_at TEXT NOT NULL,
+            claimed_by TEXT CHECK(claimed_by IN ('dispatcher','withdrawn')), claimed_at TEXT,
+            result TEXT CHECK(result IS NULL OR json_valid(result)),
+            CHECK((claimed_by IS NULL) = (claimed_at IS NULL)),
+            CHECK(result IS NULL OR claimed_by = 'dispatcher'));
+          PRAGMA user_version = 4;
+        `);
       });
       return result;
     } catch (error) { db.close(); throw error; }

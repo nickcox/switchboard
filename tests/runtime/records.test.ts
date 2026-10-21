@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { RuntimeRecords, readJsonFile } from "../../src/runtime/records.ts";
-import { fixture } from "../helpers.ts";
+import { fixture, withRuntimeDatabase } from "../helpers.ts";
 
 const posixOnly = { skip: process.platform === "win32" };
 
@@ -32,32 +32,33 @@ test("one lease cannot launch another session, even after a child-exit observati
   assert.equal((await f.records.discover("another-context")).length, 1);
 });
 
-test("invalid or incomplete runtime records cause refusal, not an empty inventory", async () => {
+test("launch rows are immutable and cannot be removed while their attempt exists", async () => {
   const f = fixture();
   const reserved = await f.records.reserve(f.input);
-  await writeFile(join(reserved.directory, "binding.json"), "{partial");
-  await assert.rejects(f.records.discover(f.input.identity.contextId));
+  await withRuntimeDatabase(f.records, async database => {
+    await assert.rejects(database.transaction(() => database.run("UPDATE launches SET binding = '{}' WHERE directory = ?", reserved.directory)), /cannot be changed/);
+    await assert.rejects(database.transaction(() => database.run("DELETE FROM launches WHERE directory = ?", reserved.directory)), /cannot be removed/);
+    assert.equal(database.get("SELECT count(*) AS n FROM launches")!.n, 1);
+  });
 });
 
-test("stale exit receipts cannot certify another session", async () => {
+test("exit observations are bound to an existing launch and recorded once", async () => {
   const f = fixture();
   const reserved = await f.records.reserve(f.input);
   await f.records.recordChildExit(reserved, { started: true, code: 0, signal: null });
-  const path = join(reserved.directory, "child-exit.json");
-  const receipt = JSON.parse(await readFile(path, "utf8"));
-  receipt.identity.sessionId = randomUUID();
-  await writeFile(path, JSON.stringify(receipt));
-  await assert.rejects(f.records.discover(f.input.identity.contextId), /Stale/);
+  await assert.rejects(f.records.recordChildExit(reserved, { started: false, code: null, signal: null }));
+  await assert.rejects(f.records.recordChildExit({ directory: join(f.dir, "unknown") }, { started: true, code: 0, signal: null }), /FOREIGN KEY/);
 });
 
-test("reserve runs its hook after claiming the directory and before writing the binding", async () => {
+test("reserve commits launch permission and a fresh claim before its hook, and writes no dispatcher files", async () => {
   const f = fixture();
-  let bindingExisted: boolean | undefined;
-  await f.records.reserve(f.input, async directory => {
-    bindingExisted = await readFile(join(directory, "binding.json")).then(() => true, () => false);
+  const reserved = await f.records.reserve(f.input, async record => {
+    assert.equal((await f.records.discover(f.input.identity.contextId)).length, 1);
+    const claim = await record.storage.heartbeat(record.claimId);
+    assert.equal(claim?.owner_pid, process.pid);
+    assert.equal(claim?.released_at, null);
   });
-  assert.equal(bindingExisted, false);
-  assert.equal((await f.records.discover(f.input.identity.contextId)).length, 1);
+  assert.deepEqual((await readdir(reserved.directory)).sort(), ["artefacts", "sessions"]);
 });
 
 test("startup observations are write-once and discovery checks their identity", async () => {
@@ -67,11 +68,7 @@ test("startup observations are write-once and discovery checks their identity", 
   await f.records.recordSessionStart(reserved, "high");
   await assert.rejects(f.records.recordSessionStart(reserved, "low"));
   assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.thinkingLevel, "high");
-  const path = join(reserved.directory, "session-start.json");
-  const start = JSON.parse(await readFile(path, "utf8"));
-  start.identity.sessionId = randomUUID();
-  await writeFile(path, JSON.stringify(start));
-  await assert.rejects(f.records.discover(f.input.identity.contextId), /Stale session-start/);
+  await assert.rejects(f.records.recordSessionStart({ directory: join(f.dir, "unknown") }, "high"), /FOREIGN KEY/);
 });
 
 test("identity and instruction snapshot text are retained without trimming", async () => {

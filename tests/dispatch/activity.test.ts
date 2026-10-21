@@ -26,9 +26,11 @@ test("a following watch prints the activity written after the child exit, up to 
   const workspace = join(f.dir, "tail-workspace");
   mkdirSync(workspace);
   const identity = { contextId: "fixture-context", taskId: "tail-a1", leaseId: "lease-tail", sessionId: randomUUID() };
+  const ref = await f.deps.attempts.create("tail-a1", {}, 0);
+  await f.deps.attempts.append(ref, "leased", { leaseId: identity.leaseId, workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
   let stopHeartbeat!: () => Promise<void>;
   const reserved = await f.runtime.reserve({ identity, workspace, instructions: "Tail", acceptanceCriteria: [], delivery }, async directory => { stopHeartbeat = await startHeartbeat(directory); });
-  const writer = new ActivityWriter(reserved.directory);
+  const writer = new ActivityWriter(reserved);
   writer.write({ kind: "note", text: "Worker started" });
   await f.runtime.recordChildExit(reserved, { started: true, code: 0, signal: null });
   const printed: ActivityEntry[] = [];
@@ -66,9 +68,11 @@ test("status shows a finished attempt's activity, usage and how to take over by 
 });
 
 test("a possibly running worker with no recent activity is flagged as stale, with no takeover offered", async () => {
-  const f = await fixture();
+  const f = await fixture({ tasks: [task("quiet-a1")] });
   const workspace = join(f.dir, "orphan-workspace");
   mkdirSync(workspace);
+  const ref = await f.deps.attempts.create("quiet-a1", {}, 0);
+  await f.deps.attempts.append(ref, "leased", { leaseId: "lease-quiet", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
   await f.runtime.reserve({
     identity: { contextId: "fixture-context", taskId: "quiet-a1", leaseId: "lease-quiet", sessionId: randomUUID() }, workspace,
     instructions: "Quiet", acceptanceCriteria: [],

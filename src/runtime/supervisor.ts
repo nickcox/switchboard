@@ -3,7 +3,7 @@ import { validateWorkerResult, type WorkerInput, type WorkerResult } from "./con
 import { ActivityWriter, shorten, type ActivityEntry, type Payload } from "./activity.ts";
 import { startHeartbeat } from "./heartbeat.ts";
 import { claimRequest, recordResult, unclaimedRequests, type ControlRequest, type RequestResult } from "./requests.ts";
-import { readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding, type ThinkingLevel } from "./records.ts";
+import { readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding, type RuntimeRecord, type ThinkingLevel } from "./records.ts";
 
 /**
  * Supervision shared by every runtime (Phase 3 PRD, second runtime): the runtime directory and dispatcher heartbeat,
@@ -91,18 +91,17 @@ export class WorkerSupervisor {
 
   async execute(input: WorkerInput, operator?: AbortSignal, hooks: WorkerHooks = {}): Promise<RunReport> {
     if (operator?.aborted) throw new RuntimeFailure("interrupted", "Interrupted before launch");
-    // The heartbeat starts as soon as the runtime directory is claimed, before the binding exists, so `resolve` never
-    // sees a directory whose dispatcher might still start a worker without also seeing a fresh heartbeat.
+    // The launch permission and fresh claim are committed together, before the worker can start.
     let stopHeartbeat: (() => Promise<void>) | undefined;
     try {
-      const reserved = await this.records.reserve(input, async directory => { stopHeartbeat = await startHeartbeat(directory); });
+      const reserved = await this.records.reserve(input, async record => { stopHeartbeat = await startHeartbeat(record); });
       return await this.supervise(reserved, operator, hooks);
     } finally { await stopHeartbeat?.(); }
   }
 
-  private async supervise(reserved: { binding: RuntimeBinding; directory: string }, operator: AbortSignal | undefined, hooks: WorkerHooks): Promise<RunReport> {
+  private async supervise(reserved: RuntimeRecord, operator: AbortSignal | undefined, hooks: WorkerHooks): Promise<RunReport> {
     const { binding, directory } = reserved;
-    const activity = new ActivityWriter(directory, hooks.onActivity);
+    const activity = new ActivityWriter(reserved, hooks.onActivity);
     // Exceeding a usage limit, or a stop request, stops the worker the same way an operator interruption does.
     const budget = new AbortController();
     const stopRequest = new AbortController();

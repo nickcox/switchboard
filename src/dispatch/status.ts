@@ -53,9 +53,9 @@ async function workerView(record: RuntimeRecord | undefined, possiblyRunning: bo
   const child = record.child;
   const worker: AttemptStatus["worker"] = {
     ...(child.status === "exited" ? { exit: "observed" as const, code: child.exit.code, signal: child.exit.signal } : { exit: child.status === "operator_confirmed_stopped" ? "operator_confirmed_stopped" as const : "not_observed" as const }),
-    dispatcherHeartbeat: await dispatcherRunning(record.directory) ? "fresh" : "stale_or_missing",
+    dispatcherHeartbeat: await dispatcherRunning(record) ? "fresh" : "stale_or_missing",
   };
-  const activity = summariseActivity(await readActivity(record.directory));
+  const activity = summariseActivity(await readActivity(record));
   const stale = possiblyRunning && (activity.lastActivity === null || Date.now() - Date.parse(activity.lastActivity) > staleMs);
   const transcript = await transcriptPath(record);
   const { sessionId } = record.binding.input.identity;
@@ -113,7 +113,7 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     } catch { task = "unreadable"; }
     const otherPool = state.leasesInOtherPools.find(a => a.taskId === summary.taskId && a.attempt === summary.attempt)?.pool;
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
-    const running = possiblyRunning && runtime !== undefined && await dispatcherRunning(runtime.directory);
+    const running = possiblyRunning && runtime !== undefined && await dispatcherRunning(runtime);
     const unfinished = isOpen(record) && state.openTasks.includes(summary.taskId);
     const classified = classify({ record, possiblyRunning, dispatcherRunning: running, leaseHeld, leaseInOtherPool: otherPool !== undefined, unfinished, task });
     attempts.push({
@@ -127,7 +127,7 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
     const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === p.leaseId);
     const leaseHeld = state.leases.some(l => l.leaseId === p.leaseId);
     const classified = classify({
-      record: undefined, possiblyRunning: true, dispatcherRunning: runtime !== undefined && await dispatcherRunning(runtime.directory),
+      record: undefined, possiblyRunning: true, dispatcherRunning: runtime !== undefined && await dispatcherRunning(runtime),
       leaseHeld, leaseInOtherPool: false, unfinished: false, task: "unreadable",
     });
     attempts.push({

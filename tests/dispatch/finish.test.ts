@@ -250,10 +250,11 @@ test("finish and discard refuse an attempt whose worker may still be running", a
   await f.deps.attempts.append(ref, "launched", { sessionId });
   const delivery = { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code" as const, acceptance: "review_or_integration" as const, requiredEvidence: [], requiredDeliverables: [] };
   const runtime = await f.runtime.reserve({ identity: { contextId: "fixture-context", taskId: "finish-a1", leaseId: "lease-running", sessionId }, workspace, instructions: "Running", acceptanceCriteria: [], delivery });
+  await runtime.storage.releaseClaim(runtime.claimId);
   assert.equal((await finish(f.deps, { leaseId: "lease-running", noProcesses: true, acceptOutput: true })).nextAction.code, "stop_worker");
-  writeFileSync(join(runtime.directory, "heartbeat.json"), JSON.stringify({ version: 1, at: new Date().toISOString(), pid: process.pid }));
+  await f.tasks.database.transaction(() => f.tasks.database.run("UPDATE worker_claims SET released_at = NULL, heartbeat_at = ? WHERE id = ?", new Date().toISOString(), runtime.claimId));
   assert.equal((await finish(f.deps, { leaseId: "lease-running", noProcesses: true, acceptOutput: true })).nextAction.code, "watch_attempt");
-  rmSync(join(runtime.directory, "heartbeat.json"));
+  await runtime.storage.releaseClaim(runtime.claimId);
   assert.equal((await finish(f.deps, { leaseId: "lease-running", noProcesses: true })).nextAction.code, "stop_worker");
   assert.equal((await discard(f.deps, { leaseId: "lease-running", noProcesses: true, confirm: true })).nextAction.code, "stop_worker");
 });

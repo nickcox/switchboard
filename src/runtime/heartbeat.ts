@@ -1,38 +1,26 @@
-import { randomUUID } from "node:crypto";
-import { rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { z } from "zod";
-import { readJsonFile } from "./records.ts";
+import type { RuntimeAddress } from "./store.ts";
 
-const heartbeatSchema = z.strictObject({ version: z.literal(1), at: z.iso.datetime(), pid: z.number().int().positive() });
 const freshMs = 30_000;
 
-/** Diagnostic only: absence never proves that the worker has stopped. */
-export async function dispatcherRunning(directory: string, now = Date.now()): Promise<boolean> {
+/** Diagnostic only: absence or staleness never proves that the worker has stopped. */
+export async function dispatcherRunning(record: RuntimeAddress, now?: number): Promise<boolean> {
   try {
-    const heartbeat = heartbeatSchema.parse(await readJsonFile(join(directory, "heartbeat.json"), 1024));
-    const age = now - Date.parse(heartbeat.at);
+    const claim = await record.storage.heartbeat(record.claimId);
+    if (!claim || claim.released_at !== null) return false;
+    const age = (now ?? Date.now()) - Date.parse(String(claim.heartbeat_at));
     return age >= 0 && age < freshMs;
   } catch { return false; }
 }
 
-/** Refresh while this dispatcher owns the worker; atomically replace so readers never see a partial write. */
-export async function startHeartbeat(directory: string, intervalMs = 5000): Promise<() => Promise<void>> {
-  const path = join(directory, "heartbeat.json");
-  const refresh = async () => {
-    const temporary = join(directory, `.heartbeat.${randomUUID()}.tmp`);
-    try {
-      await writeFile(temporary, JSON.stringify({ version: 1, at: new Date().toISOString(), pid: process.pid }), { mode: 0o600, flag: "wx" });
-      await rename(temporary, path);
-    } catch { /* A failed diagnostic write must not affect the worker. */ }
-    finally { await unlink(temporary).catch(() => {}); }
-  };
+/** Refresh only this dispatcher's claim. Releasing it never removes launch permission or permits a takeover. */
+export async function startHeartbeat(record: RuntimeAddress, intervalMs = 5000): Promise<() => Promise<void>> {
+  const refresh = () => record.storage.refreshClaim(record.claimId).catch(() => {});
   await refresh();
   let pending = Promise.resolve();
   const timer = setInterval(() => { pending = pending.then(refresh); }, intervalMs);
   return async () => {
     clearInterval(timer);
     await pending;
-    await unlink(path).catch(() => {});
+    await record.storage.releaseClaim(record.claimId);
   };
 }

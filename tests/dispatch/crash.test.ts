@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { join, resolve } from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
@@ -68,9 +67,7 @@ test("killed after launch: dispatch is refused until the operator confirms the w
   assert.equal(blocked.nextAction.code, "stop_worker");
   // A crash leaves a fresh heartbeat briefly. Simulate its expiry rather than sleeping for 30 seconds.
   const record = (await f.runtime.discover("fixture-context"))[0]!;
-  const heartbeatPath = join(record.directory, "heartbeat.json");
-  const heartbeat = JSON.parse(await readFile(heartbeatPath, "utf8"));
-  await writeFile(heartbeatPath, JSON.stringify({ ...heartbeat, at: new Date(Date.now() - 60_000).toISOString() }));
+  await f.tasks.database.transaction(() => f.tasks.database.run("UPDATE worker_claims SET heartbeat_at = ? WHERE id = ?", new Date(Date.now() - 60_000).toISOString(), record.claimId));
   const view = await status(f.deps);
   const stuck = view.attempts.find(a => a.attempt.taskId === "crash-a1");
   assert.equal(stuck?.possiblyRunning, true);

@@ -93,10 +93,12 @@ test("a repeated request ID returns the existing attempt without dispatching aga
 });
 
 test("an attempt whose worker may still be running blocks all dispatch", async () => {
-  const { deps, runtime, dir } = await fixture({ tasks: [task("next-a1")] });
+  const { deps, runtime, dir } = await fixture({ tasks: [task("next-a1"), task("earlier-a1")] });
   const workspace = join(dir, "orphan-workspace");
   mkdirSync(workspace);
   // A runtime binding with no exit record, as left by a dispatcher that died after launching a worker.
+  const ref = await deps.attempts.create("earlier-a1", {}, 0);
+  await deps.attempts.append(ref, "leased", { leaseId: "lease-x", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
   await runtime.reserve({
     identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-x", sessionId: randomUUID() },
     workspace, instructions: "Earlier", acceptanceCriteria: [],

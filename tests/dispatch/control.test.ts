@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { requestControl } from "../../src/dispatch/control.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
+import { readActivity } from "../../src/runtime/activity.ts";
 import { dispatcherRunning } from "../../src/runtime/heartbeat.ts";
 import { claimRequest, submitRequest } from "../../src/runtime/requests.ts";
 import { fixture, task } from "./fixture.ts";
@@ -41,7 +42,7 @@ test("a steering message reaches the running worker once and is recorded with it
   const entry = (await f.deps.attempts.forTask("steer-a1"))[0]!.entries.find(e => e.kind === "operator_request")!;
   assert.deepEqual({ kind: entry.data.kind, sender: entry.data.sender, outcome: entry.data.outcome, message: entry.data.message },
     { kind: "steer", sender: "operator:test", outcome: "queued", message: "Use the smaller fix" });
-  assert.match(readFileSync(join(record.directory, "activity.jsonl"), "utf8"), /Steering message from operator:test/);
+  assert.match(JSON.stringify(await readActivity(record)), /Steering message from operator:test/);
 });
 
 test("requests still being forwarded as the worker finishes are answered and recorded before the attempt is finalised", async () => {
@@ -54,10 +55,10 @@ test("requests still being forwarded as the worker finishes are answered and rec
   await submitRequest(record, { kind: "follow_up", message: "Then tidy up", sender: "operator:two" });
   const outcome = await dispatching;
   assert.equal(outcome.reason, "held");
-  const names = readdirSync(join(record.directory, "requests"));
-  const claimed = names.filter(n => n.endsWith(".claim.json")).map(n => n.slice(0, -".claim.json".length));
+  const rows = f.tasks.database.all("SELECT id, result FROM control_requests WHERE claim_id = ? AND claimed_by = 'dispatcher'", record.claimId);
+  const claimed = rows.map(row => String(row.id));
   assert.ok(claimed.length >= 1);
-  for (const id of claimed) assert.ok(names.includes(`${id}.result.json`), `claimed request ${id} has no result`);
+  for (const row of rows) assert.ok(row.result, `claimed request ${row.id} has no result`);
   const logged = (await f.deps.attempts.forTask("drain-a1"))[0]!.entries.filter(e => e.kind === "operator_request").map(e => e.data.id);
   assert.deepEqual([...logged].sort(), [...claimed].sort());
 });
@@ -114,16 +115,18 @@ test("a stop request stops the running worker and the task is held as interrupte
   assert.equal(sent.reason, "delivered");
   const outcome = await dispatching;
   assert.equal(outcome.reason, "held");
-  assert.equal(await dispatcherRunning(record.directory), false);
+  assert.equal(await dispatcherRunning(record), false);
   assert.equal((await f.tasks.read("stop-a1"))?.holdReason, "Switchboard attempt 1 interrupted");
   assert.match(outcome.worker?.reason ?? "", /operator:test/);
   assert.ok((await f.deps.attempts.forTask("stop-a1"))[0]!.entries.some(e => e.kind === "operator_request" && e.data.kind === "stop"));
 });
 
 test("a request with no running dispatcher is withdrawn and can never be forwarded later", async () => {
-  const f = await fixture();
+  const f = await fixture({ tasks: [task("orphan-a1")] });
   const workspace = join(f.dir, "orphan-workspace");
   mkdirSync(workspace);
+  const ref = await f.deps.attempts.create("orphan-a1", {}, 0);
+  await f.deps.attempts.append(ref, "leased", { leaseId: "lease-orphan", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
   const reserved = await f.runtime.reserve({
     identity: { contextId: "fixture-context", taskId: "orphan-a1", leaseId: "lease-orphan", sessionId: randomUUID() }, workspace,
     instructions: "Orphan", acceptanceCriteria: [],

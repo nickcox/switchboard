@@ -13,7 +13,7 @@ for (const failure of ["not exclusive", "not writable", "unexpected error"] as c
     const root = join(f.dir, "runtime");
     const before = await f.tasks.list();
     let writes = 0;
-    f.deps.runtime = new RuntimeRecords(root, async (path, value) => {
+    f.deps.runtime = new RuntimeRecords(root, f.tasks.database, async (path, value) => {
       writes += 1;
       if (failure === "not writable") throw new Error("permission denied");
       if (failure === "unexpected error" && writes === 2) throw new Error("storage offline");
@@ -38,7 +38,7 @@ test("dispatch probes with the record writer and removes the probe; status never
   const f = await fixture({ tasks: [task("probe-a1")] });
   const root = join(f.dir, "runtime");
   const paths: string[] = [];
-  f.deps.runtime = new RuntimeRecords(root, async (path, value) => {
+  f.deps.runtime = new RuntimeRecords(root, f.tasks.database, async (path, value) => {
     paths.push(path);
     await writeOnce(path, value);
   });

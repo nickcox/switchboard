@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fixture } from "../helpers.ts";
+import { readActivity } from "../../src/runtime/activity.ts";
 
 async function requests(path: string): Promise<Record<string, unknown>[]> {
   return (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
@@ -78,9 +79,6 @@ test("unconfigured thinking is left to Pi and its reported level is recorded", a
   assert.equal(report.status, "reported");
   const launch = JSON.parse(await readFile(join(report.directory, "fixture-launch.json"), "utf8"));
   assert.equal(launch.argv.includes("--thinking"), false);
-  const start = JSON.parse(await readFile(join(report.directory, "session-start.json"), "utf8"));
-  assert.equal(start.thinkingLevel, "medium");
-  assert.deepEqual(start.identity, f.input.identity);
   assert.equal((await f.records.discover(f.input.identity.contextId))[0]?.thinkingLevel, "medium");
 });
 
@@ -247,7 +245,7 @@ test("the worker's activity is recorded and passed to the listener", async () =>
   const seen: string[] = [];
   const report = await f.worker.execute(f.input, undefined, { onActivity: entry => seen.push(entry.kind) });
   assert.equal(report.status, "reported");
-  const kinds = (await readFile(join(report.directory, "activity.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).kind);
+  const kinds: string[] = (await readActivity((await f.records.discover(f.input.identity.contextId))[0]!)).map(entry => entry.kind);
   assert.deepEqual(kinds, seen);
   for (const kind of ["note", "tool_start", "tool_end", "assistant", "stats"]) assert.ok(kinds.includes(kind), `${kind} recorded`);
 });
@@ -258,7 +256,7 @@ test("exceeding the cost limit stops the worker and reports it as over budget", 
   assert.equal(report.status, "interrupted");
   assert.equal(report.reason, "over_budget");
   assert.equal(report.result, undefined);
-  assert.match(await readFile(join(report.directory, "activity.jsonl"), "utf8"), /Usage limit exceeded/);
+  assert.match(JSON.stringify(await readActivity((await f.records.discover(f.input.identity.contextId))[0]!)), /Usage limit exceeded/);
 });
 
 test("a token limit stops the worker even when the provider reports no cost", async () => {
@@ -266,6 +264,6 @@ test("a token limit stops the worker even when the provider reports no cost", as
   const f = fixture("free", { maxTokens: 100, maxCost: 1 });
   const report = await f.worker.execute(f.input);
   assert.equal(report.reason, "over_budget");
-  const usage = (await readFile(join(report.directory, "activity.jsonl"), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(entry => entry.kind === "stats");
+  const usage = (await readActivity((await f.records.discover(f.input.identity.contextId))[0]!)).filter(entry => entry.kind === "stats");
   assert.ok(usage.length > 0 && usage.every(entry => entry.cost === 0));
 });

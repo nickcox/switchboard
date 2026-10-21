@@ -9,7 +9,8 @@ import { LegacyAttempts } from "../fixtures/legacy-attempts.ts";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { Database } from "../../src/database.ts";
 import { configSchema, databasePath } from "../../src/config.ts";
-import { key, RuntimeRecords } from "../../src/runtime/records.ts";
+import { key } from "../../src/runtime/records.ts";
+import { LegacyRuntimeFixture as RuntimeRecords } from "../fixtures/legacy-runtime.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 
 async function fixture() {
@@ -143,7 +144,7 @@ test("a staging failure does not migrate the original schema, and the next run b
   const path = databasePath(f.config);
   const database = await Database.open(path);
   await database.transaction(() => {
-    for (const table of ["attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) database.run(`DROP TABLE ${table}`);
+    for (const table of ["control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) database.run(`DROP TABLE ${table}`);
     database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
     database.run("PRAGMA user_version = 1");
   });

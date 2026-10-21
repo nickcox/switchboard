@@ -10,8 +10,7 @@ import { AttemptLog } from "../attempts/log.ts";
 import { databasePath, loadConfig, type Config } from "../config.ts";
 import { isOpen } from "../dispatch/dispatch.ts";
 import { requireRetainedStorage } from "../infra/storage.ts";
-import { dispatcherRunning } from "../runtime/heartbeat.ts";
-import { RuntimeRecords } from "../runtime/records.ts";
+import { readLegacyRuntime } from "../attempts/runtime-import.ts";
 import { SqliteTaskStore } from "./sqlite.ts";
 import { TaskStoreError } from "./store.ts";
 
@@ -24,7 +23,10 @@ const exists = async (path: string) => lstat(path).then(() => true, error => { i
 export async function requireSettled(config: Config): Promise<void> {
   const attempts = await new AttemptLog(config.runtimeRoot, config.contextId).list();
   if (attempts.some(isOpen)) throw new TaskStoreError("rejected", "Import requires every attempt to be settled");
-  const runtime = await new RuntimeRecords(config.runtimeRoot).discover(config.contextId);
+  const legacy = await readLegacyRuntime(config.runtimeRoot, config.contextId);
+  const runtime = legacy.records;
+  if (legacy.freshHeartbeat) throw new TaskStoreError("rejected", "Import refuses while a dispatcher's heartbeat is fresh");
+  if (legacy.pendingRequest) throw new TaskStoreError("rejected", "Import refuses pending or unanswered control requests");
   for (const attempt of attempts) {
     const leaseId = attempt.entries.find(e => e.kind === "leased")?.data.leaseId;
     const observedExit = runtime.some(r => r.binding.input.identity.leaseId === leaseId && r.child.status !== "unknown");
@@ -38,7 +40,6 @@ export async function requireSettled(config: Config): Promise<void> {
     const stopped = record.child.status !== "unknown" || attempts.some(a => a.entries.some(e => e.kind === "operator_resolved" && e.data.action === "worker_stopped")
       && a.entries.some(e => e.kind === "leased" && e.data.leaseId === record.binding.input.identity.leaseId));
     if (!stopped) throw new TaskStoreError("rejected", "Import refuses a worker that may still be running");
-    if (await dispatcherRunning(record.directory)) throw new TaskStoreError("rejected", "Import refuses while a dispatcher's heartbeat is fresh");
   }
 }
 

@@ -49,7 +49,7 @@ export async function watch(
   if (!record) return { found: false, finished: false };
   let printed = 0;
   for (;;) {
-    const entries = await readActivity(record.directory);
+    const entries = await readActivity(record);
     for (const entry of entries.slice(printed)) options.print(entry);
     printed = Math.max(printed, entries.length);
     const identity = record.binding.input.identity;
@@ -57,10 +57,10 @@ export async function watch(
     const stopped = attempt && deps.attempts.confirmations(attempt).some(c => c.fact === "worker_stopped" && c.scope.leaseId === identity.leaseId &&
       (c.scope.sessionId === undefined || c.scope.sessionId === identity.sessionId));
     const finished = record.child.status !== "unknown" || Boolean(stopped);
-    const settled = finished && (entries.some(isFinalNote) || !await dispatcherRunning(record.directory));
+    const settled = finished && (entries.some(isFinalNote) || !await dispatcherRunning(record));
     if (!options.follow || settled || options.signal?.aborted) {
       // Print anything written between the last read and the decision to stop.
-      if (options.follow && settled) for (const entry of (await readActivity(record.directory)).slice(printed)) options.print(entry);
+      if (options.follow && settled) for (const entry of (await readActivity(record)).slice(printed)) options.print(entry);
       return { found: true, finished };
     }
     await sleep(options.pollMs ?? 1000, undefined, { signal: options.signal }).catch(() => {});

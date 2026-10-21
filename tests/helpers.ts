@@ -2,8 +2,30 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { WorkerInput } from "../src/runtime/contracts.ts";
-import { RuntimeRecords } from "../src/runtime/records.ts";
+import { RuntimeRecords, type RuntimeRecord } from "../src/runtime/records.ts";
+import { Database } from "../src/database.ts";
 import { PiWorker, type PiWorkerOptions } from "../src/runtime/pi/worker.ts";
+
+/** Runtime-only fixtures still have a real attempt to which launch rows refer. */
+class FixtureRuntimeRecords extends RuntimeRecords {
+  readonly databasePath: string;
+  constructor(root: string) { super(root); this.databasePath = join(root, "switchboard.db"); }
+  async reserve(input: WorkerInput, hook?: (record: RuntimeRecord) => Promise<void>) {
+    const database = await Database.open(this.databasePath);
+    try {
+      await database.transaction(() => {
+        const { contextId, taskId, leaseId } = input.identity;
+        if (database.get("SELECT 1 FROM attempt_entries WHERE context = ? AND json_extract(entry, '$.data.leaseId') = ?", contextId, leaseId)) return;
+        database.run("INSERT OR IGNORE INTO tasks(id,title,body,position) SELECT ?,?,'',COALESCE(MAX(position),0)+1 FROM tasks", taskId, taskId);
+        const attempt = Number(database.get("SELECT COALESCE(MAX(number),0)+1 AS n FROM attempt_numbers WHERE context = ? AND task = ?", contextId, taskId)!.n);
+        database.run("INSERT INTO attempt_numbers VALUES(?,?,?)", contextId, taskId, attempt);
+        database.run("INSERT INTO attempts(context,task,number,reserved_at,closed) VALUES(?,?,?,?,1)", contextId, taskId, attempt, new Date().toISOString());
+        database.run("INSERT INTO attempt_entries VALUES(?,?,?,?,?)", contextId, taskId, attempt, 0, JSON.stringify({ kind: "leased", data: { leaseId } }));
+      });
+    } finally { database.close(); }
+    return super.reserve(input, hook);
+  }
+}
 
 export function fixture(scenario = "normal", overrides: Partial<PiWorkerOptions> = {}) {
   const root = resolve(import.meta.dirname, "../.investigation/runtime-unit");
@@ -23,7 +45,7 @@ export function fixture(scenario = "normal", overrides: Partial<PiWorkerOptions>
       requiredEvidence: ["tests"], requiredDeliverables: ["code"],
     },
   };
-  const records = new RuntimeRecords(join(dir, "runtime"));
+  const records = new FixtureRuntimeRecords(join(dir, "runtime"));
   const log = join(dir, "requests.jsonl");
   const options: PiWorkerOptions = {
     executable: process.execPath,
@@ -37,6 +59,11 @@ export function fixture(scenario = "normal", overrides: Partial<PiWorkerOptions>
     ...overrides,
   };
   return { dir, input, records, log, options, worker: new PiWorker(records, options) };
+}
+
+export async function withRuntimeDatabase<T>(records: { databasePath: string }, action: (database: Database) => T | Promise<T>): Promise<T> {
+  const database = await Database.open(records.databasePath);
+  try { return await action(database); } finally { database.close(); }
 }
 
 export function resultFor(input: WorkerInput) {
