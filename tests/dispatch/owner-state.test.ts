@@ -16,8 +16,7 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
 const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): TaskStore => {
   const real = f.tasks;
   return {
-    ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id), start: id => real.start(id),
-    recordDone: (id, note) => real.recordDone(id, note), recordHold: (id, hold) => real.recordHold(id, hold), ...overrides,
+    ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id), ...overrides,
   };
 };
 const workspacesWith = (f: Fixture, overrides: Partial<Dependencies["workspaces"]>): Dependencies["workspaces"] => ({
@@ -81,9 +80,10 @@ test("finding 12: status asks for attention when an attempt's task cannot be rea
   assert.notEqual(view.attempts[0]?.nextAction.code, "none");
 });
 
-test("finding 12: status asks for attention when a task is in flight with no attempt, worker or lease", async () => {
+test("status asks for attention for an imported in-flight task with no attempt, worker or lease", async () => {
   const f = await fixture({ tasks: [task("orphan-a1")] });
-  await f.tasks.start("orphan-a1");
+  // Legacy task import preserves in-flight state even when there are no attempt files.
+  await f.tasks.database.transaction(() => f.tasks.database.run("UPDATE tasks SET state = 'in_flight' WHERE id = 'orphan-a1'"));
   const view = await status(f.deps);
   assert.equal(view.reason, "attention");
   assert.deepEqual(view.orphanedInFlight, ["orphan-a1"]);

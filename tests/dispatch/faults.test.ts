@@ -17,7 +17,6 @@ const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): Dependencies => {
   const real = f.deps.tasks;
   return { ...f.deps, tasks: {
     ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id),
-    start: id => real.start(id), recordDone: (id, note) => real.recordDone(id, note), recordHold: (id, hold) => real.recordHold(id, hold),
     ...overrides,
   } };
 };

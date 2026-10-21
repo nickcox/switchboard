@@ -19,8 +19,7 @@ const delivery = { baseRef: "main", startingCommit: "a".repeat(40), outputBranch
 const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): TaskStore => {
   const real = f.tasks;
   return {
-    ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id), start: id => real.start(id),
-    recordDone: (id, note) => real.recordDone(id, note), recordHold: (id, hold) => real.recordHold(id, hold), ...overrides,
+    ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id), ...overrides,
   };
 };
 const only = async (deps: Dependencies, taskId: string) => {

@@ -17,13 +17,6 @@ export type Task = {
   holdRevision?: number;
 };
 
-export type Hold = {
-  /** Short reason the store can index; the full reason and work references belong in `body`. */
-  reason: string;
-  /** Replacement task body: the original instructions and acceptance criteria plus the attempt outcome. */
-  body: string;
-};
-
 export type TaskStoreFailure =
   /** The store could not be read, so its state is unknown. */
   | "unreadable"
@@ -45,10 +38,7 @@ export class TaskStoreError extends Error {
   }
 }
 
-/**
- * Every mutation reads the task back and returns what the store now holds. A mutation whose result is unknown
- * throws `outcome_unknown`; the caller reads the task again rather than repeating the change blindly.
- */
+/** Dispatch reads tasks here; task start and outcomes belong to the transactional attempt store. */
 export interface TaskStore {
   /** Ready task IDs in the store's own order, for the configured repository. */
   ready(): Promise<string[]>;
@@ -56,8 +46,4 @@ export interface TaskStore {
   inFlight(): Promise<string[]>;
   /** The task, or undefined when the store has no task with this ID. */
   read(id: string): Promise<Task | undefined>;
-  start(id: string): Promise<Task>;
-  recordDone(id: string, note: string, expected?: Task): Promise<Task>;
-  /** Records an outcome only while in flight with no newer hold, or against finalisation's expected task. */
-  recordHold(id: string, hold: Hold, expected?: Task): Promise<Task>;
 }

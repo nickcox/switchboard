@@ -56,7 +56,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 2) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 3) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -109,6 +109,10 @@ export class Database {
             FOREIGN KEY(context, task, attempt) REFERENCES archived_attempts(context, task, attempt));
           PRAGMA user_version = 2;
         `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 3) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 3) return;
+        db.exec("ALTER TABLE tasks DROP COLUMN started_body; PRAGMA user_version = 3");
       });
       return result;
     } catch (error) { db.close(); throw error; }

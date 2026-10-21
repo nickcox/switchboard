@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from "node:fs/
 import { dirname, join, resolve } from "node:path";
 import { MarkdownStore } from "tasks-axi/dist/src/backends/markdown.js";
 import { readyTasks } from "tasks-axi/dist/src/derive.js";
-import { AttemptLog } from "../../src/attempts/log.ts";
+import { LegacyAttempts } from "../fixtures/legacy-attempts.ts";
 import { configSchema } from "../../src/config.ts";
 import { importTasks, requireSettled } from "../../src/tasks/import.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
@@ -114,7 +114,7 @@ test("two imports at once activate at most one database, and leave no staging fi
 
 test("an unfinished attempt refuses even before any worker runtime exists", async () => {
   const f = await fixture();
-  const attempts = new AttemptLog(f.config.runtimeRoot, f.config.contextId);
+  const attempts = new LegacyAttempts(f.config.runtimeRoot, f.config.contextId);
   await attempts.create("a", {}, 0);
   await assert.rejects(requireSettled(f.config), /every attempt to be settled/);
   await assert.rejects(importTasks(f.config, f.backlog), /every attempt to be settled/);

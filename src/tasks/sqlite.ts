@@ -1,5 +1,5 @@
 import { Database } from "../database.ts";
-import { TaskStoreError, type Hold, type Task, type TaskState, type TaskStore } from "./store.ts";
+import { TaskStoreError, type Task, type TaskState, type TaskStore } from "./store.ts";
 
 export type StoredTask = Task & { position: number; blockedBy: string[]; holdRevision: number };
 export type NewTask = { id: string; title: string; body?: string; repo?: string | null; kind?: string | null };
@@ -86,37 +86,6 @@ export class SqliteTaskStore implements TaskStore {
   }
   async reopen(id: string): Promise<StoredTask> {
     return this.change(id, () => this.database.run("UPDATE tasks SET state = 'queued' WHERE id = ?", id));
-  }
-  async start(id: string): Promise<StoredTask> {
-    return this.change(id, () => {
-      const task = this.require(id);
-      if (task.state !== "queued" || task.held || task.blocked) reject(`Task ${id} is not ready`);
-      this.database.run("UPDATE tasks SET state = 'in_flight', started_hold_revision = hold_revision, started_body = body WHERE id = ?", id);
-    });
-  }
-  private outcomeAllowed(id: string, expected?: Task): boolean {
-    if (expected) {
-      const now = this.require(id);
-      if (now.state !== expected.state || now.holdReason !== expected.holdReason || now.body !== expected.body || (expected.holdRevision !== undefined && now.holdRevision !== expected.holdRevision)) reject("Task changed since finalisation was planned");
-      return true;
-    }
-    const row = this.database.get("SELECT state, hold_revision, started_hold_revision FROM tasks WHERE id = ?", id)!;
-    return row.state === "in_flight" && row.hold_revision === row.started_hold_revision;
-  }
-  async recordDone(id: string, note: string, expected?: Task): Promise<StoredTask> {
-    return this.change(id, () => { if (this.outcomeAllowed(id, expected)) this.writeDone(id, note); });
-  }
-  async recordHold(id: string, hold: Hold, expected?: Task): Promise<StoredTask> {
-    validReason(hold.reason);
-    return this.change(id, () => {
-      if (!this.outcomeAllowed(id, expected)) return;
-      const task = this.require(id);
-      const startedBody = this.database.get("SELECT started_body FROM tasks WHERE id = ?", id)!.started_body;
-      // An outcome appends to the current instructions, not a stale snapshot edited while the worker ran.
-      const body = !expected && typeof startedBody === "string" && hold.body.startsWith(startedBody)
-        ? task.body + hold.body.slice(startedBody.length) : hold.body;
-      this.database.run("UPDATE tasks SET state = 'queued', hold_reason = ?, body = ?, hold_revision = hold_revision + 1 WHERE id = ?", hold.reason, body, id);
-    });
   }
   private writeDone(id: string, note: string) {
     const task = this.require(id);

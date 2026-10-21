@@ -164,7 +164,9 @@ export async function importAttempts(config: Config) {
       [...before.numbers].sort((a, b) => (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : a.attempt - b.attempt)));
     for (const reservation of before.reservations) assert.partialDeepStrictEqual(copy.get("SELECT task, reserved_at FROM attempts WHERE context = ? AND request_id = ?", config.contextId, reservation.requestId), { task: reservation.taskId, reserved_at: reservation.reservedAt });
     for (const archive of before.archives) assert.deepEqual(JSON.parse(String(copy.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", config.contextId, archive.taskId, archive.attempt)!.summary)), archive);
-    assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position"), tasks, "Task fields changed in the copy");
+    // Version 3 drops the obsolete body snapshot; every current task field must still match.
+    const currentTasks = tasks.map(({ started_body: _startedBody, ...task }) => task);
+    assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), currentTasks, "Task fields changed in the copy");
     assert.deepEqual(copy.all("SELECT * FROM dependencies ORDER BY task, blocker"), dependencies, "Dependencies changed in the copy");
     await requireSettled(config);
     assert.deepEqual(source.all("SELECT * FROM tasks ORDER BY position"), tasks, "Tasks changed during import");

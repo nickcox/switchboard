@@ -5,8 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { importAttempts } from "../../src/attempts/import.ts";
-import { AttemptLog } from "../../src/attempts/log.ts";
-import { AttemptPruner } from "../../src/attempts/prune.ts";
+import { LegacyAttempts } from "../fixtures/legacy-attempts.ts";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { Database } from "../../src/database.ts";
 import { configSchema, databasePath } from "../../src/config.ts";
@@ -23,7 +22,7 @@ async function fixture() {
   const tasks = await SqliteTaskStore.open({ path: databasePath(config) });
   for (const id of ["settled", "pruned", "orphan"]) await tasks.add({ id, title: id, body: "Original instructions" });
   tasks.close();
-  const legacy = new AttemptLog(config.runtimeRoot, config.contextId);
+  const legacy = new LegacyAttempts(config.runtimeRoot, config.contextId);
   return { directory, config, legacy };
 }
 
@@ -46,11 +45,17 @@ test("imports entries, old confirmations, orphan reservations and pruned numbers
   await f.legacy.append(ref, "output_accepted", { commit: "b".repeat(40), acceptedBy: "operator" });
   await f.legacy.append(ref, "lease_return_started", { leaseId: "lease", by: "finish", noProcessesConfirmedBy: "operator" });
   await f.legacy.append(ref, "lease_returned", { leaseId: "lease", by: "finish", noProcessesConfirmedBy: "operator" });
-  const pruned = await f.legacy.create("pruned", { requestId: "pruned-request" }, 0);
-  await f.legacy.reserveRequest("pruned-request", "pruned");
-  await f.legacy.append(pruned, "halted", { stage: "acquire", reason: "rejected" });
-  const pruner = new AttemptPruner(f.legacy);
-  await pruner.remove(await pruner.archive(await f.legacy.read(pruned)));
+  const archiveDirectory = join(f.config.runtimeRoot, "archive", key("context"), key("pruned"));
+  await mkdir(archiveDirectory, { recursive: true });
+  await mkdir(join(f.config.runtimeRoot, "attempts", key("context"), key("pruned"), ".1.pruned"), { recursive: true });
+  const recordedAt = "2026-10-20T00:00:00.000Z";
+  await writeFile(join(archiveDirectory, "1.json"), JSON.stringify({
+    version: 1, contextId: "context", taskId: "pruned", attempt: 1, archivedAt: recordedAt, finishedAt: recordedAt,
+    requestId: "pruned-request", summary: { taskId: "pruned", attempt: 1, requestId: "pruned-request", entryCount: 2, facts: {
+      requested: { recordedAt, data: { requestId: "pruned-request" } },
+      halted: { recordedAt, data: { stage: "acquire", reason: "rejected" } },
+    } },
+  }));
   await f.legacy.reserveRequest("orphan-request", "orphan");
   const before = await files(f.config.runtimeRoot);
   const result = await importAttempts(f.config);
@@ -139,6 +144,7 @@ test("a staging failure does not migrate the original schema, and the next run b
   const database = await Database.open(path);
   await database.transaction(() => {
     for (const table of ["attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) database.run(`DROP TABLE ${table}`);
+    database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
     database.run("PRAGMA user_version = 1");
   });
   database.close();

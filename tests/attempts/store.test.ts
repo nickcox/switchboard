@@ -98,13 +98,14 @@ test("a version 1 database gains the attempt tables without changing its tasks",
       for (const table of ["attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) {
         tasks.database.run(`DROP TABLE ${table}`);
       }
+      tasks.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
       tasks.database.run("PRAGMA user_version = 1");
     });
   } finally { tasks.close(); }
   const reopened = await SqliteTaskStore.open({ path });
   try {
     assert.deepEqual(await reopened.list(), before);
-    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 2);
+    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 3);
     assert.deepEqual(new AttemptStore(reopened.database, "context").list(), []);
   } finally { reopened.close(); }
 });
@@ -290,15 +291,23 @@ test("killing a process during a reservation transaction leaves no records and r
   } finally { tasks.close(); }
 });
 
-test("a busy database refuses without blocking timer heartbeats or leaving a reservation", { timeout: 30_000 }, async () => {
+test("a busy database refuses while heartbeats and stop handling continue, without leaving a reservation", { timeout: 30_000 }, async () => {
   const { path, tasks, attempts } = await fixture(150);
   const stop = await lockedChild(path, "hold");
   let beats = 0;
+  let waiting = true;
+  let handledWhileWaiting = false;
+  const controller = new AbortController();
+  controller.signal.addEventListener("abort", () => { handledWhileWaiting = waiting; }, { once: true });
   const timer = setInterval(() => { beats++; }, 5);
+  const stopTimer = setTimeout(() => controller.abort(), 30);
   try {
     await assert.rejects(reserve(attempts), { reason: "busy" });
+    waiting = false;
     assert.ok(beats >= 5, `Only ${beats} heartbeats ran`);
+    assert.equal(handledWhileWaiting, true, "Stop handling must run before the busy refusal");
     assert.deepEqual(attempts.list(), []);
     assert.equal((await tasks.read("task"))!.state, "queued");
-  } finally { clearInterval(timer); await stop(); tasks.close(); }
+    assert.equal(Number(tasks.database.get("SELECT count(*) AS n FROM attempt_numbers")!.n), 0);
+  } finally { clearInterval(timer); clearTimeout(stopTimer); await stop(); tasks.close(); }
 });

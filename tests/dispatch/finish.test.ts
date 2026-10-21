@@ -53,7 +53,7 @@ for (const reason of ["interrupted", "over budget"]) {
   test(`accept-output accepts an attempt held as ${reason}`, async () => {
     const { f, leaseId } = await failedOutput();
     const current = (await f.tasks.read("finish-a1"))!;
-    await f.tasks.recordHold(current.id, { reason: `Switchboard attempt 1: ${reason}`, body: current.body });
+    await f.tasks.hold(current.id, `Switchboard attempt 1: ${reason}`);
     assert.equal((await finish(f.deps, { leaseId, noProcesses: true, acceptOutput: true })).reason, "finished");
   });
 }
@@ -445,7 +445,7 @@ test("after the operator records reviewed work as done, the attempt can be finis
   const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
   const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
   assert.equal(await state(f.deps), "awaiting_review");
-  await f.tasks.recordDone("finish-a1", "Completed by the operator");
+  await f.tasks.done("finish-a1", "Completed by the operator");
   const outcome = await finish(f.deps, { leaseId, noProcesses: true });
   assert.equal(outcome.reason, "finished", outcome.detail ?? "");
   assert.ok((await kinds(f)).includes("task_recorded"));

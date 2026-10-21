@@ -1,9 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, realpath, rename, rm } from "node:fs/promises";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { requireRetainedStorage } from "../infra/storage.ts";
-import { isMissing, key, readJsonFile, writeOnce } from "../runtime/records.ts";
+import { isMissing, key, readJsonFile } from "../runtime/records.ts";
 
 const nonempty = z.string().min(1).refine(value => value.trim().length > 0);
 const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
@@ -110,15 +108,6 @@ export function parseAttemptEntry(value: unknown): AttemptEntry {
 export type AttemptRef = { contextId: string; taskId: string; attempt: number };
 export type AttemptRecord = AttemptRef & { entries: AttemptEntry[]; confirmations?: import("./store.ts").ConfirmationRecord[] };
 
-/** Another invocation created this attempt first. Nothing was written by the caller. */
-export class AttemptConflict extends Error {
-  readonly ref: AttemptRef;
-  constructor(ref: AttemptRef) {
-    super(`Attempt ${ref.attempt} for task ${ref.taskId} was not created: another attempt is now the latest`);
-    this.ref = ref;
-  }
-}
-
 const entryName = /^(\d{4,})(?:-([a-z_]+))?\.json$/;
 const readBatch = 32;
 
@@ -129,10 +118,7 @@ function sequenceOf(name: string): number {
   return sequence;
 }
 
-/**
- * Append-only record of which task, lease, session, commits and outcome belong to each attempt (ADR-0006).
- * It is not authoritative for task, lease or liveness state. Unreadable or inconsistent entries cause refusal.
- */
+/** Read-only legacy attempt files for import. Unreadable or inconsistent entries cause refusal. */
 export class AttemptLog {
   readonly root: string;
   readonly contextId: string;
@@ -142,56 +128,14 @@ export class AttemptLog {
     this.contextId = nonempty.parse(contextId);
   }
 
-  async checkStorage(recyclableRoots: string[]): Promise<void> {
-    await requireRetainedStorage(this.root, recyclableRoots);
-  }
-
-  /**
-   * Creates attempt `previous + 1` for a task and writes its first entry. `previous` is the latest attempt the caller
-   * has already inspected (0 for none). Creation fails if any other attempt is now the latest, and exclusive directory
-   * creation gives one winner when callers race for the same number, so two invocations cannot both start the task.
-   */
-  async create(taskId: string, requested: EntryData<"requested">, previous: number): Promise<AttemptRef> {
-    nonempty.parse(taskId);
-    z.number().int().nonnegative().parse(previous);
-    const directory = await this.taskDirectory(taskId, true);
-    // Pruned directory markers keep attempt numbers from being reused after retention cleanup.
-    const pruned = (await readdir(directory)).flatMap(name => {
-      const match = /^\.(\d+)\.pruned$/.exec(name);
-      return match ? [Number(match[1])] : [];
-    });
-    const ref = { contextId: this.contextId, taskId, attempt: Math.max(previous, ...pruned) + 1 };
-    if (((await this.attemptNumbers(directory)).at(-1) ?? 0) !== previous) throw new AttemptConflict(ref);
-    // Build the attempt with its first entry under a temporary name, then rename it into place. Readers never see an
-    // attempt without entries, and the rename fails if another invocation created this attempt first.
-    const temporary = join(directory, `.${ref.attempt}.${randomUUID()}.tmp`);
-    await mkdir(temporary, { mode: 0o700 });
-    try {
-      await this.write(ref, 0, "requested", requested, temporary);
-      await rename(temporary, join(directory, String(ref.attempt)));
-    } catch (error) {
-      await rm(temporary, { recursive: true, force: true }).catch(() => {});
-      // The error code for an existing target differs between platforms (EEXIST, ENOTEMPTY, or EPERM on Windows), so
-      // treat any failed rename as a conflict when the attempt now exists.
-      if (await lstat(join(directory, String(ref.attempt))).then(() => true, () => false)) throw new AttemptConflict(ref);
-      throw error;
-    }
-    return ref;
-  }
-
-  async append<K extends EntryKind>(ref: AttemptRef, kind: K, data: LegacyEntryData<K>): Promise<void> {
-    const record = await this.read(ref);
-    await this.write(ref, record.entries.length, kind, data);
-  }
-
   async read(ref: AttemptRef): Promise<AttemptRecord> {
-    const directory = join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));
+    const directory = join(await this.taskDirectory(ref.taskId), String(ref.attempt));
     return { ...ref, entries: await this.entries(directory, ref) };
   }
 
   /** All attempts in this context, ordered by task directory then attempt number. */
   async list(): Promise<AttemptRecord[]> {
-    const context = await this.contextDirectory(false);
+    const context = await this.contextDirectory();
     if (!context) return [];
     const records: AttemptRecord[] = [];
     for (const taskEntry of await readdir(context, { withFileTypes: true })) {
@@ -208,63 +152,6 @@ export class AttemptLog {
       }
     }
     return records;
-  }
-
-  async forTask(taskId: string): Promise<AttemptRecord[]> {
-    const directory = await this.taskDirectory(taskId, false).catch(error => {
-      if (isMissing(error)) return undefined;
-      throw error;
-    });
-    if (!directory) return [];
-    const records = [];
-    for (const attempt of await this.attemptNumbers(directory)) {
-      records.push(await this.read({ contextId: this.contextId, taskId, attempt }));
-    }
-    return records;
-  }
-
-  /**
-   * Reserves a request ID across this context before its attempt is created, by creating a file exclusively. Returns
-   * false when another invocation already holds it. Reservations live beside the log, not in it, because the log's
-   * context directory holds only task directories.
-   */
-  async reserveRequest(requestId: string, taskId: string): Promise<boolean> {
-    nonempty.parse(requestId);
-    const path = await this.requestPath(requestId, true);
-    try {
-      await writeOnce(path, { version: 1, requestId, taskId, reservedAt: new Date().toISOString() });
-      return true;
-    } catch (error) {
-      if (isCode(error, "EEXIST")) return false;
-      throw error;
-    }
-  }
-
-  /** Releases a reservation whose attempt was never created, so that the request can be made again. */
-  async releaseRequest(requestId: string): Promise<void> {
-    await rm(await this.requestPath(requestId, false), { force: true });
-  }
-
-  private async requestPath(requestId: string, create: boolean): Promise<string> {
-    if (create) await mkdir(this.root, { recursive: true, mode: 0o700 });
-    const directory = join(await realpath(this.root), "request-ids", key(this.contextId));
-    if (create) await mkdir(directory, { recursive: true, mode: 0o700 });
-    return join(directory, `${key(requestId)}.json`);
-  }
-
-  async findByRequest(requestId: string): Promise<AttemptRecord | undefined> {
-    return (await this.list()).find(record => record.entries[0]?.data.requestId === requestId);
-  }
-
-  private async write<K extends EntryKind>(ref: AttemptRef, sequence: number, kind: K, data: LegacyEntryData<K>, into?: string) {
-    const entry = envelopeSchema.parse({
-      // Only the identity fields: callers may pass a full AttemptRecord as the reference.
-      version: 1, contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt, sequence, kind, recordedAt: new Date().toISOString(),
-      data: entrySchemas[kind].parse(data),
-    });
-    const directory = into ?? join(await this.taskDirectory(ref.taskId, false), String(ref.attempt));
-    // Write-once: a concurrent writer at the same sequence fails rather than replacing an entry.
-    await writeOnce(join(directory, `${String(sequence).padStart(4, "0")}.json`), entry);
   }
 
   private async entries(directory: string, ref: AttemptRef): Promise<AttemptEntry[]> {
@@ -313,29 +200,21 @@ export class AttemptLog {
     return numbers.sort((a, b) => a - b);
   }
 
-  private async contextDirectory(create: true): Promise<string>;
-  private async contextDirectory(create: boolean): Promise<string | undefined>;
-  private async contextDirectory(create: boolean): Promise<string | undefined> {
-    if (create) await mkdir(this.root, { recursive: true, mode: 0o700 });
+  private async contextDirectory(): Promise<string | undefined> {
     let root: string;
     try { root = await realpath(this.root); }
-    catch (error) { if (!create && isMissing(error)) return undefined; throw error; }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
     // Kept apart from runtime records, whose discovery refuses unexpected entries in a context directory.
     const context = join(root, "attempts", key(this.contextId));
-    if (create) await mkdir(context, { recursive: true, mode: 0o700 });
     try { await safeDirectory(context); }
-    catch (error) { if (!create && isMissing(error)) return undefined; throw error; }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
     return context;
   }
 
-  private async taskDirectory(taskId: string, create: boolean): Promise<string> {
-    const context = await this.contextDirectory(create);
+  private async taskDirectory(taskId: string): Promise<string> {
+    const context = await this.contextDirectory();
     if (!context) throw Object.assign(new Error("No attempt log"), { code: "ENOENT" });
     const directory = join(context, key(taskId));
-    if (create) {
-      try { await mkdir(directory, { mode: 0o700 }); }
-      catch (error) { if (!isCode(error, "EEXIST")) throw error; }
-    }
     await safeDirectory(directory);
     return directory;
   }
@@ -344,8 +223,4 @@ export class AttemptLog {
 async function safeDirectory(path: string): Promise<void> {
   const stat = await lstat(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe attempt log directory");
-}
-
-function isCode(error: unknown, code: string): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
