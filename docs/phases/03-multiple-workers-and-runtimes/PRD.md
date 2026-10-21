@@ -41,11 +41,22 @@ The fourth comparison in ADR-0005 found that Phase 3, as scoped, gives no reason
 
 A change to this PRD that breaks one of these limits needs another comparison before that part is implemented.
 
+## Shared mechanisms
+
+Phase 1 and Phase 2 each implemented some mechanisms more than once, in slightly different ways, and the features below would add further copies. Each of these is therefore implemented once, before the first feature that needs it, and used everywhere it applies:
+
+- **Exclusive claims.** A claim is a directory created exclusively under the runtime root, holding a record of its owner (process ID and start time), optionally with a heartbeat refreshed every five seconds. A claim that already exists is never removed automatically: the refusal names its owner, when it was made and its path, and says to remove it once nothing that could hold it is running. The prune lock, a worker's runtime directory and the request-ID reservation use it now, and the context lock and the background dispatcher's claim below are further uses of it, not new mechanisms.
+- **One context lock.** Dispatch creates attempts and request-ID reservations, and `prune` removes them. Both take the same context lock while they do, replacing the prune lock, so no dispatch and prune can interleave.
+- **Requests to a running process.** Stop requests and operator messages are written as request files that the owning dispatcher claims exactly once, or the sender withdraws if nobody claims them in time. The same protocol is used for any process that owns a claim, with the address and the request kinds as parameters, so the background dispatcher's own controls use it unchanged.
+- **Finalisation steps.** `finish`, `discard` and dispatch's final task update are each a list of steps. Each step has a description, a check of whether the attempt log or its owner shows it has already happened, an optional intent entry recorded before a step whose outcome could be uncertain, and the action itself. One implementation runs the list: `--dry-run` reports the steps that would run, a run skips steps already done, and a failure gives a stopped result naming the step. The dry run therefore always lists exactly the steps that a run would take.
+- **Policy kinds as definitions.** Each finalisation policy kind is one definition: the facts from the forge that would make it fail, its steps, how it confirms that the work was integrated, and any attempt states of its own. The retention check is the same for every kind, because returning a lease keeps the output branch in the backing repository whichever way the work was integrated. Adding `pull-request` adds one definition and changes nothing in `finish` or the classification.
+- **One dispatch loop.** `dispatch --once` is the background dispatcher's loop run in the foreground, with a limit of one dispatch, waiting for that attempt to finish before it exits. Starting an attempt and supervising its worker are separate parts that the loop uses, so the two commands cannot behave differently.
+
 ## Several attempts at once
 
 Each context has a maximum number of active attempts, `maxAttempts` in the context configuration, defaulting to 1. An attempt is active from its first log entry until it records a task outcome, halts or is resolved by the operator: Phase 2's open attempts. An attempt that is awaiting review, awaiting finish or held for another reason has no worker and does not count.
 
-**Enforcing the maximum across processes.** `dispatch --once` and the background dispatcher can run at the same time, and an operator can run several `dispatch --once` commands. Each dispatch therefore takes the context's dispatch lock, a directory created exclusively under the runtime root, as `prune` does with its lock. While holding it, the dispatch counts the active attempts from the attempt log, selects a task and creates the attempt's first log entry, then releases the lock. The lock is held only for those steps, never while a lease is acquired or a worker runs. A dispatch that finds the lock held waits for up to a configured time (default 30 seconds) and then refuses, naming the lock directory. A lock left by a process that stopped while holding it is never removed automatically: the refusal says to check that no dispatch is running and then remove the directory.
+**Enforcing the maximum across processes.** `dispatch --once` and the background dispatcher can run at the same time, and an operator can run several `dispatch --once` commands. Each dispatch therefore takes the context lock (see [Shared mechanisms](#shared-mechanisms)). While holding it, the dispatch counts the active attempts from the attempt log, selects a task and creates the attempt's first log entry, then releases the lock. The lock is held only for those steps, never while a lease is acquired or a worker runs. A dispatch that finds the lock held, by another dispatch or by `prune`, waits for up to a configured time (default 30 seconds) and then refuses, naming the lock's owner and path.
 
 **Which attempts block dispatch.** Phase 1 refuses every dispatch while any worker may be running, because it could not tell a worker supervised by a live dispatcher from one left by a crash. The dispatcher heartbeat now makes that distinction, so Phase 3 relaxes the rule as the architecture note proposes:
 
@@ -62,13 +73,15 @@ The heartbeat is only ever a reason to block. A missing or unreadable observatio
 
 `switchboard dispatcher start` starts a long-running process for one context that dispatches ready tasks while it runs. Starting it is the operator's instruction to keep dispatching; nothing else starts it. It runs detached from the terminal and keeps running after the terminal closes, on macOS, Linux and Windows.
 
-**What it does.** While it runs and is not paused, whenever the context has fewer active attempts than its maximum and nothing blocks all dispatch, it dispatches the next ready task exactly as `dispatch --once` does: the same preflight, the same dispatch lock, the same steps and the same finalisation when the worker ends. It has no queue of its own: the next task is always the first eligible task in tasks-axi's ready list at that moment. Dispatching stops when no task is eligible and resumes when one becomes ready. It supervises each worker it starts exactly as a foreground dispatch does, including its heartbeat, budget and forwarding of operator messages and stop requests.
+**What it does.** While it runs and is not paused, whenever the context has fewer active attempts than its maximum and nothing blocks all dispatch, it dispatches the next ready task through the same loop as `dispatch --once` (see [Shared mechanisms](#shared-mechanisms)): the same preflight, the same context lock, the same steps and the same finalisation when the worker ends. It has no queue of its own: the next task is always the first eligible task in tasks-axi's ready list at that moment. Dispatching stops when no task is eligible and resumes when one becomes ready. It supervises each worker it starts exactly as a foreground dispatch does, including its heartbeat, budget and forwarding of operator messages and stop requests.
 
-**One per context.** The dispatcher claims the context with an exclusively created directory under the runtime root, holding its process ID, start time and a heartbeat refreshed every five seconds. A second `dispatcher start` refuses while that heartbeat is fresh. If the heartbeat is stale, the start refuses and names the directory, as for any lock: Switchboard cannot prove the old process has stopped.
+**How often it checks.** Each check reads tasks-axi, Treehouse and the runtime records, which starts several processes, and reading a pull request's state is a call to GitHub, which limits how often it can be asked. The dispatcher therefore checks for eligible work at a configured interval (default 30 seconds), and at once when one of its workers finishes, and reads the state of each recorded pull request at most once per a separate configured interval (default five minutes). The intervals are part of the loop, not stored: after a restart the dispatcher simply checks again.
+
+**One per context.** The dispatcher holds a claim on the context, with a heartbeat (see [Shared mechanisms](#shared-mechanisms)). A second `dispatcher start` refuses while that heartbeat is fresh. If the heartbeat is stale, the start still refuses and names the claim, as for any claim: Switchboard cannot prove the old process has stopped.
 
 **Controlling it.**
 
-- `switchboard dispatcher pause` and `switchboard dispatcher resume` stop and restart new dispatches without affecting running workers. They work through request files that the dispatcher claims, like `stop` and `steer`.
+- `switchboard dispatcher pause` and `switchboard dispatcher resume` stop and restart new dispatches without affecting running workers. They are requests to the dispatcher's own claim, using the same protocol as `stop` and `steer`.
 - `switchboard dispatcher stop` stops new dispatches, then waits for the dispatcher's workers to finish before the process exits. `--stop-workers` also sends each of its workers a stop request, exactly as `switchboard stop` does, so each attempt is held as interrupted once its worker's exit is observed.
 - `switchboard dispatcher status`, and a section of `switchboard status`, show whether the dispatcher is running, paused or stopping, its heartbeat, its attempts and why it is not dispatching, if it is not.
 - `watch`, `stop` and `steer` work on its attempts unchanged, because they already work through the runtime records and request files rather than the process that owns the worker.
@@ -91,7 +104,7 @@ A third finalisation policy kind, `pull-request`, for repositories whose target 
 
 Each step reads back its owner's state, and `finish --publish` can be run again after a failure to complete the remaining steps without pushing or opening anything twice: before opening, it looks for an open pull request from the output branch and records that one instead.
 
-**Waiting for the merge.** Switchboard does not track the pull request in the background or store anything about it beyond the attempt-log entries. Each time an attempt with an open pull request is classified, by `status`, by `finish` or by the background dispatcher, its state is read from GitHub, which owns it. That gives three new attempt states:
+**Waiting for the merge.** Switchboard does not track the pull request in the background or store anything about it beyond the attempt-log entries. Each time an attempt with an open pull request is classified, by `status`, by `finish` or by the background dispatcher (at most once per its interval), its state is read from GitHub, which owns it. That gives three new attempt states:
 
 | State | How it is recognised | Next action |
 | --- | --- | --- |
@@ -101,7 +114,7 @@ Each step reads back its owner's state, and `finish --publish` can be run again 
 
 A pull request whose state cannot be read makes the attempt's state unknown, which blocks every command that would change it, as in Phase 2. GitHub's answer is never cached between commands.
 
-**Finishing after the merge.** `finish` on a merged attempt records `integrated` with the merge commit, records the task as done and returns the lease. The Phase 2 retention check cannot be used here, because after a squash or rebase merge the target branch does not contain the output branch's commits. For this policy, the work counts as retained when GitHub reports the pull request merged into the target branch and the pull request's head when merged is the pushed commit or a descendant of it. The workspace must still have no uncommitted or untracked files, and the lease return still needs `--no-processes` and the lease identity check. The background dispatcher may report that an attempt's pull request has merged, but it never finishes the attempt.
+**Finishing after the merge.** `finish` on a merged attempt records `integrated` with the merge commit, records the task as done and returns the lease. Under `local-merge`, `finish` confirms integration with Git: the target branch contains the output branch's commit. That cannot work here, because after a squash or rebase merge the target branch has new commits with different hashes. This policy instead records `integrated` only when GitHub reports the pull request merged into the target branch and the pull request's head when merged is the pushed commit or a descendant of it. The retention check is unchanged from Phase 2: the output branch still holds the result commit after the merge, and the workspace must have no uncommitted or untracked files. The lease return still needs `--no-processes` and the lease identity check. The background dispatcher may report that an attempt's pull request has merged, but it never finishes the attempt.
 
 **The worker never publishes.** Only `finish` pushes or opens pull requests, using the operator's Git and `gh` credentials. The worker's environment does not receive them.
 
@@ -123,22 +136,23 @@ Claude Agent ACP is the second runtime, as the [ACP runtime survey](acp-runtime-
 
 ## Implementation order
 
-Each feature is implemented, tested and recorded in the verification record before the next starts:
+Each feature is implemented, tested and recorded in the verification record before the next starts. Each shared mechanism is implemented, with the existing commands moved onto it and their tests passing, before the first feature that needs it:
 
-1. **Several attempts at once.** The dispatch lock and the relaxed blocking rule are needed by the background dispatcher, and are useful alone with several `dispatch --once` commands.
-2. **Background dispatcher.**
-3. **Pull-request finalisation policy.** Independent of the first two, but the background dispatcher should report merged pull requests.
+1. **Several attempts at once.** Needs exclusive claims and the context lock. The context lock and the relaxed blocking rule are needed by the background dispatcher, and are useful alone with several `dispatch --once` commands.
+2. **Background dispatcher.** Needs requests to a running process and the single dispatch loop.
+3. **Pull-request finalisation policy.** Needs finalisation steps and policy kinds as definitions. Independent of the first two, but the background dispatcher should report merged pull requests.
 4. **Claude Agent ACP.** The runtime interface changes first, with the Pi runtime moved onto it and its tests passing unchanged, then the Claude profile and its qualification suite.
 
 ## Acceptance criteria
 
-1. With `maxAttempts` set to 2, two dispatches started at the same time from separate processes start two attempts for different tasks, and a third refuses while both are active. A test stops a dispatch while it holds the dispatch lock and shows that other dispatches refuse rather than exceed the maximum.
+1. With `maxAttempts` set to 2, two dispatches started at the same time from separate processes start two attempts for different tasks, and a third refuses while both are active. A test stops a dispatch while it holds the context lock and shows that other dispatches refuse rather than exceed the maximum.
 2. A running worker with a fresh heartbeat blocks only its own task; one whose heartbeat is missing, unreadable, stale or dated in the future blocks all dispatch. Tests show each case.
 3. The background dispatcher dispatches ready tasks up to the maximum, stops dispatching when paused, finalises each attempt as `dispatch --once` does, and refuses to start while another dispatcher holds the context. After its process is killed, its attempts block dispatch until the operator confirms their workers stopped, and a new dispatcher neither restarts nor retries any of them.
 4. `dispatcher stop --stop-workers` holds each of its attempts as interrupted once the worker's exit is observed.
 5. Under `pull-request`, `finish` without `--publish` changes nothing; with it, it pushes without force and opens one pull request, and can be run again after a failure at any step without pushing or opening anything twice. `status` reports awaiting merge, merged and closed from GitHub, and an unreadable pull request makes the attempt unknown. Tests use a fake `gh` and a local bare remote.
-6. `finish` on a merged attempt returns the lease only when the pull request was merged into the target branch with the pushed commit in its head, the workspace is clean and the operator confirmed with `--no-processes`. A squash-merged pull request finishes; a pull request whose head does not contain the pushed commit is refused.
+6. `finish` on a merged attempt records `integrated` only when the pull request was merged into the target branch with the pushed commit in its head, and returns the lease only when the retention check passes and the operator confirmed with `--no-processes`. A squash-merged pull request finishes; a pull request whose head does not contain the pushed commit is refused.
 7. The Pi runtime runs through the new runtime interface with its existing tests passing. A `steer` request to a runtime without steering is refused.
 8. The Claude Agent ACP qualification suite passes against the pinned versions, and a real dispatch with it completes on macOS with a validated result file and an observed process exit.
 9. A real end-to-end run with the background dispatcher and `maxAttempts` of 2 completes two attempts at once, and a real run under `pull-request` opens a pull request and, once it is merged, finishes the attempt.
-10. The suite passes on macOS, and in CI on Linux and Windows.
+10. Dispatch and `prune` take the same context lock, and every existing claim uses the shared claim mechanism. `finish`, `discard` and dispatch's final task update run through the shared steps, and for each a test shows that `--dry-run` lists exactly the steps a run then takes. `dispatch --once` runs through the dispatcher loop.
+11. The suite passes on macOS, and in CI on Linux and Windows.
