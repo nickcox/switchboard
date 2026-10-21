@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
@@ -20,6 +20,11 @@ const tasksWith = (f: Fixture, overrides: Partial<TaskStore>): TaskStore => {
     ready: () => real.ready(), inFlight: () => real.inFlight(), read: id => real.read(id), start: id => real.start(id),
     recordDone: (id, note) => real.recordDone(id, note), recordHold: (id, hold) => real.recordHold(id, hold), ...overrides,
   };
+};
+const findFile = (root: string, name: string): string => {
+  const found = readdirSync(root, { recursive: true, encoding: "utf8" }).filter(path => path.split(/[\\/]/).at(-1) === name);
+  assert.equal(found.length, 1, `exactly one ${name} under ${root}`);
+  return join(root, found[0]!);
 };
 const only = async (deps: Dependencies, taskId: string) => {
   const view = await status(deps);
@@ -74,6 +79,40 @@ test("held: a failed worker's task held with its lease", async () => {
   const f = await fixture({ tasks: [task("failed-a1")], scenario: "model-error" });
   await dispatchOnce(f.deps);
   expect(await only(f.deps, "failed-a1"), "held", "inspect_attempt", true);
+});
+
+test("held: a hold reason edited to end in \"review required\" does not make the attempt awaiting review", async () => {
+  const f = await fixture({ tasks: [task("edited-a1")], scenario: "model-error" });
+  await dispatchOnce(f.deps);
+  expect(await only(f.deps, "edited-a1"), "held", "inspect_attempt", true);
+  f.tasksCli(["unhold", "edited-a1"]);
+  f.tasksCli(["hold", "edited-a1", "--reason", "Switchboard attempt 1 review required"]);
+  assert.equal((await f.tasks.read("edited-a1"))?.holdReason, "Switchboard attempt 1 review required");
+  expect(await only(f.deps, "edited-a1"), "held", "inspect_attempt", true);
+});
+
+test("held: an attempt held for review whose hold reason was changed since is held for another reason", async () => {
+  const f = await fixture({ tasks: [task("changed-a1")], scenario: "commit-result" });
+  await dispatchOnce(f.deps);
+  expect(await only(f.deps, "changed-a1"), "awaiting_review", "review_then_finish", true);
+  f.tasksCli(["unhold", "changed-a1"]);
+  f.tasksCli(["hold", "changed-a1", "--reason", "Waiting for a design decision"]);
+  expect(await only(f.deps, "changed-a1"), "held", "inspect_attempt", true);
+});
+
+test("an outcome recorded before categories is classified from the hold reason Switchboard recorded", async () => {
+  const f = await fixture({ tasks: [task("legacy-a1")], scenario: "commit-result" });
+  await dispatchOnce(f.deps);
+  const [record] = await f.deps.attempts.forTask("legacy-a1");
+  const recorded = record!.entries.find(e => e.kind === "task_recorded")!;
+  assert.deepEqual(recorded.data, { outcome: "hold", reason: "Switchboard attempt 1 review required", category: "review_required" });
+  // Rewrite the entry as an earlier version wrote it, without a category.
+  const path = findFile(join(f.dir, "runtime", "attempts"), `${String(recorded.sequence).padStart(4, "0")}.json`);
+  const entry = JSON.parse(readFileSync(path, "utf8"));
+  delete entry.data.category;
+  writeFileSync(path, JSON.stringify(entry));
+  assert.equal((await f.deps.attempts.forTask("legacy-a1"))[0]!.entries.find(e => e.kind === "task_recorded")!.data.category, undefined);
+  expect(await only(f.deps, "legacy-a1"), "awaiting_review", "review_then_finish", true);
 });
 
 test("not retained: a reported commit missing from the output branch", async () => {

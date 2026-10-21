@@ -35,17 +35,17 @@ The runtime notes and [ADR-0003](../../adr/0003-pi-durable-for-durable-orchestra
 
 ## Attempt states
 
-Every attempt is classified from its attempt-log entries and each owner's current state. The classification replaces the ad hoc next-action rules in `status` and is the single source for every command's checks.
+Every attempt is classified from its attempt-log entries and each owner's current state. The outcome dispatch recorded in the attempt log decides between the held states; the task store only confirms that the task still has the recorded hold, because anyone can edit a hold reason there. The classification replaces the ad hoc next-action rules in `status` and is the single source for every command's checks.
 
 | State | How it is recognised | Next action |
 | --- | --- | --- |
 | Running | Launched, no observed exit, fresh dispatcher heartbeat | Watch it |
 | Possibly running | Launched, no observed or confirmed exit, no fresh heartbeat | Confirm the worker stopped (`resolve --worker-stopped`) |
 | Unfinished, no lease | Open attempt with no listed lease and no worker | Confirm it stopped (`resolve --task --lease-returned`) |
-| Awaiting review | Task held for review, lease preserved, retained | Review, then `finish` |
+| Awaiting review | Attempt recorded a hold for review and the task still has that hold, lease preserved, retained | Review, then `finish` |
 | Awaiting finish | Task recorded as done, lease preserved, retained | `finish` (returns the lease) |
-| Held for another reason | Task held as failed, interrupted, over budget or held by the worker; lease preserved | Inspect, then `finish --accept-output`, dispatch again or `discard` |
-| Not retained | Retention check failed; lease preserved | Fix the output, then `finish`, or `discard` with confirmation |
+| Held for another reason | Task held as failed, interrupted, over budget or held by the worker, or its hold reason changed since the attempt recorded it; lease preserved | Inspect, then `finish --accept-output`, dispatch again or `discard` |
+| Not retained | Attempt recorded a hold because the retention check failed and the task still has that hold; lease preserved | Fix the output, then `finish`, or `discard` with confirmation |
 | Lease in another pool | Lease recorded in a pool Treehouse no longer lists | Return it by path, then `resolve --lease-returned` |
 | Task update unconfirmed | Final task update not confirmed | Complete the update, then `finish` |
 | Stopped | Halted after acquiring its lease, or its task is still in flight with no lease | Inspect the attempt |

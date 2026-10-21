@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { AttemptConflict, type AttemptLog, type AttemptRecord, type AttemptRef } from "../attempts/log.ts";
+import { AttemptConflict, type AttemptLog, type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory } from "../attempts/log.ts";
 import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
 import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
 import type { RuntimeRecord, RuntimeRecords } from "../runtime/records.ts";
@@ -342,7 +342,7 @@ async function finalise(
     attempt: summary, worker, retention,
     evidence: report?.result?.validationEvidence ?? [], workReferences: report?.result?.workReferences ?? [],
   };
-  const holdReason = `Switchboard attempt ${ref.attempt} ${outcome.label}`;
+  const holdReason = `Switchboard attempt ${ref.attempt} ${holdLabels[outcome.category]}`;
   // The done note is passed as one command-line argument, which tasks-axi offers no file option for, so it is kept
   // short enough for every supported platform. The worker's full result stays in its runtime records.
   const note = doneNote(record, report);
@@ -364,12 +364,12 @@ async function finalise(
     }
     recorded = now!;
   }
-  await deps.attempts.append(ref, "task_recorded", { outcome: outcome.done ? "done" : "hold", reason: outcome.done ? "done" : holdReason });
+  await deps.attempts.append(ref, "task_recorded", { outcome: outcome.done ? "done" : "hold", reason: outcome.done ? "done" : holdReason, category: outcome.category });
   return result({
     ok: outcome.done, reason: outcome.done ? "done" : "held", stage: "finalise", lease: "preserved", observed, attempt: summary, worker, retention,
     task: { id: recorded.id, state: recorded.state, held: recorded.held, holdReason: recorded.holdReason },
     ...(outcome.done ? {} : { detail: holdReason }),
-    nextAction: outcome.done ? "finish_attempt" : outcome.review ? "review_then_finish" : "inspect_attempt",
+    nextAction: outcome.done ? "finish_attempt" : outcome.category === "review_required" ? "review_then_finish" : "inspect_attempt",
   });
 }
 
@@ -386,16 +386,17 @@ function doneNote(record: { attempt: AttemptSummary; worker: NonNullable<Dispatc
 }
 
 /** The outcome table in the Phase 1 PRD. Only a valid, retained completion with an independent contract is done. */
-function decide(report: PiRunReport | undefined, delivery: DeliveryContract, retention: RetentionResult): { done: boolean; review: boolean; label: string } {
-  const hold = (label: string, review = false) => ({ done: false, review, label });
+function decide(report: PiRunReport | undefined, delivery: DeliveryContract, retention: RetentionResult):
+  { done: true; category: "done" } | { done: false; category: Exclude<OutcomeCategory, "done"> } {
+  const hold = (category: Exclude<OutcomeCategory, "done">) => ({ done: false as const, category });
   if (!report || report.status === "failed") return hold("failed");
-  if (report.status === "interrupted") return hold(report.reason === "over_budget" ? "over budget" : "interrupted");
+  if (report.status === "interrupted") return hold(report.reason === "over_budget" ? "over_budget" : "interrupted");
   const outcome = report.result?.outcome;
-  if (outcome === "hold") return hold("held by worker");
+  if (outcome === "hold") return hold("held_by_worker");
   if (outcome !== "completed") return hold("failed");
-  if (!retention.retained) return hold("not retained");
-  if (delivery.acceptance === "review_or_integration") return hold("review required", true);
-  return { done: true, review: false, label: "done" };
+  if (!retention.retained) return hold("not_retained");
+  if (delivery.acceptance === "review_or_integration") return hold("review_required");
+  return { done: true, category: "done" };
 }
 
 /** Another invocation holds this request ID: report its attempt, or refuse while that attempt does not exist yet. */

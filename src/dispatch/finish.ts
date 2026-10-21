@@ -198,7 +198,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
     catch (error) { return stopped(error, `record that ${unrecorded.target} contains the work`); }
   }
   if (task.state === "done" && !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done")) {
-    try { await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished" }); }
+    try { await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished", category: "done" }); }
     catch (error) { return stopped(error, "record that the task is done"); }
   }
   if (task.state !== "done") {
@@ -206,7 +206,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
       const note = JSON.stringify({ attempt: attempt.attempt, finishedBy: "switchboard finish", policy: policy.kind, ...(integration ? { integrated: integration.to } : {}) });
       const done = await deps.tasks.recordDone(task.id, note);
       if (done.state !== "done") throw new Error("The task store does not show the task as done");
-      await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished" });
+      await deps.attempts.append(record, "task_recorded", { outcome: "done", reason: "finished", category: "done" });
     } catch (error) { return stopped(error, "record the task as done"); }
   }
   // The PRD's condition 2: retention is checked again immediately before the lease is returned.

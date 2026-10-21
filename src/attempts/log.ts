@@ -8,6 +8,15 @@ import { isMissing, key, readJsonFile, writeOnce } from "../runtime/records.ts";
 const nonempty = z.string().min(1).refine(value => value.trim().length > 0);
 const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 
+/** Why a task outcome was recorded. The attempt's state is classified from this, never from the task store's text. */
+export const outcomeCategories = ["done", "review_required", "not_retained", "held_by_worker", "failed", "interrupted", "over_budget"] as const;
+export type OutcomeCategory = (typeof outcomeCategories)[number];
+/** The end of each hold reason dispatch writes, by category. Entries written before categories are read with it. */
+export const holdLabels: Record<OutcomeCategory, string> = {
+  done: "done", review_required: "review required", not_retained: "not retained", held_by_worker: "held by worker",
+  failed: "failed", interrupted: "interrupted", over_budget: "over budget",
+};
+
 /** Entry payloads by kind. New kinds are added as dispatch stages are implemented. */
 const entrySchemas = {
   requested: z.strictObject({
@@ -30,7 +39,13 @@ const entrySchemas = {
   worker_finished: z.strictObject({
     status: nonempty, runtimeDirectory: nonempty, reason: nonempty.optional(), detail: nonempty.optional(), outcome: nonempty.optional(), resultCommit: commit.optional(),
   }),
-  task_recorded: z.strictObject({ outcome: z.enum(["done", "hold"]), reason: nonempty }),
+  task_recorded: z.strictObject({
+    outcome: z.enum(["done", "hold"]),
+    /** The hold reason written to the task store, or why the task was recorded as done. */
+    reason: nonempty,
+    /** Absent in entries written before it was recorded; those are classified from `reason`. */
+    category: z.enum(outcomeCategories).optional(),
+  }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
   halted: z.strictObject({
     stage: nonempty, reason: nonempty, detail: nonempty.optional(),

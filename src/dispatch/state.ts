@@ -1,4 +1,4 @@
-import type { AttemptRecord } from "../attempts/log.ts";
+import { holdLabels, type AttemptRecord, type OutcomeCategory } from "../attempts/log.ts";
 import type { NextAction } from "./result.ts";
 
 /**
@@ -52,13 +52,25 @@ function stateOf(input: StateInput): AttemptState {
   if (input.leaseInOtherPool) return "lease_in_other_pool";
   if (input.unfinished && !input.leaseHeld) return "unfinished";
   const entries = input.record.entries;
-  const recorded = entries.some(e => e.kind === "task_recorded");
+  const recorded = [...entries].reverse().find(e => e.kind === "task_recorded");
   if (!recorded && entries.some(e => e.kind === "halted" && e.data.stage === "finalise")) return "task_update_unconfirmed";
   const task = input.task;
   if (!input.leaseHeld) return task.state === "in_flight" ? "stopped" : "finished";
-  if (recorded && task.held && (task.holdReason ?? "").endsWith("not retained")) return "not_retained";
-  if (recorded && task.held && (task.holdReason ?? "").endsWith("review required")) return "awaiting_review";
-  if (recorded && task.state === "done") return "awaiting_finish";
-  if (recorded && task.held) return "held";
-  return "stopped";
+  if (!recorded) return "stopped";
+  if (task.state === "done") return "awaiting_finish";
+  if (!task.held) return "stopped";
+  // The recorded outcome decides, and the task store only confirms it: a hold whose reason was changed since is
+  // classified as held for another reason, whatever the new reason says.
+  if (task.holdReason !== recorded.data.reason) return "held";
+  const category = categoryOf(recorded.data as { outcome: string; reason: string; category?: OutcomeCategory });
+  if (category === "not_retained") return "not_retained";
+  if (category === "review_required") return "awaiting_review";
+  return "held";
+}
+
+/** The recorded category, or for an entry written before categories, the one its recorded hold reason ends with. */
+function categoryOf(data: { outcome: string; reason: string; category?: OutcomeCategory }): OutcomeCategory | undefined {
+  if (data.category) return data.category;
+  if (data.outcome === "done") return "done";
+  return (Object.keys(holdLabels) as OutcomeCategory[]).find(key => key !== "done" && data.reason.endsWith(` ${holdLabels[key]}`));
 }
