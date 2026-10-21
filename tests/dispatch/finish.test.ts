@@ -464,6 +464,18 @@ test("finding 11: discard holds a task that was queued and not held", async () =
   assert.deepEqual(await f.tasks.ready(), []);
 });
 
+test("finish completes a failed outcome transaction from the worker's completed result", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
+  const attempts = attemptsWith(f, { recordOutcome: async () => { throw new Error("database unavailable"); } });
+  const leaseId = (await dispatchOnce({ ...f.deps, attempts })).attempt!.leaseId!;
+  assert.equal(await state(f.deps), "stopped");
+  assert.equal((await f.tasks.read("finish-a1"))!.state, "in_flight");
+  const result = await finish(f.deps, { leaseId, noProcesses: true });
+  assert.equal(result.reason, "finished", result.detail ?? "");
+  assert.equal((await f.tasks.read("finish-a1"))!.state, "done");
+  assert.equal((await kinds(f)).filter(kind => kind === "task_recorded").length, 1);
+});
+
 test("an outcome from a worker that held its task is not finished as done", async () => {
   const f = await fixture({ tasks: [task("finish-a1")], scenario: "hold" });
   const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { importAttempts } from "../../src/attempts/import.ts";
 import { AttemptLog } from "../../src/attempts/log.ts";
 import { AttemptPruner } from "../../src/attempts/prune.ts";
 import { AttemptStore } from "../../src/attempts/store.ts";
+import { Database } from "../../src/database.ts";
 import { configSchema, databasePath } from "../../src/config.ts";
 import { key, RuntimeRecords } from "../../src/runtime/records.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
@@ -75,6 +77,43 @@ test("imports entries, old confirmations, orphan reservations and pruned numbers
   await assert.rejects(importAttempts(f.config), /already has attempts/);
 });
 
+test("the attempt import CLI activates once and reports repeat and usage refusals", async () => {
+  const f = await fixture();
+  const ref = await f.legacy.create("settled", {}, 0);
+  await f.legacy.append(ref, "halted", { stage: "acquire", reason: "rejected" });
+  const config = join(f.directory, "switchboard.json");
+  await writeFile(config, JSON.stringify(f.config));
+  const run = (...args: string[]) => spawnSync(process.execPath, [resolve("src/cli.ts"), "import", ...args, "--json", "--config", config], { encoding: "utf8" });
+  const result = run("--attempts");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(JSON.parse(result.stdout).count, 1);
+  const repeated = run("--attempts");
+  assert.equal(repeated.status, 1, repeated.stderr);
+  assert.equal(JSON.parse(repeated.stdout).reason, "rejected");
+  assert.equal(run("--attempts", "--tasks-axi", "unused.md").status, 2);
+});
+
+test("imports discard, worker-stop and lease-return confirmations with their exact scopes", async () => {
+  const f = await fixture();
+  const ref = await f.legacy.create("settled", {}, 0);
+  const sessionId = randomUUID();
+  await f.legacy.append(ref, "leased", { leaseId: "lease", workspace: f.directory, baseRef: "main", outputBranch: "output", startingCommit: "a".repeat(40) });
+  await f.legacy.append(ref, "launched", { sessionId });
+  await f.legacy.append(ref, "operator_resolved", { action: "worker_stopped" });
+  await f.legacy.append(ref, "discarded", { note: "No longer wanted" });
+  await f.legacy.append(ref, "operator_resolved", { action: "lease_returned" });
+  await importAttempts(f.config);
+  const tasks = await SqliteTaskStore.open({ path: databasePath(f.config) });
+  try {
+    const records = new AttemptStore(tasks.database, "context").confirmations(ref);
+    assert.deepEqual(records.map(c => ({ fact: c.fact, scope: c.scope })), [
+      { fact: "worker_stopped", scope: { leaseId: "lease", sessionId } },
+      { fact: "discard", scope: { leaseId: "lease" } },
+      { fact: "lease_returned", scope: { leaseId: "lease", outputBranch: "output" } },
+    ]);
+  } finally { tasks.close(); }
+});
+
 test("a failed import leaves the original database and files untouched and a retry starts afresh", async () => {
   const f = await fixture();
   const ref = await f.legacy.create("settled", {}, 0);
@@ -92,6 +131,31 @@ test("a failed import leaves the original database and files untouched and a ret
   tasks = await SqliteTaskStore.open({ path: databasePath(f.config) });
   assert.equal(new AttemptStore(tasks.database, "context").list().length, 1);
   tasks.close();
+});
+
+test("a staging failure does not migrate the original schema, and the next run builds a fresh copy", async () => {
+  const f = await fixture();
+  const path = databasePath(f.config);
+  const database = await Database.open(path);
+  await database.transaction(() => {
+    for (const table of ["attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) database.run(`DROP TABLE ${table}`);
+    database.run("PRAGMA user_version = 1");
+  });
+  database.close();
+  const ref = await f.legacy.create("settled", {}, 0);
+  await f.legacy.append(ref, "halted", { stage: "acquire", reason: "rejected" });
+  await f.legacy.reserveRequest("bad-request", "absent-task");
+  const before = await files(f.config.runtimeRoot);
+  await assert.rejects(importAttempts(f.config), /FOREIGN KEY/);
+  assert.deepEqual(await files(f.config.runtimeRoot), before);
+  const original = await Database.open(path, 5000, { migrate: false });
+  try {
+    assert.equal(original.get("PRAGMA user_version")!.user_version, 1);
+    assert.equal(original.get("SELECT 1 FROM sqlite_master WHERE name = 'attempts'"), undefined);
+    assert.equal(Number(original.get("SELECT count(*) AS n FROM tasks")!.n), 3);
+  } finally { original.close(); }
+  await rm(join(f.config.runtimeRoot, "request-ids", key("context"), `${key("bad-request")}.json`));
+  assert.equal((await importAttempts(f.config)).count, 1);
 });
 
 test("import refuses open attempts, possibly running workers and fresh dispatcher heartbeats", async () => {

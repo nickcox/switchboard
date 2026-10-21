@@ -18,7 +18,7 @@ export class Database {
   readonly path: string;
   private constructor(db: DatabaseSync, retryMs: number, path: string) { this.db = db; this.retryMs = retryMs; this.path = path; }
 
-  static async open(path: string, retryMs = 5000): Promise<Database> {
+  static async open(path: string, retryMs = 5000, options: { migrate?: boolean } = {}): Promise<Database> {
     if (!isAbsolute(path)) throw new Error("Database path must be absolute");
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     if (await realpath(dirname(path)) !== dirname(path)) throw new Error("Database path must be canonical");
@@ -57,6 +57,7 @@ export class Database {
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
       if (version > 2) throw new Error(`Unsupported database schema version ${version}`);
+      if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
         if (Number(result.get("PRAGMA user_version")!.user_version) !== 0) return;

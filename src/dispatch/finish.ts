@@ -122,10 +122,13 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   if (attempt.state === "finished") return refused("none", "The attempt is already finished", { ...base, lease: "none" });
   const accepted = [...(record.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
   const accepting = options.acceptOutput || accepted !== undefined;
-  // Work whose retention was fixed can be finished from the worker's completed result.
-  const finishable = ["awaiting_review", "awaiting_finish", "not_retained"].includes(attempt.state) && attempt.leaseHeld;
+  // A failed outcome transaction changed nothing. A completed worker result can still be checked and finished.
+  const outcomePending = attempt.state === "stopped" && record.entries.some(e => e.kind === "task_started") &&
+    record.entries.some(e => e.kind === "worker_finished" && e.data.status === "reported" && e.data.outcome === "completed") &&
+    !record.entries.some(e => e.kind === "task_recorded");
+  const finishable = (["awaiting_review", "awaiting_finish", "not_retained"].includes(attempt.state) || outcomePending) && attempt.leaseHeld;
   if (!finishable && !(accepting && attempt.state === "held" && attempt.leaseHeld)) {
-    return refused(attempt.nextAction.code, `Only an attempt awaiting review or finish, not retained, or a held attempt with --accept-output, can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
+    return refused(attempt.nextAction.code, `Only an attempt awaiting review or finish, not retained, awaiting its outcome transaction, or held with --accept-output, can be finished; this one is ${attempt.state.replaceAll("_", " ")}`, base);
   }
 
   let policy: ResolvedPolicy;

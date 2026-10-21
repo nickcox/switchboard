@@ -13,6 +13,8 @@ import { AttemptLog, holdLabels, parseAttemptEntry, type AttemptEntry, type Atte
 import { archiveSchema, reservationSchema, type ArchivedAttempt } from "./prune.ts";
 import { AttemptStore, type Confirmation, type ConfirmationRecord } from "./store.ts";
 
+const hasAttempts = (database: Database) => ["attempts", "attempt_numbers"].some(table =>
+  database.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", table) && database.get(`SELECT 1 FROM ${table} LIMIT 1`));
 const names = async (path: string) => readdir(path).catch(error => { if (error.code === "ENOENT") return []; throw error; });
 
 /** Compatibility belongs only here. The old files are never rewritten. */
@@ -122,8 +124,8 @@ export async function importAttempts(config: Config) {
   let source: Database | undefined;
   let copy: Database | undefined;
   try {
-    source = await Database.open(path, config.databaseRetryMs);
-    if (source.get("SELECT 1 FROM attempts LIMIT 1") || source.get("SELECT 1 FROM attempt_numbers LIMIT 1")) {
+    source = await Database.open(path, config.databaseRetryMs, { migrate: false });
+    if (hasAttempts(source)) {
       throw new TaskStoreError("rejected", "The database already has attempts or reservations");
     }
     const before = await snapshot(config, source);
@@ -167,7 +169,7 @@ export async function importAttempts(config: Config) {
     await requireSettled(config);
     assert.deepEqual(source.all("SELECT * FROM tasks ORDER BY position"), tasks, "Tasks changed during import");
     assert.deepEqual(source.all("SELECT * FROM dependencies ORDER BY task, blocker"), dependencies, "Dependencies changed during import");
-    if (source.get("SELECT 1 FROM attempts LIMIT 1") || source.get("SELECT 1 FROM attempt_numbers LIMIT 1")) throw new TaskStoreError("rejected", "Attempts were created during import");
+    if (hasAttempts(source)) throw new TaskStoreError("rejected", "Attempts were created during import");
     // Compare the files again without generating new conversion IDs.
     const after = await snapshot(config, source);
     assert.deepEqual(after.reservations, before.reservations);
