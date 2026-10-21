@@ -108,7 +108,7 @@ Pi Durable will support the supervisor and durable orchestration. A Pi Durable c
 | Phase | Useful capability |
 | --- | --- |
 | 1 – Basic dispatch | One ready task through Treehouse to Pi, with explicit finalisation and compensation |
-| 2 – Reconciliation and recovery | Classify each attempt's state across owners; finish, discard and prune attempts under a finalisation policy per context, with the operator confirming that no worker process remains ([PRD](phases/02-reconciliation-and-recovery/PRD.md); implemented, with [review](phases/02-reconciliation-and-recovery/review-2026-10-21.md) findings still to fix) |
+| 2 – Reconciliation and recovery | Classify each attempt's state across owners; finish, discard and prune attempts under a finalisation policy per context, with the operator confirming that no worker process remains ([PRD](phases/02-reconciliation-and-recovery/PRD.md); complete on macOS, see [verification](phases/02-reconciliation-and-recovery/verification.md)) |
 | 3 – Multiple workers and runtimes | Extend the initial adapter; add bounded concurrency and another runtime; a finalisation policy that opens and watches pull requests |
 | 4 – Agent supervisor | Introduce an agent supervisor using the operations, authority model and events in [Supervision](#supervision), including deciding when to start a new attempt after a temporary error; retain deterministic dispatch policy; Pi Durable for supervisor continuity, subject to ADR-0003 |
 | 5 – Mailboxes | Define Switchboard message semantics and implement durable delivery through Pi Durable, generalising Phase 1's operator messages to running workers |

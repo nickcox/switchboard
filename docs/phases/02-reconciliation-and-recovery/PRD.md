@@ -1,6 +1,6 @@
 # Phase 2: Reconciliation and recovery
 
-Status: agreed on 20 October 2026; implemented, but not yet complete: the [Phase 2 review](review-2026-10-21.md) found defects still to fix (see [verification](verification.md)). Requirements, not a description of existing behaviour.
+Status: agreed on 20 October 2026; implemented and complete on macOS as of 21 October 2026, with every finding of the [Phase 2 review](review-2026-10-21.md) fixed (see [verification](verification.md)). Requirements, not a description of existing behaviour.
 
 ## Objective and scope
 

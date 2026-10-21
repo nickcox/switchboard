@@ -1,6 +1,8 @@
 # Phase 2 verification
 
-Status: Phase 2 is **not yet complete**. This record was first written on 21 October 2026. The independent [Phase 2 review](review-2026-10-21.md) on the same day found 18 defects, including one critical and five high-severity ones, and showed that some evidence below is overstated: removing the conditional arguments from the Treehouse return leaves every test passing (finding 15), and two accept-output tests refuse for a different reason than their names say (finding 16). Phase 2 is complete once the critical and high-severity findings are fixed and this record is corrected.
+Status: Phase 2 is complete on macOS, as of 21 October 2026. This record was first written on the same day. The independent [Phase 2 review](review-2026-10-21.md) then found 18 defects, including one critical and five high-severity ones, and showed that some evidence was overstated: removing the conditional arguments from the Treehouse return left every test passing (finding 15), and two accept-output tests refused for a different reason than their names said (finding 16). Every finding is now fixed, each with a test, and the evidence below is corrected and notes the findings where they apply.
+
+The root suite (`npm test`) passes under Node.js 26.7.0 on macOS, and in CI on Linux and Windows. The real run under `local-merge` (criterion 7) was on macOS.
 
 This record maps each [PRD](PRD.md) acceptance criterion to its evidence. Unless stated otherwise the evidence is a test in `tests/`, and each safety check was also disabled in turn to confirm that a test fails without it.
 
