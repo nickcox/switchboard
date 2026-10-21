@@ -18,6 +18,8 @@ Keep subprocess objects and external transport formats inside adapters and infra
 
 Launch external components through their supported executables and runtimes. Verify compatibility separately before importing any component's SDK into the Switchboard process. Pi remains the initial worker runtime; this decision does not change that ownership or add Pi Durable to Phase 1.
 
+The CLI is an adapter over Switchboard's application operations, not the only way to invoke them. The planned embedded Durable supervisor calls the same operations in-process through narrow tool adapters. Keep argument parsing, output formatting and process exits outside those operations, and enforce authority and safety within them. See [ADR-0003](0003-pi-durable-for-durable-orchestration.md) for caller identity, approval, replay and storage boundaries.
+
 ## Consequences
 
 - Pin the Node.js version and dependency versions, commit the dependency lockfile, and document the verified component versions alongside the adapter mappings.
