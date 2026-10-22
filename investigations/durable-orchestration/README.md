@@ -724,3 +724,45 @@ npm test
 The real-adapter suite uses only fake Pi and disposable Treehouse fixtures. It covers both full designs, stable-ID retries, actual host process restart at review, duplicate review, missing/no-processes/wrong/stale approvals, actual Git retention, result-file-before-exit refusal, and SIGKILL at the lost-acquisition acknowledgement with `acquisition_uncertain` on retry. It does not qualify actual model/provider behaviour, descendant containment, power loss, automatic recovery or a choice between A and B.
 
 Validation on 22 October 2026, macOS/Darwin arm64, Node.js **v26.7.0**: isolated TypeScript check passed; all **479 investigation tests passed**, including the **six real-adapter tests** and the default three-repeat failure matrix. Repository `npm run check` passed; `npm test` passed with **428 tests, 426 passed, two platform skips, zero failures**. No production source, authoritative task store or non-fixture Treehouse pool was changed. Real model/provider runs remain the separate operator task.
+
+## Step 6 – real Pi and Treehouse runs
+
+Run by the operator with Claude Code on 23 October 2026 (AEDT), macOS/Darwin arm64, Node.js v26.7.0, Treehouse 3.1.4, Pi through Switchboard's `PiWorker` with `openai-codex` and `gpt-6.1-sol`, from repository commit `76de2c6`. Each fixture had its own Git repository and Treehouse pool under `.investigation/durable-orchestration/`; Switchboard's own repository, database and pool were not used. The worker settings came from a copy of the operator's configuration with a 10-minute run limit and a $1 cost limit. The task asked the worker to create and commit `hello.txt` containing one line, and to report a check of its contents as evidence named `tests`. Review was simulated; nothing was pushed, published or merged.
+
+The commands were those in the previous section. A rehearsal of design A with the fake Pi (`tests/fixtures/pi-rpc.ts`) completed first, with the same results as the real run below and no model calls.
+
+### Results
+
+| Check | Design A | Design B |
+| --- | --- | --- |
+| Lost acquisition response (`run --stop-after-acquire`) | Host killed at `workspace:ack:before` (exit status 137). One acquisition receipt, no launch or prompt, one real lease with holder `durable-A:<attempt>`. After removing the fixture host claim and restarting, two retries of the same request refused `acquisition_uncertain` without acquiring again | Same, with holder `durable-B:<attempt>` |
+| Finding the unrecorded lease | `treehouse --root <fixture>/pool status --json`, run in the fixture repository, lists the lease with its holder, ID and path. The holder names the design and attempt, so it can be matched to the refused request | Same |
+| Launch and prompt | One launch and one prompt receipt; one Pi session | Same |
+| Retry of the same request ID while the worker ran | Same attempt, still waiting for the worker | Same |
+| Worker result | `completed`, direct-child exit observed (code 0). Commit `34651ac` on `durable-real/a/attempt-1`, containing exactly the requested line; evidence `tests`; retention passed | Same, commit `447c1d7` on `durable-real/b/attempt-1` |
+| Cost | $0.019, about 25,600 tokens | $0.028, about 25,400 tokens |
+| Host stopped and started again at the review wait | Still waiting for review, nothing repeated | Same |
+| Review delivered twice | Two receipts, one recorded review | Same |
+| Approvals | `approval_required` until the acceptance approval, then `process_confirmation_required` until the no-processes approval | Same |
+| Finalisation after the operator confirmed no processes remained | Accepted, done, one return; no lease left | **Refused `host_unavailable` ("Treehouse status failed"); no return.** See below |
+
+Before the no-processes approvals, `lsof +D` on each workspace showed no open files, and the only processes naming either fixture were the two orchestration hosts. No Pi process remained.
+
+### Design B could not continue after an owner read failed
+
+When design B's finalisation read the workspace owner, Switchboard's Treehouse provider reported `Treehouse status failed`. Design B treats an error in a step with an external effect as final: its Durable task ended with a failed receipt, and every later `advance`, including after restarting the host, repeated the stored refusal. Nothing was repeated and the lease stayed retained, which is safe, but the design offers no operator command to retry or move past the failed step, so it could not complete. The lease was returned by hand with `treehouse return --if-lease-holder <holder> --if-lease-id <id>`, after the operator's confirmation, and the output branch was kept.
+
+The cause of the read failure is not known. The provider's error includes the command's output, but neither the prototype nor the stored receipt recorded it. Twenty calls of the same provider method afterwards, and six concurrent `treehouse status` calls, all succeeded. Design A did not meet the same failure, so the runs do not show how it would behave; it reads its owners again on each `advance` rather than ending a step.
+
+This is the clearest real example of the difference between refusing safely and continuing after an interruption: an owner that cannot be read for a moment should lead to a refusal that a later attempt can get past, not to a final state that needs tooling the design does not have. Recording the failed command's output is also needed before such failures can be diagnosed.
+
+### The two lost-acquisition leases
+
+Neither design reconciles a lease it did not record, as intended. After the operator confirmed that no worker had started for either, both leases were returned with `treehouse return --if-lease-holder <holder> --if-lease-id <id>` in their fixture pools.
+
+### Other observations
+
+- The adapter's ordering held with real Pi: the prompt receipt followed Pi's confirmed start, and the exit receipt followed the observed exit.
+- `shutdown` always reports `"leases": "retained"`, even when none remain.
+- The fixtures, including both output branches, receipts, reports, sessions and databases, are archived outside the repository at `~/.switchboard/switchboard/evidence/durable-real-runs-2026-10-23.tgz` (private, because a fixture's `real.json` can hold environment values). The archive is evidence, not a backup to resume from.
+- Not tested: whether processes started by a worker's tools outlive it, failures of the real provider, other platforms, and power loss.
