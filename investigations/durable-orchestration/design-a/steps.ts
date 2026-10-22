@@ -10,9 +10,13 @@ export type Step = {
 // inside the action. An uncertain external effect stops the list instead of retrying its action.
 export async function runSteps(steps: Step[]): Promise<Outcome | null> {
   for (const step of steps) {
-    if (step.happened()) continue;
-    const stopped = await step.run();
-    if (stopped) return stopped;
+    try {
+      if (step.happened()) continue;
+      const stopped = await step.run();
+      if (stopped) return stopped;
+    } catch (error) {
+      throw new Error(`Stopped while trying to ${step.description}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
   }
   return null;
 }

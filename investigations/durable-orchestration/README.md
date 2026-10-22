@@ -272,7 +272,7 @@ The prototype does **not** call all of `dispatchOnce` or `finish`. They currentl
 ### What the prototype adds
 
 - **Foreground composition, not a daemon:** `SwitchboardScenario.submit` reserves, acquires, revalidates, claims a launch and prompts once. `advance` inspects exit/review evidence and executes finalisation. The fixture supplies readiness changes, review signals and explicit calls to advance; there is no model polling, stored schedule or automatic retry. The promise queue serialises calls within an invocation, while the existing database transaction enforces admission capacity.
-- **A small typed step runner:** `steps.ts` runs accept/done/return steps, checking whether each happened using application facts. It has no saved position, graph, undo or automatic replay. Each protected action reads fresh owner controls and production assessment facts. Acceptance, task completion and lease return remain separate facts.
+- **A small typed step runner:** `steps.ts` runs accept/done/return steps, checking whether each happened using application facts. It has no saved position, graph, undo or automatic replay; unexpected failures name the stopped step. Each protected action reads fresh owner controls and production assessment facts. Acceptance, task completion and lease return remain separate facts.
 - **A contract/application adapter:** `store.ts` translates the abbreviated fake result and fake lease observations into production schemas and assessment inputs. It also freezes the shared request's exact output branch and gate, fields the existing `requested` entry does not fully represent. Shared fake owner controls stand in for actual Git retention and scoped operator approval expiry; these are not new production rules.
 - **Conservative uncertainty markers:** acquisition/prompt/cancellation intents are inserted before effects; the existing launch row and lease-return intent protect launch and return. A retry finds the same attempt, cached response or a specific unresolved refusal. A lost acknowledgement never leads to another acquisition, launch, prompt or return. Return is read back from the independent exact-identity receipt before recording `lease_returned`. A pending return intent causes inspection/refusal rather than a repeated external call, even if this is more conservative than production's current finish reconciliation.
 - **A lightweight real child:** `process-owners.ts` and `worker-child.ts` replace only the fake worker, keeping fake workspace and forge owners. The child independently records its one prompt and writes its result under `owners/workers/`, outside host storage. It deliberately waits after writing the result. The parent records positive exit evidence only after observing the actual child exit; result-file presence alone leaves the attempt waiting. Review and explicit scoped no-processes approval are still required afterwards. The test kills/joins any remaining child on cleanup; this is not an agent, containment implementation or proof about tool descendants.
@@ -305,11 +305,11 @@ The application bridge and deterministic composition are new code, not an estima
 
 | Added code | Lines |
 | --- | ---: |
-| Driver and step runner | 297 |
+| Driver and step runner | 301 |
 | Application/schema translation bridge | 195 |
 | Synthetic process adapter and child | 107 |
 | A-specific tests, including shared-suite registration | 206 |
-| Total | 805 |
+| Total | 809 |
 
 No production adapter implementation was copied: `store.ts` is new translation/glue and `process-owners.ts`/`worker-child.ts` are new test-only adaptation. Some step ordering and approval/retention guards intentionally overlap existing `dispatch.ts`/`finish.ts`; production would extract and share them. The 149-line reference exerciser is not used by A and must not be presented as its execution-code cost. There is no production deletion or net code-saving claim from this successful path.
 
