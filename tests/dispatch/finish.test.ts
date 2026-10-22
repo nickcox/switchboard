@@ -231,6 +231,24 @@ test("finish integrates the worker's exact result commit, not a later branch hea
   assert.equal(f.run(["rev-parse", "main"]), commit);
 });
 
+test("accept-output can explicitly accept a newer commit after earlier output was integrated", async () => {
+  const { f, leaseId, branch, workspace } = await failedOutput();
+  const deps = { ...f.deps, policy: localMerge(f) };
+  assert.equal((await finish(deps, { leaseId, noProcesses: false, acceptOutput: true })).reason, "finished");
+  const first = f.run(["rev-parse", "main"]);
+  writeFileSync(join(workspace, "later.txt"), "operator-reviewed follow-up\n");
+  const git = (...args: string[]) => execFileSync(onPath("git"), ["-C", workspace, ...args], { env: f.environment });
+  git("add", "later.txt");
+  git("commit", "-q", "--no-gpg-sign", "-m", "Follow-up");
+  assert.equal((await finish(deps, { leaseId, noProcesses: false })).reason, "finished");
+  assert.equal(f.run(["rev-parse", "main"]), first);
+  const plan = await finish(deps, { leaseId, noProcesses: false, acceptOutput: true, dryRun: true });
+  const latest = f.run(["rev-parse", branch]);
+  assert.match(plan.detail ?? "", new RegExp(`accept output commit ${latest}.*fast-forward main to ${latest}`));
+  assert.equal((await finish(deps, { leaseId, noProcesses: true, acceptOutput: true })).reason, "finished");
+  assert.equal(f.run(["rev-parse", "main"]), latest);
+});
+
 test("accepted output is checked again immediately before the lease is returned", async () => {
   const { f, leaseId, workspace } = await failedOutput();
   const deps = { ...f.deps, attempts: attemptsWith(f, {
@@ -282,6 +300,14 @@ for (const policy of ["manual", "local-merge"] as const) {
     assert.equal(view.attempts[0]?.state, "awaiting_finish");
     assert.match(describeStatus(view), new RegExp(`task is done with its lease retained.*finish --lease ${leaseId} --no-processes`));
     assert.equal((await dispatchOnce(deps, { taskId: "dependent-b1", dryRun: true })).reason, "dry_run");
+    if (policy === "manual") {
+      const dependent = await dispatchOnce(deps, { taskId: "dependent-b1" });
+      assert.equal(dependent.reason, "held", dependent.detail ?? "");
+      assert.equal(dependent.nextAction.code, "review_then_finish");
+      assert.equal(dependent.attempt?.taskId, "dependent-b1");
+      assert.notEqual(dependent.attempt?.leaseId, leaseId);
+      assert.equal(await listed(f, leaseId), true);
+    }
     const completed = await kinds(f);
     const repeated = await finish(deps, { leaseId, noProcesses: false });
     assert.equal(repeated.reason, "finished");
@@ -310,6 +336,10 @@ test("finish under local-merge fast-forwards the target branch to the output bra
   const { f, leaseId, branch } = await reviewed();
   const deps = { ...f.deps, policy: localMerge(f) };
   const head = f.run(["rev-parse", branch]);
+  const before = await kinds(f);
+  const plan = await finish(deps, { leaseId, noProcesses: true, dryRun: true });
+  assert.equal(plan.detail, `Would fast-forward main to ${head}, then record the task as done, then return lease ${leaseId}`);
+  assert.deepEqual(await kinds(f), before);
   const outcome = await finish(deps, { leaseId, noProcesses: true });
   assert.equal(outcome.reason, "finished", outcome.detail ?? "");
   assert.equal(f.run(["rev-parse", "main"]), head);
@@ -475,6 +505,13 @@ test("finding 12: a lease returned before its log entry failed is recorded by th
   assert.equal(first.reason, "stopped");
   assert.equal(first.lease, "none");
   assert.equal(await listed(f, leaseId), false);
+  const before = await kinds(f);
+  for (const noProcesses of [false, true]) {
+    const plan = await finish(f.deps, { leaseId, noProcesses, dryRun: true });
+    assert.equal(plan.reason, "planned");
+    assert.equal(plan.detail, `Would record that lease ${leaseId} was returned`);
+    assert.deepEqual(await kinds(f), before);
+  }
   const second = await finish(f.deps, { leaseId, noProcesses: true });
   assert.equal(second.reason, "finished", second.detail ?? "");
   assert.equal((await kinds(f)).filter(k => k === "lease_returned").length, 1);

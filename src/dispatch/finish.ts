@@ -72,12 +72,12 @@ async function returnLease(deps: Dependencies, record: AttemptRecord, attempt: A
 }
 
 /** Completes the record of a return that an earlier run started, once the lease is no longer listed. */
-async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt: AttemptAssessment, by: "finish" | "discard"): Promise<boolean> {
+async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt: AttemptAssessment, by: "finish" | "discard", dryRun = false): Promise<boolean> {
   if (attempt.facts.unknown.length || attempt.facts.possiblyRunning || attempt.leaseHeld || typeof attempt.task !== "object" || attempt.task.state === "in_flight") return false;
   const started = record.entries.some(e => e.kind === "lease_return_started" && e.data.by === by && e.data.leaseId === attempt.attempt.leaseId);
   if (!started || record.entries.some(e => e.kind === "lease_returned")) return false;
   const intent = [...record.entries].reverse().find(e => e.kind === "lease_return_started" && e.data.by === by);
-  await deps.attempts.append(record, "lease_returned", { leaseId: attempt.attempt.leaseId!, by, returnId: intent!.data.returnId as string });
+  if (!dryRun) await deps.attempts.append(record, "lease_returned", { leaseId: attempt.attempt.leaseId!, by, returnId: intent!.data.returnId as string });
   return true;
 }
 
@@ -124,7 +124,10 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   if (!("record" in located)) return located;
   const { attempt, record } = located;
   const base = { attempt: attempt.attempt };
-  if (!options.dryRun && await completeReturn(deps, record, attempt, "finish")) return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: {}, ...base, nextAction: "none" });
+  if (await completeReturn(deps, record, attempt, "finish", options.dryRun)) return result({
+    ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: {}, ...base,
+    ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
+  });
   const accepted = [...(record.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
   const accepting = options.acceptOutput || accepted !== undefined;
   const permission = checkCanFinish(attempt.facts, accepting);
@@ -158,19 +161,20 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
 
   // Under local-merge, check before any change that the target can be fast-forwarded, or already contains the work.
   const outputBranch = attempt.attempt.outputBranch!;
+  const outputCommit = acceptedCommit ?? retention.outputCommit;
   let integration: { target: string; from: string; to: string } | undefined;
   // The target already contains the work, but an earlier run's fast-forward may not have been recorded.
   let unrecorded: { target: string; commit: string } | undefined;
-  if (policy.kind === "local-merge" && !record.entries.some(e => e.kind === "integrated")) {
+  if (policy.kind === "local-merge" && !record.entries.some(e => e.kind === "integrated" && (outputCommit === undefined || e.data.commit === outputCommit))) {
     const git = { git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository };
-    const to = acceptedCommit ?? retention.outputCommit ?? await branchHead(git, outputBranch);
+    const to = outputCommit ?? await branchHead(git, outputBranch);
     const from = await branchHead(git, policy.targetBranch!);
     if (!to || !from) return refused("inspect_attempt", `Branch ${!to ? outputBranch : policy.targetBranch} cannot be read in the backing repository`, base);
     if (!await isAncestor(git, to, from)) {
       const permission = checkCanIntegrate(attempt.facts, { accepting, retained: true, fastForward: await isAncestor(git, from, to) });
       if (!permission.allowed) return refused(permission.nextAction, `${policy.targetBranch} cannot be fast-forwarded to ${outputBranch}: it has commits the output branch does not`, { ...base, observed: { refusal: permission } });
       integration = { target: policy.targetBranch!, from, to };
-    } else if (!record.entries.some(e => e.kind === "integrated")) unrecorded = { target: policy.targetBranch!, commit: to };
+    } else unrecorded = { target: policy.targetBranch!, commit: to };
   }
 
   const task = await deps.tasks.read(attempt.attempt.taskId).catch(() => undefined);

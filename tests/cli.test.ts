@@ -232,19 +232,26 @@ test("dispatch --once and status report the attempt as structured JSON with docu
   assert.equal(switchboard(["resolve", "--task", "cli-a1", "--lease-returned"]).status, 1);
 });
 
-test("finish through the CLI: a dry run plans, a missing confirmation refuses, and the confirmed run finishes", () => {
+test("finish through the CLI: a dry run plans, work finishes with its lease retained, then confirmation returns it", () => {
   const { switchboard } = fixture();
   const dispatched = JSON.parse(switchboard(["dispatch", "--once", "--json"]).stdout);
   const lease = dispatched.attempt.leaseId as string;
   const planned = switchboard(["finish", "--lease", lease, "--dry-run", "--json"]);
   assert.equal(planned.status, 0, planned.stderr);
   assert.equal(JSON.parse(planned.stdout).reason, "planned");
-  const unconfirmed = switchboard(["finish", "--lease", lease, "--json"]);
-  assert.equal(unconfirmed.status, 1);
-  assert.equal(JSON.parse(unconfirmed.stdout).nextAction.code, "confirm_no_processes");
+  assert.match(JSON.parse(planned.stdout).detail, /record the task as done, then retain lease/);
+  const retained = switchboard(["finish", "--lease", lease, "--json"]);
+  assert.equal(retained.status, 0, retained.stdout);
+  assert.equal(JSON.parse(retained.stdout).reason, "finished");
+  assert.equal(JSON.parse(retained.stdout).lease, "preserved");
+  assert.match(JSON.parse(retained.stdout).detail, new RegExp(`finish --lease ${lease} --no-processes`));
+  const returning = switchboard(["finish", "--lease", lease, "--no-processes", "--dry-run", "--json"]);
+  assert.equal(returning.status, 0, returning.stdout);
+  assert.equal(JSON.parse(returning.stdout).detail, `Would return lease ${lease}`);
   const finished = switchboard(["finish", "--lease", lease, "--no-processes", "--json"]);
   assert.equal(finished.status, 0, finished.stdout);
   assert.equal(JSON.parse(finished.stdout).reason, "finished");
+  assert.equal(JSON.parse(finished.stdout).lease, "none");
   for (const args of [["finish", "--lease", lease, "--confirm"], ["discard", "--lease", lease, "--task", "cli-a1"]]) {
     assert.equal(switchboard(args).status, 2, args.join(" "));
   }
