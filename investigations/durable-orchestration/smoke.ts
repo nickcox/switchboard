@@ -18,6 +18,7 @@ const context = BACKGROUND_CONTEXT;
 const phaseLog = resolve(directory, "phases.jsonl");
 const Receipt = defineDoc<{ taskId: number }>({
   kind: "investigation.receipt", version: 1, scope: "session", initial: () => ({ taskId: 0 }),
+  checkpointWhen: () => true,
 });
 const Probe = defineTask<{ requestId: string }, { phase: "prepare" } | { phase: "finish"; requestId: string }, string>({
   name: "investigation.restart-probe",
