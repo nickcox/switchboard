@@ -109,6 +109,8 @@ Pi Durable is the selected direction for the supervisor and later durable orches
 
 ## Roadmap
 
+**Phase 3 execution design is under review.** The [comparative prototype plan](phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-prototype.md) compares Switchboard running each operation's steps itself with Durable running them as checkpointed tasks, before the Phase 3 PRD's implementation steps 3 to 5 (several attempts at once, the background dispatcher and the step runner) are built. It may bring Durable forward from Phase 4 and change host and storage responsibilities. The roadmap's capabilities and existing safety rules are unchanged; no production integration is selected by the plan.
+
 | Phase | Useful capability |
 | --- | --- |
 | 1 – Basic dispatch | One ready task through Treehouse to Pi, with explicit finalisation and compensation |

@@ -33,7 +33,9 @@ Inputs: the [architecture's notes for later phases](../../architecture.md#notes-
 
 ## Pi Durable checkpoint
 
-The fourth comparison in ADR-0005 found that Phase 3, as scoped, gives no reason to adopt Pi Durable, provided this PRD keeps to four limits. Each section below says how it does:
+**Execution and recovery design under review.** Complete the [comparative orchestration prototype](pi-durable-orchestration-prototype.md) before implementation steps 3 to 5 below; steps 2 and 6 can go ahead, as the plan explains. The comparison asks whether Durable should execute deterministic workflows through Switchboard's domain operations and external-worker adapters, including whether one execution host would simplify the current multi-process design. Domain rules and safety requirements remain unchanged; the mechanisms below are the current candidate, not a settled choice against Durable.
+
+The fourth comparison in ADR-0005 deferred Durable for Phase 3 under four limits. These still describe this candidate, but do not establish that it is simpler than Durable-owned execution:
 
 1. No queue of Switchboard's own. The ready order of tasks in Switchboard's database is the order of work. It orders project tasks, which Pi Durable does not model, and is not a queue of dispatch requests.
 2. No automatic restart of workers and no retry of attempts.

@@ -1,6 +1,6 @@
 # ADR-0003: Pi Durable for the supervisor and later durable orchestration
 
-Status: accepted architectural direction; integration deferred to Phase 4 and subject to the acceptance checks below. The original review used Pi Durable 1.3.0 on 18 October 2026; the documentation refresh below identifies its upstream source separately.
+Status: accepted direction for the Phase 4 supervisor, subject to the acceptance checks below. Earlier adoption for deterministic orchestration is under review through the comparative prototype. The original review used Pi Durable 1.3.0 on 18 October 2026; the documentation refresh below identifies its upstream source separately.
 
 ## Context
 
@@ -11,6 +11,8 @@ Supervision is expected to be done by an agent (see [Supervision](../architectur
 Pi Durable is an agent harness: a library that runs agent conversations inside the host process. It writes conversations, model turns, tool calls and the host's own typed documents to storage before anything is shown, and runs checkpointed tasks that continue after a crash. It does not manage external Pi CLI processes.
 
 ## Decision
+
+The [comparative orchestration prototype](../phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-prototype.md) reopens the decision to keep Phase 3 execution outside Durable. Durable does not supply an external-worker process adapter, but could coordinate one through checkpointed tasks. The prototype compares total execution and recovery complexity, including a single execution host. Until it concludes, the decision below remains the supervisor direction, not a finding that Durable is unsuitable for earlier deterministic orchestration. No production dependency or worker-policy change is authorised by the investigation.
 
 Introduce Pi Durable for the Phase 4 agent supervisor, subject to the acceptance checks below. The supervisor is a Pi Durable conversation whose tools call Switchboard's application operations in-process. Pi Durable provides conversation continuity, queued input recovery and explicit interrupted-tool behaviour, not the dispatcher or external worker lifecycle. Do not add it in Phase 1. Phase 1 used the append-only attempt log in ADR-0006; [ADR-0007](0007-one-sqlite-database.md) replaces that storage and tasks-axi with Switchboard's database.
 

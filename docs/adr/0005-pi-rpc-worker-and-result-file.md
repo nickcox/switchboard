@@ -30,6 +30,8 @@ Neither Herdr nor a generic process supervisor is required for this first integr
 
 ## Continuing comparison with Pi Durable
 
+**Phase 3 orchestration decision under review.** The [comparative prototype plan](../phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-prototype.md) reopens the fourth comparison's conclusion below. Not managing external workers directly does not prevent Durable from coordinating Switchboard's adapters. The comparison will test whether Durable can replace the proposed step runner, waits and recovery machinery, and whether a single execution host reduces coordination costs. Existing domain and worker safety rules remain requirements. Complete the comparison before the Phase 3 PRD's implementation steps 3 to 5, as the plan explains.
+
 The comparisons below are findings about the package and scope inspected at the time, not about every upstream revision numbered 1.3.0. [ADR-0003's source refresh](0003-pi-durable-for-durable-orchestration.md#source-refresh) records unreleased upstream source with timed waits that survive a restart, which the published 1.3.0 package does not have. Phase 3's scope is unchanged; compare again before Switchboard stores any timing, and qualify a released package before relying on those features.
 
 At each runtime milestone, record what Pi Durable already supplies, what remains application policy and why any new runtime-owned state or lifecycle code is necessary. Reconsider this decision before adding a persistent runtime service, retries, replay, automatic restart, resumable orchestration, queues or scheduled work. Do not reproduce those features incrementally in this adapter.
