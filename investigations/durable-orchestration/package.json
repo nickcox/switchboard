@@ -7,7 +7,8 @@
   },
   "scripts": {
     "check": "node ../../node_modules/typescript/bin/tsc --project tsconfig.json",
-    "test": "node --test --test-timeout=30000 smoke.test.ts \"scenario/*.test.ts\" \"design-a/*.test.ts\" \"design-b/*.test.ts\" \"failures/*.test.ts\"",
+    "test": "node --test --test-timeout=30000 smoke.test.ts \"scenario/*.test.ts\" \"design-a/*.test.ts\" \"design-b/*.test.ts\" \"failures/*.test.ts\" \"real/*.test.ts\"",
+    "test:real": "node --test --test-timeout=30000 \"real/*.test.ts\"", 
     "test:failures": "node --test --test-timeout=30000 \"failures/*.test.ts\""
   },
   "dependencies": {
