@@ -15,7 +15,7 @@ const Requests = defineDoc<{ entries: Receipt[] }>({
   kind: "investigation.b.requests", version: 1, scope: "session", initial: () => ({ entries: [] }), checkpointWhen: () => true,
 });
 type Runtime = TaskRuntime<Request, Checkpoint, Outcome, {}>;
-export type EngineOptions = { manualClock?: boolean; pollMs?: number };
+export type EngineOptions = { manualClock?: boolean; pollMs?: number; initialNow?: number };
 
 // This object belongs to one exclusive host. Clients never open either database.
 export class DurableScenario implements ScenarioDriver {
@@ -35,7 +35,8 @@ export class DurableScenario implements ScenarioDriver {
     this.manual = options.manualClock ?? false;
     this.pollMs = options.pollMs ?? 250;
     if (!Number.isInteger(this.pollMs) || this.pollMs < 1) throw new Error("pollMs must be positive");
-    this.clock = 1_000_000;
+    this.clock = options.initialNow ?? 1_000_000;
+    if (!Number.isFinite(this.clock)) throw new Error("initialNow must be finite");
   }
 
   static async open(operations: Operations, options: EngineOptions = {}): Promise<DurableScenario> {

@@ -5,6 +5,7 @@ import type { Identity, Request, WorkerResult } from "../scenario/contract.ts";
 // A controlled child, not an agent. Its files belong to the external owner, outside host storage.
 const directory = process.argv[2]!;
 await mkdir(directory, { recursive: true });
+await writeFile(join(directory, "pid.json"), JSON.stringify({ pid: process.pid }), { flag: "wx", flush: true });
 let prompted = false;
 process.on("message", async (message: { type: string; identity: Identity; request: Request }) => {
   if (message.type === "exit") process.exit(0);
