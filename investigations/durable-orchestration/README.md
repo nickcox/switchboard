@@ -165,7 +165,7 @@ Added on 22 October 2026. This completes the common test-scenario step only. Nei
 
 `scenario/contract.ts` is the typed, engine-independent contract. A request supplies a non-empty stable `requestId`, a `taskId` and a frozen delivery contract: exact output branch, required evidence names, required deliverable names and acceptance gate (`review` or `forge_merge`). A repeated ID must identify the same inputs and the same attempt, including after a client loses its response. Changed inputs refuse with `request_conflict`. An accepted task cannot be dispatched again merely by supplying a fresh request ID.
 
-The fixture, not request or worker arguments, supplies context identity, configured capacity, clock, readiness, owner observations and scoped operator approvals. `FakeOwners` is test control infrastructure, not a model-facing tool. The abbreviated worker result has the full scenario identity (context, task, attempt, lease and session), outcome, exact branch/commit and named evidence/deliverables. It is a deliberately small fake contract, **not** a replacement for production `WorkerInput`/`WorkerResult` schemas or actual Git retention checks. Neither prototype imports or changes production code.
+The fixture, not request or worker arguments, supplies context identity, configured capacity, clock, readiness, owner observations and scoped operator approvals. `FakeOwners` is test control infrastructure, not a model-facing tool. The abbreviated worker result has the full scenario identity (context, task, attempt, lease and session), outcome, exact branch/commit and named evidence/deliverables. It is a deliberately small fake contract, **not** a replacement for production `WorkerInput`/`WorkerResult` schemas or actual Git retention checks. The step 3 exerciser imports no production code and changes none. Step 4's Design A imports existing application operations, as recorded below.
 
 | Common step | Inputs and domain checks | Outcome and acknowledgement |
 | --- | --- | --- |
@@ -243,3 +243,93 @@ npm test
 The isolated check uses the repository's existing development compiler with the local `tsconfig.json`; no runtime dependency was added or upgraded. Production test/check scripts and `src/` are unchanged. Temporary fixtures are removed after each test; retained manual diagnostics must also stay under `.investigation/`.
 
 On macOS with Node **v26.7.0**, the shared suite passes against the in-process exerciser, and every named kill point preserves exactly the expected owner receipts after deleting host storage. These are single runs per boundary, not repeated reliability or power-loss experiments. The existing Durable smoke test is still included. Validation passed: the isolated check and all **69** investigation tests (38 kill boundaries, 30 scenario/adapter tests and the existing smoke test), repository `npm run check`, and repository `npm test` (**419** tests: 417 passed, two skipped, zero failed). The earlier 403-test baseline above is historical. Linux/Windows kill semantics and real integrations have not been qualified here.
+
+## Step 4 – Design A: Switchboard-owned execution
+
+Implemented on 22 October 2026, starting from **`eb7fd53b989242ac67d9a0e1ba3e63a4be27ba09`**. This implements **A only**, not B, the recovered-process failure matrix, real Pi/Treehouse integration or an architecture recommendation. The previous sections are historical findings from steps 1–3. No production source, dependency, authoritative task record, Treehouse lease, Git publication or merge was changed. Only disposable fixture tasks are created and mutated. No model or agent is launched.
+
+`design-a/driver.ts` implements `ScenarioDriver` directly, without inheriting from the in-process reference. The exact same `defineCommonTests("A", create)` suite now runs against an on-disk application database and the shared independent owners. Both review and simulated-forge-merge paths complete all six steps and pass `assertSuccessful`. Missing/stale/scoped approvals, model-controlled arguments, readiness changes, invalid results, duplicate review and capacity refusals use the same assertions as the reference. The fake forge's merge is still a fixture/operator action, never an orchestration action.
+
+### What is already Switchboard code
+
+These operations are **imported and executed**, not copied or reimplemented in the prototype:
+
+| Responsibility | Existing code actually used |
+| --- | --- |
+| Database schema, WAL and flushed commits, asynchronous busy retries | `Database` through `SqliteTaskStore.open`; retains `synchronous = FULL`, `fullfsync = ON`, `checkpoint_fullfsync = ON` |
+| Fixture task creation/reading, dependency readiness and operator holds | `SqliteTaskStore` |
+| Context-unique caller reservation, capacity and per-task exclusion | `AttemptStore.reserveAttempt`; admission remains in its `BEGIN IMMEDIATE` transaction |
+| Revalidate readiness and start task plus entry atomically | `AttemptStore.startReservedTask` |
+| At-most-one launch permission and runtime identity binding | `RuntimeStore.claimLaunch` and `bindingSchema`; the immutable production launch row is written **before** calling the worker owner |
+| Observe exit, release the current invocation's worker claim | `RuntimeStore.recordObservation` and `releaseClaim`; a reopened invocation does not adopt another invocation's claim |
+| Validate the translated fake report under the production delivery schema | `validateWorkerResult`, in addition to the shared `validResult` check (which also checks the scenario-only attempt ID) |
+| Close worker capacity and hold work for review without overwriting operator edits | `AttemptStore.recordOutcome`, with `review_required`; a waiting review does not consume capacity |
+| Assess recorded facts and external observations; decide acceptance, finishing and return | `assessAttempt`, `checkCanAcceptOutput`, `checkCanFinish`, `checkCanReturnLease` |
+| Record scoped output acceptance and no-processes confirmation; record task done and exact lease return | `AttemptStore.appendConfirmed`, `finishAttempt`, `append`, including expected-record and expected-task checks |
+
+The prototype does **not** call all of `dispatchOnce` or `finish`. They currently combine foreground ordering, concrete runtime/retention reads and operations the comparison needs to separate. Calling them wholesale would either bypass the shared wait scenario or require a production refactor solely for the experiment. The existing store transactions and safety operations are practical reuse points. Actual Pi RPC transport, `WorkerSupervisor`, Git retention, layered finalisation policy and Treehouse adaptation remain production inputs, not claimed replacements.
+
+### What the prototype adds
+
+- **Foreground composition, not a daemon:** `SwitchboardScenario.submit` reserves, acquires, revalidates, claims a launch and prompts once. `advance` inspects exit/review evidence and executes finalisation. The fixture supplies readiness changes, review signals and explicit calls to advance; there is no model polling, stored schedule or automatic retry. The promise queue serialises calls within an invocation, while the existing database transaction enforces admission capacity.
+- **A small typed step runner:** `steps.ts` runs accept/done/return steps, checking whether each happened using application facts. It has no saved position, graph, undo or automatic replay. Each protected action reads fresh owner controls and production assessment facts. Acceptance, task completion and lease return remain separate facts.
+- **A contract/application adapter:** `store.ts` translates the abbreviated fake result and fake lease observations into production schemas and assessment inputs. It also freezes the shared request's exact output branch and gate, fields the existing `requested` entry does not fully represent. Shared fake owner controls stand in for actual Git retention and scoped operator approval expiry; these are not new production rules.
+- **Conservative uncertainty markers:** acquisition/prompt/cancellation intents are inserted before effects; the existing launch row and lease-return intent protect launch and return. A retry finds the same attempt, cached response or a specific unresolved refusal. A lost acknowledgement never leads to another acquisition, launch, prompt or return. Return is read back from the independent exact-identity receipt before recording `lease_returned`. A pending return intent causes inspection/refusal rather than a repeated external call, even if this is more conservative than production's current finish reconciliation.
+- **A lightweight real child:** `process-owners.ts` and `worker-child.ts` replace only the fake worker, keeping fake workspace and forge owners. The child independently records its one prompt and writes its result under `owners/workers/`, outside host storage. It deliberately waits after writing the result. The parent records positive exit evidence only after observing the actual child exit; result-file presence alone leaves the attempt waiting. Review and explicit scoped no-processes approval are still required afterwards. The test kills/joins any remaining child on cleanup; this is not an agent, containment implementation or proof about tool descendants.
+
+A fresh invocation never reattaches to an external worker. If its initial prompt was acknowledged but no exit is observed, `advance` and new dispatch refuse `possibly_running`, regardless of spare capacity. A positive identity-checked exit receipt may be validated on an explicit later advance; that is result recovery, not worker adoption. Acquisition, launch or prompt uncertainty remains an operator refusal. Ordinary storage/adapter exceptions produce `host_unavailable` with an error and operator action; an already committed uncertainty response remains discoverable on retry.
+
+### Design A's persistent ownership
+
+Every application and prototype table is in `host/switchboard.db`. There is no second engine store and no cross-store application/checkpoint transaction. External receipts are still separate commits and must be inspected; SQLite cannot make their effects atomic with domain records.
+
+| Record | Authority and purpose |
+| --- | --- |
+| Production `tasks`, `dependencies`, `attempt_numbers`, `attempts`, `attempt_entries`, `confirmations` | Switchboard: project readiness, stable request/attempt identity, capacity, immutable start/outcome/acceptance/return facts and exact operator scopes. No duplicate full `Attempt` object is saved by A |
+| Production `launches`, `worker_claims`, `worker_observations` | Switchboard runtime boundary: one immutable launch permission/binding, process ownership claim and positive direct-child exit observation. This prototype does not populate activity/control-request tables or run a heartbeat loop |
+| `prototype_requests` | Prototype application adapter: immutable shared input and stable scenario attempt UUID. Written before reservation; a refused admission can leave input without an attempt. It freezes inputs but is not a second capacity reservation |
+| `prototype_facts` | Prototype application adapter: only fields absent from the existing application records – session correlation before launch, acquisition/prompt/cancellation intents and acknowledgements, full validated abbreviated report and exact-commit review acknowledgement. Immutable names per request; no workflow cursor. The report is copied here because shared fake exit receipts replace worker files; production should read retained worker files, not add a second report ledger |
+| `prototype_responses` | Prototype response cache: last returned typed outcome for caller retry. Never grants acceptance, approval or return authority; advancing recomputes from current facts and owners |
+| `owners/effects/`, `owners/controls.json` | Independent fake workspace/worker/forge owners and fixture/operator authority. Counters are scanned from their exclusive flushed receipts, never derived from the application tables |
+| `owners/workers/` in the child test | External synthetic worker: independent prompt log and result file. Not execution-host progress or acceptance authority |
+
+`store.ts` creates only prototype-local tables alongside the existing schema in disposable databases; it does not implement or authorise a production migration. Writes across several application calls can still be interrupted between transactions. The corresponding external intents and positive receipts permit conservative inspection/refusal, not an exactly-once claim or a power-loss qualification.
+
+### Further production work, not implemented here
+
+Production A would still need the Phase 3 extraction of shared dispatch/finalisation operations, the foreground/background dispatch loop, dispatcher claims and controls, heartbeat supervision, interval checks, status/diagnostics, policy definitions and forge adaptation. The prototype's several-attempt path uses one invocation's live ownership set; it is **not** the production cross-process fresh/stale/future-heartbeat blocking rule. The production transaction enforces its maximum, but two real CLI clients and the full dispatcher lifecycle remain matrix work.
+
+The supplemental schema is a disposable shortcut, not a proposed second domain model. Production integration would put missing frozen contract/review/intent facts at the appropriate application/runtime boundary, retain worker-owned reports as files, and use the existing real retention and authority operations rather than fake controls. It would wire the real runtime supervisor and adapters into the shared operations without the fabricated workspace paths used here. There is no host transport, detached process, daemon startup, exclusive-context dispatcher claim, automatic restart, platform qualification, upgrade migration or storage-failure injection in this implementation.
+
+The application bridge and deterministic composition are new code, not an estimate of code Durable would remove. Physical line counts (including comments and blank lines) are reproducible with `wc -l investigations/durable-orchestration/design-a/*.ts`:
+
+| Added code | Lines |
+| --- | ---: |
+| Driver and step runner | 297 |
+| Application/schema translation bridge | 195 |
+| Synthetic process adapter and child | 107 |
+| A-specific tests, including shared-suite registration | 206 |
+| Total | 805 |
+
+No production adapter implementation was copied: `store.ts` is new translation/glue and `process-owners.ts`/`worker-child.ts` are new test-only adaptation. Some step ordering and approval/retention guards intentionally overlap existing `dispatch.ts`/`finish.ts`; production would extract and share them. The 149-line reference exerciser is not used by A and must not be presented as its execution-code cost. There is no production deletion or net code-saving claim from this successful path.
+
+### Commands and evidence
+
+From the repository root:
+
+```sh
+npm install --ignore-scripts
+npm ci --prefix investigations/durable-orchestration --ignore-scripts
+npm run check --prefix investigations/durable-orchestration
+npm test --prefix investigations/durable-orchestration
+# A only, including the real child lifecycle test:
+node --test --test-timeout=30000 investigations/durable-orchestration/design-a/driver.test.ts investigations/durable-orchestration/design-a/process.test.ts
+npm run check
+npm test
+```
+
+All generated state is under ignored `.investigation/durable-orchestration/design-a-*`; every fixture closes its database and joins its child before removing the directory. The test-runner child is ordinary foreground-owned test infrastructure, not a detached execution host.
+
+On macOS/Darwin arm64, Node **v26.7.0**, the isolated TypeScript check and all **107** investigation tests passed: **38 A tests** (the unmodified 28 shared assertions, nine application/uncertainty/reopen tests and one real-child test), plus the existing 69 tests. A's four lost-effect-acknowledgement tests inject adapter exceptions after acquisition, launch, prompt and return, reopen the database and verify unchanged independent counters after retry. They are **not** SIGKILL recovery tests. The 38 existing SIGKILL boundary tests still qualify the shared owner fixture/reference, not A's recovery. Each suite invocation runs each case once; development reruns are not a repeated crash/reliability study.
+
+Repository validation also passed: `npm run check`; `npm test` – **419** tests, **417 passed**, two platform-specific skips, zero failures. These successful paths and narrow reopen checks do not select A or B. Design B, A/B hard-kill and concurrent-client matrix runs, deadlines, exclusive host ownership, interrupted upgrade/reopen, storage faults/power loss and real Pi/Treehouse integrations remain later work. No claim of descendant termination or permission for automatic workspace return follows from the child test.

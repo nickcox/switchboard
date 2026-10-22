@@ -20,6 +20,7 @@ export class SwitchboardScenario implements ScenarioDriver {
   private readonly maximum: number;
   private readonly now: () => number;
   private readonly launchedHere = new Set<string>();
+  private readonly claims = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
 
@@ -36,7 +37,10 @@ export class SwitchboardScenario implements ScenarioDriver {
     const pending = this.queue.then(async () => {
       if (this.closed) return refuse("host_unavailable");
       try { return await action(); }
-      catch { return refuse("host_unavailable"); }
+      catch (error) {
+        const refusal = refuse("host_unavailable");
+        return { ...refusal, nextAction: `${refusal.nextAction}: ${error instanceof Error ? error.message : String(error)}` };
+      }
     });
     this.queue = pending;
     return pending;
@@ -57,6 +61,9 @@ export class SwitchboardScenario implements ScenarioDriver {
   private async existing(attempt: Attempt): Promise<Outcome> {
     const response = this.store.response(attempt.request.requestId);
     if (attempt.returned) return { status: "completed", attemptId: attempt.id, waitingFor: null };
+    if (response?.status === "waiting" && !attempt.result && !this.launchedHere.has(attempt.id)) {
+      return refuse("possibly_running", attempt.id);
+    }
     if (response) return response;
     return refuse(attempt.started ? "possibly_running" : "acquisition_uncertain", attempt.id);
   }
@@ -97,8 +104,10 @@ export class SwitchboardScenario implements ScenarioDriver {
       attempt = this.current(attempt);
       await this.respond(attempt, refuse("possibly_running", attempt.id));
       const binding = this.store.binding(attempt);
-      await this.store.runtime.claimLaunch({ context: "scenario", task: request.taskId, attempt: this.store.ref(attempt).attempt,
+      const claimId = await this.store.runtime.claimLaunch({ context: "scenario", task: request.taskId, attempt: this.store.ref(attempt).attempt,
         leaseId: identity.leaseId, directory: this.store.runtimeDirectory(attempt), createdAt: binding.createdAt }, binding);
+      if (!claimId) throw new Error("Launch permission was not granted");
+      this.claims.set(attempt.id, claimId);
       await this.owners.launch(identity);
       await this.ack("launched", () => this.store.attempts.append(this.store.ref(attempt), "launched", { sessionId: identity.sessionId }));
       if (!await this.store.addFact(request.requestId, "prompt_intent", true)) return refuse("possibly_running", attempt.id);
@@ -114,7 +123,7 @@ export class SwitchboardScenario implements ScenarioDriver {
       let attempt = this.store.byRequest(requestId);
       if (!attempt) return refuse("invalid_request");
       if (attempt.returned) return this.existing(attempt);
-      if (this.store.fact(requestId, "cancelled")) return refuse("cancelled", attempt.id);
+      if (this.store.fact(requestId, "cancel_intent")) return refuse("cancelled", attempt.id);
       const controls = await this.owners.controls();
       if (controls.unknown) return this.respond(attempt, refuse("owner_unknown", attempt.id));
       const records = await this.owners.forAttempt(attempt.id);
@@ -131,6 +140,11 @@ export class SwitchboardScenario implements ScenarioDriver {
           const directory = this.store.runtimeDirectory(observed);
           if (!await this.store.runtime.observation(directory, "exit")) {
             await this.store.runtime.recordObservation(directory, "exit", { started: true, code: 0, signal: null });
+          }
+          const claimId = this.claims.get(observed.id);
+          if (claimId) {
+            await this.store.runtime.releaseClaim(claimId);
+            this.claims.delete(observed.id);
           }
           if (!this.store.record(observed).entries.some(entry => entry.kind === "worker_finished")) {
             await this.store.attempts.append(this.store.ref(observed), "worker_finished", {
@@ -219,8 +233,16 @@ export class SwitchboardScenario implements ScenarioDriver {
           { fact: "no_processes", scope: { leaseId: attempt.identity!.leaseId, returnId } }, "operator", snapshot.record);
         const fresh = await this.permission(attempt);
         if (fresh) return fresh;
+        const current = await this.store.assessment(attempt, await this.owners.forAttempt(attempt.id));
+        const blocked = this.domainRefusal(checkCanReturnLease(current.facts,
+          { by: "finish", noProcesses: true, retained: true, confirmedDiscard: false }), attempt);
+        if (blocked) return blocked;
         await this.respond(attempt, refuse("finalisation_uncertain", attempt.id));
         await this.owners.returnWorkspace(attempt.identity!);
+        const returns = (await this.owners.forAttempt(attempt.id)).filter(receipt => receipt.effect === "return");
+        if (returns.length !== 1 || !isDeepStrictEqual(returns[0]!.identity, attempt.identity)) {
+          return refuse("finalisation_uncertain", attempt.id);
+        }
         await this.ack("returned", () => this.store.attempts.append(this.store.ref(attempt), "lease_returned",
           { leaseId: attempt.identity!.leaseId, by: "finish", returnId }));
         return null;
@@ -235,10 +257,10 @@ export class SwitchboardScenario implements ScenarioDriver {
       if (!attempt) return refuse("invalid_request");
       if (attempt.returned) return this.existing(attempt);
       // The durable marker excludes repeated cancellation delivery. It proves no termination.
-      if (await this.store.addFact(requestId, "cancelled", true)) {
+      if (await this.store.addFact(requestId, "cancel_intent", true)) {
         await this.respond(attempt, refuse("cancelled", attempt.id));
         if (attempt.identity && attempt.launched && !attempt.result) await this.owners.cancel(attempt.identity);
-        await this.ack("cancelled", async () => {});
+        await this.ack("cancelled", () => this.store.addFact(requestId, "cancelled", true));
       }
       return refuse("cancelled", attempt.id);
     });

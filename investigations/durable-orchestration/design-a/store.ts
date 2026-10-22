@@ -3,13 +3,12 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { AttemptStore, AttemptStoreError } from "../../../src/attempts/store.ts";
 import type { AttemptRecord, AttemptRef } from "../../../src/attempts/log.ts";
-import { SqliteTaskStore } from "../../../src/tasks/sqlite.ts";
-import { bindingSchema, type RuntimeBinding } from "../../../src/runtime/records.ts";
+import { SqliteTaskStore, type StoredTask } from "../../../src/tasks/sqlite.ts";
+import { bindingSchema, type ChildExit, type RuntimeBinding, type RuntimeRecord } from "../../../src/runtime/records.ts";
 import { RuntimeStore } from "../../../src/runtime/store.ts";
 import { validateWorkerResult } from "../../../src/runtime/contracts.ts";
 import { assessAttempt } from "../../../src/dispatch/assess.ts";
 import type { AttemptFacts } from "../../../src/dispatch/assess.ts";
-import type { ChildExit, RuntimeRecord } from "../../../src/runtime/records.ts";
 import type { EffectRecord } from "../scenario/owners.ts";
 import { refuse, validResult } from "../scenario/contract.ts";
 import type { Attempt, Identity, Outcome, Request, WorkerResult } from "../scenario/contract.ts";
@@ -160,8 +159,9 @@ export class ApplicationStore {
     } catch { return false; }
   }
 
-  async assessment(attempt: Attempt, receipts: EffectRecord[]): Promise<{ facts: AttemptFacts; record: AttemptRecord;
-    task: NonNullable<Awaited<ReturnType<SqliteTaskStore["read"]>>> | undefined }> {
+  async assessment(attempt: Attempt, receipts: EffectRecord[]): Promise<{
+    facts: AttemptFacts; record: AttemptRecord; task: StoredTask | undefined;
+  }> {
     const record = this.record(attempt);
     const task = await this.tasks.read(attempt.request.taskId);
     const launch = this.tasks.database.get("SELECT * FROM launches WHERE context = ? AND task = ? AND attempt = ?",
