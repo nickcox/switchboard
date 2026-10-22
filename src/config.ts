@@ -11,6 +11,7 @@ import { operatorPolicySchema } from "./dispatch/policy.ts";
 import { requireRetainedStorage } from "./infra/storage.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { PiWorker } from "./runtime/pi/worker.ts";
+import { keepAwakeSchema } from "./runtime/keep-awake.ts";
 import { RuntimeRecords, thinkingLevelSchema } from "./runtime/records.ts";
 import { SqliteTaskStore } from "./tasks/sqlite.ts";
 import { checkRetention } from "./workspaces/retention.ts";
@@ -33,6 +34,7 @@ export const configSchema = z.strictObject({
   databasePath: absolute.optional(),
   databaseRetryMs: z.number().int().nonnegative().default(5000),
   maxAttempts: z.number().int().positive().default(1),
+  keepAwake: keepAwakeSchema.default(true),
   tasks: z.strictObject({ repo: nonempty }),
   workspaces: z.strictObject({ repository: absolute, poolRoot: absolute, fetch: z.boolean().default(false) }),
   delivery: z.strictObject({
@@ -103,7 +105,7 @@ export async function createDependencies(config: Config, progress?: (message: st
   const worker = new PiWorker(runtime, {
     executable: process.execPath, entrypoint: config.worker.piEntrypoint,
     provider: config.worker.provider, model: config.worker.model, shellTool: config.worker.shellTool, runMs: config.worker.runMs,
-    statsMs: config.worker.statsMs,
+    statsMs: config.worker.statsMs, keepAwake: config.keepAwake,
     ...(config.worker.thinking === undefined ? {} : { thinking: config.worker.thinking }),
     ...(config.worker.maxCost === undefined ? {} : { maxCost: config.worker.maxCost }),
     ...(config.worker.maxTokens === undefined ? {} : { maxTokens: config.worker.maxTokens }),

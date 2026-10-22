@@ -14,6 +14,18 @@ The old `tasks.file` setting is removed. Switchboard never silently reads a back
 
 Use local storage, not network or synced folders. Switchboard probes exclusive creation in the database's directory and refuses linked or non-canonical paths. Do not copy an open database without its WAL; stop Switchboard first or use SQLite backup tooling.
 
+## Keeping the computer awake
+
+`keepAwake` is a top-level setting, enabled by default:
+
+- `true`: run the platform's default command while a worker runs. macOS uses `caffeinate -i -w {pid}`, preventing idle sleep on battery and mains power. Linux uses `systemd-inhibit --what=idle:sleep --why="Switchboard worker running"` with a command that waits for the dispatcher to exit. Windows uses PowerShell's `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` and waits for the dispatcher to exit.
+- `false`: do not start a keep-awake command.
+- `{ "command": ["program", "arg", "{pid}"] }`: run an operator-supplied command instead. The nonempty array gives the program and its arguments, without shell interpretation. Programs can be absolute paths or found on the dispatcher's `PATH`; the command inherits the dispatcher's environment, not `worker.environment`. Every `{pid}` occurrence is replaced with the dispatcher's process ID.
+
+A custom command must keep running until stopped, hold its power assertion for that whole time, and exit when `{pid}` exits so a crashed dispatcher cannot leave the computer awake. Switchboard stops it when the worker finishes, including failed launches, interruptions and exceeded limits, with a normal termination signal on macOS and Linux or by ending its process tree on Windows.
+
+If the command cannot start or exits early, dispatch continues. The attempt's activity records a warning that the computer may sleep, together with the command's output. Linux requires `systemd-inhibit` and permission to take an inhibitor; hosts without them warn rather than refuse work. The command prevents idle system sleep, not display sleep. **Closing a laptop's lid still sleeps it and stops workers.** It does not protect against explicit sleep, shutdown or loss of power.
+
 ## Tasks-axi import
 
 Run `switchboard import --tasks-axi <backlog.md> [--archive <done-archive.md>] --config <config.json> --json` once, before any other command creates the database. The default archive is `done-archive.md` beside the backlog. The import reads both files through tasks-axi 0.2.6's `MarkdownStore.list` and keeps task order, state, hold reason and dependencies. It reports dependencies on missing tasks, which it drops, and holds with a date, which it converts: one still in force becomes an ordinary hold, and one whose date has passed is dropped. It compares every stored field, the count and the ready list with the source before activating the file. Duplicate IDs, cycles or a failed comparison refuse activation.

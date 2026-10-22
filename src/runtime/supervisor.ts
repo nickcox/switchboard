@@ -2,6 +2,7 @@ import { bounded, RuntimeFailure } from "./async.ts";
 import { validateWorkerResult, type WorkerInput, type WorkerResult } from "./contracts.ts";
 import { ActivityWriter, shorten, type ActivityEntry, type Payload } from "./activity.ts";
 import { startHeartbeat } from "./heartbeat.ts";
+import { startKeepAwake, type KeepAwake } from "./keep-awake.ts";
 import { claimRequest, recordResult, unclaimedRequests, type ControlRequest, type RequestResult } from "./requests.ts";
 import { readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding, type RuntimeRecord, type ThinkingLevel } from "./records.ts";
 
@@ -12,6 +13,7 @@ import { readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding, type
  * stopping means is the adapter's, not the supervisor's.
  */
 export type SupervisorOptions = {
+  keepAwake?: KeepAwake;
   requestMs: number;
   runMs: number;
   /** How often to record a usage snapshot while the worker runs. One is also taken after each turn. */
@@ -100,8 +102,17 @@ export class WorkerSupervisor {
   }
 
   private async supervise(reserved: RuntimeRecord, operator: AbortSignal | undefined, hooks: WorkerHooks): Promise<RunReport> {
-    const { binding, directory } = reserved;
     const activity = new ActivityWriter(reserved, hooks.onActivity);
+    const stopKeepAwake = await startKeepAwake(this.options.keepAwake ?? true, text => activity.write({ kind: "note", text }));
+    try { return await this.runSession(reserved, operator, hooks, activity); }
+    finally {
+      await stopKeepAwake();
+      await activity.close();
+    }
+  }
+
+  private async runSession(reserved: RuntimeRecord, operator: AbortSignal | undefined, hooks: WorkerHooks, activity: ActivityWriter): Promise<RunReport> {
+    const { binding, directory } = reserved;
     // Exceeding a usage limit, or a stop request, stops the worker the same way an operator interruption does.
     const budget = new AbortController();
     const stopRequest = new AbortController();
@@ -219,7 +230,6 @@ export class WorkerSupervisor {
     const stopped = failure instanceof RuntimeFailure && (failure.reason === "interrupted" || failure.reason === "over_budget");
     const status = !childExit && session ? "unresolved" : stopped ? "interrupted" : failure ? "failed" : "reported";
     activity.write({ kind: "note", text: `Worker finished: ${status}${failure ? ` (${failure instanceof RuntimeFailure ? failure.reason : "runtime_failure"})` : ""}` });
-    await activity.close();
     return {
       binding, directory, workerTermination: "unverified", childExit,
       status,

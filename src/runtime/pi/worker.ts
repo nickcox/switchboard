@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { bounded, RuntimeFailure } from "../async.ts";
+import { keepAwakeSchema } from "../keep-awake.ts";
 import { workerResultSchema, type WorkerInput } from "../contracts.ts";
 import { shorten } from "../activity.ts";
 import { inside, RuntimeRecords, thinkingLevelSchema, type RuntimeBinding } from "../records.ts";
@@ -21,6 +22,7 @@ const stateSchema = z.object({
 const promptSchema = z.object({ disposition: z.literal("started") });
 const resultJsonSchema = z.toJSONSchema(workerResultSchema);
 const optionsSchema = z.object({
+  keepAwake: keepAwakeSchema.default(true),
   executable: z.string().refine(isAbsolute, "Executable must be absolute"),
   entrypoint: z.string().refine(isAbsolute, "Entrypoint must be absolute").optional(),
   provider: z.string().min(1).refine(value => !value.startsWith("-")),
@@ -49,7 +51,7 @@ export class PiWorker {
     const parsed = optionsSchema.parse(options);
     this.supervisor = new WorkerSupervisor(records, new PiAdapter(parsed), {
       requestMs: parsed.requestMs, runMs: parsed.runMs, statsMs: parsed.statsMs, requestPollMs: parsed.requestPollMs,
-      maxCost: parsed.maxCost, maxTokens: parsed.maxTokens,
+      maxCost: parsed.maxCost, maxTokens: parsed.maxTokens, keepAwake: parsed.keepAwake,
     });
   }
 
