@@ -1,15 +1,35 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { fork, type ChildProcess } from "node:child_process";
+import { execFile, fork, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { key } from "../../../src/runtime/records.ts";
 import { HostClient } from "../design-b/client.ts";
 import { assertRefused } from "../scenario/assertions.ts";
+import type { Outcome } from "../scenario/contract.ts";
 import { approve, recoverClaim, review, waitForWorker } from "./control.ts";
 import { initialise, settingsAt } from "./fixture.ts";
 import { RealOwners, environment } from "./owners.ts";
+
+const execute = promisify(execFile);
+async function command(directory: string, method: string, ...args: string[]): Promise<unknown> {
+  const result = await execute(process.execPath, [fileURLToPath(new URL("./cli.ts", import.meta.url)), method, directory, ...args], { timeout: 10_000 });
+  return JSON.parse(result.stdout);
+}
+
+async function advanceTo(client: HostClient, requestId: string, expected: string): Promise<Outcome> {
+  const deadline = Date.now() + 5000;
+  let outcome: Outcome;
+  do {
+    outcome = await client.advance(requestId);
+    if ((outcome.status === "refused" ? outcome.code : outcome.status) === expected) return outcome;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  return outcome;
+}
 
 async function fixture(design: "A" | "B", scenario = "commit-result") {
   const temporary = resolve(import.meta.dirname, "../../../.investigation/durable-orchestration");
@@ -72,7 +92,7 @@ for (const design of ["A", "B"] as const) {
   test(`${design}: real Treehouse and fake Pi complete once, restart at review and require scoped return approval`, async () => {
     const f = await fixture(design);
     try {
-      let host = await f.start();
+      let host = await f.start(["--wait-ms", "10000"]);
       const submitted = await f.client.submit(f.settings.request);
       assert.equal(submitted.status, "waiting");
       assert.equal((await f.client.submit(f.settings.request)).attemptId, submitted.attemptId);
@@ -110,20 +130,20 @@ for (const design of ["A", "B"] as const) {
       // A genuinely new process reopens both application and (for B) execution stores.
       host = await f.start();
       assert.equal((await waitForWorker(f.directory, 3000)).status, "waiting");
+      await command(f.directory, "review", "--attempt", attempt.id, "--commit", attempt.result.commit, "--decision", "accepted");
       await review(f.directory, attempt.id, attempt.result.commit, "accepted");
-      await review(f.directory, attempt.id, attempt.result.commit, "accepted");
-      assertRefused(await f.client.advance(f.settings.request.requestId), "approval_required");
+      assertRefused(await advanceTo(f.client, f.settings.request.requestId, "approval_required"), "approval_required");
       assert.equal((await f.owners.counters(attempt.id)).return, 0);
-      await approve(f.directory, { attemptId: attempt.id, leaseId: attempt.identity!.leaseId, commit: attempt.result.commit,
-        accept: true, noProcesses: false, expiresMs: 60_000 });
-      assertRefused(await f.client.advance(f.settings.request.requestId), "process_confirmation_required");
+      await command(f.directory, "approve", "--attempt", attempt.id, "--lease", attempt.identity!.leaseId,
+        "--commit", attempt.result.commit, "--accept", "--expires-ms", "60000");
+      assertRefused(await advanceTo(f.client, f.settings.request.requestId, "process_confirmation_required"), "process_confirmation_required");
       await assert.rejects(() => f.owners.returnWorkspace(attempt.identity!), /scoped/);
       const controls = await f.owners.controls();
       assert.equal(controls.approvals.length, 1);
       await approve(f.directory, { attemptId: attempt.id, leaseId: attempt.identity!.leaseId, commit: attempt.result.commit,
         accept: true, noProcesses: true, expiresMs: 60_000 });
       assert.equal((await f.owners.controls()).approvals.length, 1, "a new grant replaces the same scope");
-      assert.equal((await f.client.advance(f.settings.request.requestId)).status, "completed");
+      assert.equal((await advanceTo(f.client, f.settings.request.requestId, "completed")).status, "completed");
       assert.equal((await f.owners.provider.leases()).length, 0);
       assert.deepEqual(await f.owners.counters(attempt.id), {
         acquire: 1, launch: 1, prompt: 1, worker_exit: 1, review: 2, merge: 0, return: 1, cancel: 0,
@@ -215,5 +235,12 @@ test("RealOwners rejects wrong and expired scopes even when called outside a des
     }
     assert.equal((await f.owners.counters(identity.attemptId)).return, 0);
     assert.equal((await f.owners.provider.leases()).length, 1);
+    await f.owners.setControls(controls);
+    const interrupted = await RealOwners.open(f.directory, f.settings, async point => {
+      if (point === "return:effect:before") await f.owners.setControls({ ...controls, approvals: [] });
+    });
+    try { await assert.rejects(() => interrupted.returnWorkspace(identity), /scoped/); }
+    finally { await interrupted.close(); }
+    assert.equal((await f.owners.counters(identity.attemptId)).return, 0);
   } finally { await f.close(); }
 });

@@ -162,7 +162,10 @@ export class RealOwners extends FakeOwners {
   override async returnWorkspace(identity: Identity): Promise<void> {
     await this.interrupt("return:effect:before");
     const controls = await this.controls();
-    if (controls.unknown || !controls.clean || !controls.retainedCommit || !controls.approvals.some(approval =>
+    // Retention involves several Git reads. Read authority again after those checks, not from
+    // the controls snapshot taken before them, so an intervening revocation still blocks return.
+    const authority = await super.controls();
+    if (controls.unknown || authority.unknown || !controls.clean || !controls.retainedCommit || !authority.approvals.some(approval =>
       approval.by === "operator" && approval.attemptId === identity.attemptId && approval.leaseId === identity.leaseId &&
       approval.commit === controls.retainedCommit && approval.expiresAt > Date.now() && approval.accept && approval.noProcesses)) {
       throw new Error("Real return requires retained output and current scoped accept/no-processes approval");

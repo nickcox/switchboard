@@ -631,7 +631,7 @@ node "$CLI" wait "$RUN" --wait-ms 60000        # Wait for worker/review or repor
 node "$CLI" inspect "$RUN" > "$RUN/inspection.json"
 ```
 
-`inspect` reads host state, real Treehouse leases/pool identity, every independent effect receipt/counter and fresh Git retention controls. It still reads external evidence with the host stopped (host state then reports `host_unavailable`). `submit` cannot choose new inputs: it reloads the frozen request. `wait` explicitly advances A; B's existing host also runs its persisted waits autonomously. A timed-out client does not stop or relaunch the worker. A refused uncertainty requires inspection, not a new request or a reset database.
+`inspect` reads host state, real Treehouse leases/pool identity, every independent effect receipt/counter and fresh Git retention controls. It still reads external evidence with the host stopped (host state then reports `host_unavailable`). `submit` cannot choose new inputs: it reloads the frozen request. `wait` explicitly advances A; B's existing host also runs its persisted waits autonomously. A timed-out client does not stop or relaunch the worker. Non-host commands exit 2 on a structured refusal (and print it); host/run remain available until stopped. A refused uncertainty requires inspection, not a new request or a reset database.
 
 ### Restart at review, record review and approve return
 
@@ -673,7 +673,7 @@ node "$CLI" inspect "$RUN" > "$RUN/final-inspection.json"
 node "$CLI" shutdown "$RUN"
 ```
 
-A performs protected steps on `advance`; B may already perform them after the approval arrives. Both must show one acquisition, launch, prompt, exit and return, two review receipts, one task/attempt, `done` and `returned`, and no remaining real lease. The real return uses `TreehouseProvider.returnLease` with the exact holder/ID/path and `discardChanges: false`, including its listing/read-back checks. The adapter independently rechecks current approval, Git retention and lease identity immediately before returning. No merge, push or publish is performed. Direct-child exit is **not** a no-processes confirmation.
+A performs protected steps on `advance`; B may already perform them after the approval arrives. An in-flight B poll can still publish the preceding refusal just after a control update – advance again to observe the next poll; this does not grant permission to repeat an effect. Both must show one acquisition, launch, prompt, exit and return, two review receipts, one scenario application task/attempt, `done` and `returned`, and no remaining real lease. The real return uses `TreehouseProvider.returnLease` with the exact holder/ID/path and `discardChanges: false`, including its listing/read-back checks. The adapter independently rechecks current approval, Git retention and lease identity immediately before returning. No merge, push or publish is performed. Direct-child exit is **not** a no-processes confirmation.
 
 ### Lost acquisition response
 
@@ -722,3 +722,5 @@ npm test
 ```
 
 The real-adapter suite uses only fake Pi and disposable Treehouse fixtures. It covers both full designs, stable-ID retries, actual host process restart at review, duplicate review, missing/no-processes/wrong/stale approvals, actual Git retention, result-file-before-exit refusal, and SIGKILL at the lost-acquisition acknowledgement with `acquisition_uncertain` on retry. It does not qualify actual model/provider behaviour, descendant containment, power loss, automatic recovery or a choice between A and B.
+
+Validation on 22 October 2026, macOS/Darwin arm64, Node.js **v26.7.0**: isolated TypeScript check passed; all **479 investigation tests passed**, including the **six real-adapter tests** and the default three-repeat failure matrix. Repository `npm run check` passed; `npm test` passed with **428 tests, 426 passed, two platform skips, zero failures**. No production source, authoritative task store or non-fixture Treehouse pool was changed. Real model/provider runs remain the separate operator task.
