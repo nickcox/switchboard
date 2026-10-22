@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { SwitchboardScenario } from "../design-a/driver.ts";
 import { ApplicationStore } from "../design-a/store.ts";
@@ -25,13 +25,14 @@ export async function openHost(directory: string, interrupt?: Interrupt): Promis
   await mkdir(claim, { mode: 0o700 });
   const ownerId = randomUUID();
   let store: ApplicationStore | undefined;
+  let server: Server | undefined;
   try {
     await writeFile(join(claim, "claim.json"), JSON.stringify({ ownerId, pid: process.pid }), { flag: "wx", flush: true });
     store = await ApplicationStore.open(join(directory, "host"));
     const driver = new SwitchboardScenario(store, owners, interrupt ? { interrupt } : {});
     const token = randomUUID();
     let closing: Promise<void> | undefined;
-    const server = createServer(async (request, response) => {
+    server = createServer(async (request, response) => {
       response.setHeader("Content-Type", "application/json");
       try {
         if (request.method !== "POST" || request.url !== "/" || request.headers.authorization !== `Bearer ${token}`) {
@@ -59,7 +60,7 @@ export async function openHost(directory: string, interrupt?: Interrupt): Promis
     server.requestTimeout = 15_000;
     server.headersTimeout = 15_000;
     const close = (): Promise<void> => closing ??= (async () => {
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
       await driver.close();
       await owners?.close();
       const current = JSON.parse(await readFile(join(claim, "claim.json"), "utf8"));
@@ -67,14 +68,15 @@ export async function openHost(directory: string, interrupt?: Interrupt): Promis
       await rm(claim, { recursive: true });
     })();
     await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+      server!.once("error", reject);
+      server!.listen(0, "127.0.0.1", () => { server!.off("error", reject); resolve(); });
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("No host address");
     await writeFile(join(claim, "endpoint.json"), JSON.stringify({ port: address.port, token, ownerId, pid: process.pid }), { flag: "wx", flush: true, mode: 0o600 });
     return { close };
   } catch (error) {
+    if (server?.listening) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
     store?.close();
     await owners?.close();
     await rm(claim, { recursive: true, force: true });

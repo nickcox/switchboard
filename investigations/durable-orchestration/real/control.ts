@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { HostClient } from "../design-b/client.ts";
+import { fixtureDirectory } from "../design-b/paths.ts";
 import type { Outcome } from "../scenario/contract.ts";
 import { settingsAt } from "./fixture.ts";
 import { RealOwners } from "./owners.ts";
@@ -36,14 +38,17 @@ export async function approve(directory: string, scope: {
     const result = (await owners.forAttempt(scope.attemptId)).find(receipt => receipt.effect === "worker_exit")?.result;
     if (!result || result.identity.leaseId !== scope.leaseId || result.commit !== scope.commit) throw new Error("Approval scope differs from observed result");
     const controls = await owners.controls();
-    await owners.setControls({ ...controls, approvals: [...controls.approvals, {
-      id: crypto.randomUUID(), by: "operator", attemptId: scope.attemptId, leaseId: scope.leaseId,
+    const otherScopes = controls.approvals.filter(approval => approval.attemptId !== scope.attemptId ||
+      approval.leaseId !== scope.leaseId || approval.commit !== scope.commit);
+    await owners.setControls({ ...controls, approvals: [...otherScopes, {
+      id: randomUUID(), by: "operator", attemptId: scope.attemptId, leaseId: scope.leaseId,
       commit: scope.commit, expiresAt: Date.now() + scope.expiresMs, accept: true, noProcesses: scope.noProcesses,
     }] });
   } finally { await owners.close(); }
 }
 
 export async function waitForWorker(directory: string, timeoutMs: number): Promise<Outcome> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Supply a positive wait duration");
   const settings = await settingsAt(directory);
   const client = new HostClient(directory);
   const deadline = Date.now() + timeoutMs;
@@ -57,6 +62,7 @@ export async function waitForWorker(directory: string, timeoutMs: number): Promi
 
 export async function recoverClaim(directory: string, confirmedHostStopped: boolean, confirmedNoProcesses: boolean): Promise<void> {
   if (!confirmedHostStopped || !confirmedNoProcesses) throw new Error("Inspect host and worker/tool processes, then explicitly confirm both stopped");
+  directory = await fixtureDirectory(directory);
   // Only the fixture claim is removed. No lease, intent, runtime fence or task state changes.
   await rm(join(directory, "host", "owner"), { recursive: true });
 }

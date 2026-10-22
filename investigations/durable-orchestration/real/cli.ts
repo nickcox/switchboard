@@ -31,12 +31,18 @@ try {
   if (values.help) { console.log(usage); } else {
     const [command, path] = positionals;
     if (!command || !path) throw new Error(usage);
+    if (values["wait-ms"] !== undefined && (!Number.isFinite(Number(values["wait-ms"])) || Number(values["wait-ms"]) <= 0)) {
+      throw new Error("Supply a positive --wait-ms duration");
+    }
     const directory = await fixtureDirectory(path);
     const required = (value: string | undefined, name: string): string => {
       if (!value) throw new Error(`Supply --${name}`);
       return value;
     };
-    const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
+    const print = (value: unknown) => {
+      console.log(JSON.stringify(value, null, 2));
+      if (value && typeof value === "object" && "status" in value && value.status === "refused") process.exitCode = 2;
+    };
     if (command === "init") {
       if (values.design !== "A" && values.design !== "B") throw new Error("Supply --design A or B");
       print({ directory: await initialise(directory, values.design, required(values.config, "config"), required(values.instructions, "instructions")) });

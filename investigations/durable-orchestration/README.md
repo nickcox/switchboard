@@ -586,3 +586,139 @@ Step 6 is deliberately **not run here**. The operator's separate task should:
 The matrix supports conservative process-crash recovery in **both** prototypes; it does not show that Durable removes the application exclusion/intent/authority mechanisms. B additionally retains cross-store reconciliation and host availability obligations, while supplying persisted waits and blocked-task visibility. A's minimal context claim added by this harness is additional custom execution machinery, not existing production capability. No net code-removal estimate or design selection follows from this step alone.
 
 Remaining adoption checks include real integrations, supported-platform evidence beyond macOS, real owner discovery and descendant containment limits, storage/device/power-loss qualification, broader task/document migration and operator disaster-recovery tooling. Step 7 must weigh these results with the earlier ownership and code-cost tables. No ADR, Phase 3 PRD, production source, authoritative task record or real Treehouse lease was changed.
+
+## Step 6 adapter – operator commands for `durable-real-runs-p5b`
+
+The `real/` adapter is now available for **both** designs. This addition tests it only with `tests/fixtures/pi-rpc.ts` and disposable Treehouse repositories. **No real Pi, model or other agent was launched for this implementation.** The authorised operator must run and evaluate the real integrations separately; the earlier matrix and dependency limitations still apply.
+
+### Prepare and run each design
+
+Run these commands from the repository root, using Node.js 26.7.0, Git and Treehouse on PATH:
+
+```sh
+npm install --ignore-scripts
+npm ci --prefix investigations/durable-orchestration --ignore-scripts
+CLI=investigations/durable-orchestration/real/cli.ts
+SOURCE_CONFIG=/absolute/path/to/switchboard.json
+INSTRUCTIONS=/absolute/path/to/disposable-task-instructions.md
+A=.investigation/durable-orchestration/real-a
+B=.investigation/durable-orchestration/real-b
+node "$CLI" init "$A" --design A --config "$SOURCE_CONFIG" --instructions "$INSTRUCTIONS"
+node "$CLI" init "$B" --design B --config "$SOURCE_CONFIG" --instructions "$INSTRUCTIONS"
+```
+
+`init` refuses a non-empty directory. It creates a fresh local Git repository and initial commit, a fixture application database/task containing the given instructions, independent owner controls/receipt storage, and `real.json`. The pool is always `<fixture>/pool`, separate from Switchboard's own pool. No source-config repository, database, task store, runtime root or pool is opened or changed. Only its **worker settings** (Pi entrypoint, provider, model, thinking, shell tool, environment, run time, usage limits and stats interval), `keepAwake`, and default delivery base branch/evidence/deliverable requirements are copied. The fixture supports the default **code** contract, not `byTaskKind` overrides. It always uses simulated review, never publication or merge. The base ref must be a valid local branch name; it names the new fixture's initial branch, not a fetched production ref. Configuration changes after init do not silently change the frozen fixture settings. `real.json` may contain configured environment secrets – keep the fixture private.
+
+For example, disposable instructions can ask for a committed `hello.txt`, a check of its contents, and evidence/deliverable names matching the source config. Do not assign work on an authoritative project. For an offline rehearsal, supply a config whose worker entrypoint is the absolute `tests/fixtures/pi-rpc.ts` path, provider/model are both `fixture`, `keepAwake` is false, and worker environment contains PATH plus `FAKE_PI_SCENARIO=commit-result` and an absolute `FAKE_PI_LOG` under `.investigation/`.
+
+In terminal 1, start **one foreground host** and submit its stable request:
+
+```sh
+RUN="$A"                       # Repeat the whole procedure with RUN="$B" afterwards.
+node "$CLI" run "$RUN"
+```
+
+`run` starts that design's host in the current process, submits `real-request-1` for `real-task-1`, and waits until worker exit leads to review (or a refusal). It leaves the host in the foreground. A Treehouse acquisition uses holder `durable-A:<attempt-uuid>` or `durable-B:<attempt-uuid>`; the output branch is `durable-real/a/attempt-1` or `durable-real/b/attempt-1`. **This command launches the configured Pi and can make chargeable model calls.** It does not launch another host process, daemon, supervisor agent or model for orchestration. `--wait-ms <n>` bounds the client wait only, not the admitted run. Time/token/cost limits come from the copied worker config.
+
+In terminal 2, from the same repository root, set `CLI` and `RUN` again and inspect/retry as needed:
+
+```sh
+CLI=investigations/durable-orchestration/real/cli.ts
+RUN=.investigation/durable-orchestration/real-a   # Or real-b.
+node "$CLI" inspect "$RUN"
+node "$CLI" submit "$RUN"                     # Retry the SAME request, never a new attempt.
+node "$CLI" wait "$RUN" --wait-ms 60000        # Wait for worker/review or report a refusal.
+node "$CLI" inspect "$RUN" > "$RUN/inspection.json"
+```
+
+`inspect` reads host state, real Treehouse leases/pool identity, every independent effect receipt/counter and fresh Git retention controls. It still reads external evidence with the host stopped (host state then reports `host_unavailable`). `submit` cannot choose new inputs: it reloads the frozen request. `wait` explicitly advances A; B's existing host also runs its persisted waits autonomously. A timed-out client does not stop or relaunch the worker. A refused uncertainty requires inspection, not a new request or a reset database.
+
+### Restart at review, record review and approve return
+
+After observing `waitingFor: review`, stop the host and wait for terminal 1 to exit:
+
+```sh
+node "$CLI" shutdown "$RUN"
+```
+
+`shutdown` seals transport, closes execution storage and asks the adapter to stop/join its known Pi handle. It does not return any lease or claim descendant termination. Once terminal 1 has exited, restart it there with:
+
+```sh
+node "$CLI" host "$RUN"
+```
+
+`host` reopens the existing application/engine stores without submitting anything. There is no automatic worker adoption or replacement. In terminal 2, `wait` should still report review; inspect the exact result, output branch, session and retained artefacts before deciding:
+
+```sh
+node "$CLI" wait "$RUN" --wait-ms 60000
+node "$CLI" inspect "$RUN" > "$RUN/inspection.json"
+ATTEMPT=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).host.attempts[0].id' "$RUN/inspection.json")
+LEASE=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).host.attempts[0].identity.leaseId' "$RUN/inspection.json")
+COMMIT=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).host.attempts[0].result.commit' "$RUN/inspection.json")
+node "$CLI" review "$RUN" --attempt "$ATTEMPT" --commit "$COMMIT" --decision accepted
+node "$CLI" review "$RUN" --attempt "$ATTEMPT" --commit "$COMMIT" --decision accepted
+node "$CLI" advance "$RUN"                    # approval_required; no return.
+node "$CLI" approve "$RUN" --attempt "$ATTEMPT" --lease "$LEASE" --commit "$COMMIT" --accept
+node "$CLI" advance "$RUN"                    # process_confirmation_required; still no return.
+```
+
+`review` appends a simulated exact-commit review receipt; delivering it twice must still produce one accepted application transition. `--decision rejected` is also supported. `approve` records operator authority only, scoped to the exact observed attempt, lease and commit, with a default one-hour expiry (`--expires-ms` overrides it). It cannot manufacture a worker result or make Git retention pass. A new approval replaces the old approval for the same scope. Review alone is not acceptance authority; acceptance alone is not no-processes confirmation.
+
+**Only after personally checking that no worker or tool process remains**, grant both facts and finish:
+
+```sh
+node "$CLI" approve "$RUN" --attempt "$ATTEMPT" --lease "$LEASE" --commit "$COMMIT" --accept --no-processes --expires-ms 3600000
+node "$CLI" advance "$RUN"
+node "$CLI" inspect "$RUN" > "$RUN/final-inspection.json"
+node "$CLI" shutdown "$RUN"
+```
+
+A performs protected steps on `advance`; B may already perform them after the approval arrives. Both must show one acquisition, launch, prompt, exit and return, two review receipts, one task/attempt, `done` and `returned`, and no remaining real lease. The real return uses `TreehouseProvider.returnLease` with the exact holder/ID/path and `discardChanges: false`, including its listing/read-back checks. The adapter independently rechecks current approval, Git retention and lease identity immediately before returning. No merge, push or publish is performed. Direct-child exit is **not** a no-processes confirmation.
+
+### Lost acquisition response
+
+Use a separate fresh fixture for each design; do not reuse a completed or uncertain database:
+
+```sh
+LOST=.investigation/durable-orchestration/lost-a
+node "$CLI" init "$LOST" --design A --config "$SOURCE_CONFIG" --instructions "$INSTRUCTIONS"
+node "$CLI" run "$LOST" --stop-after-acquire
+# Deliberate SIGKILL at workspace:ack:before; expect a non-zero shell status.
+node "$CLI" inspect "$LOST" > "$LOST/lost-inspection.json"
+```
+
+Repeat with `lost-b` and `--design B`. The interruption writes `interruption.json` and kills the foreground host **after Treehouse granted and the owner receipted the lease, before the design records workspace identity**. No Pi is launched on this path. Inspection must show a real lease with the attempt-naming holder and one acquisition, zero launch/prompt/return receipts, even though application identity is missing. The surviving host claim intentionally blocks a replacement host.
+
+Once the old host has exited and you have confirmed there are no worker/tool processes, remove only this disposable host claim:
+
+```sh
+node "$CLI" recover-claim "$LOST" --confirm-host-stopped --confirm-no-processes
+node "$CLI" host "$LOST"                       # Foreground terminal 1.
+# In terminal 2, set CLI and LOST to the same values:
+node "$CLI" submit "$LOST"                     # acquisition_uncertain, same reservation.
+node "$CLI" inspect "$LOST"
+node "$CLI" shutdown "$LOST"
+```
+
+Claim recovery changes no lease, intent, launch fence, task or engine checkpoint. Never use it to bypass a live host. The adapter intentionally offers no automatic reconciliation/return for a lost acquisition acknowledgement; retain the uncertain lease and evidence for separately authorised operator resolution. Do not delete stores and retry, restore an old snapshot and resume, or use a fresh caller ID to hide uncertainty.
+
+### Evidence, ownership and limits
+
+- `host/switchboard.db` remains the unchanged scenario application bridge, including its **synthetic** workspace paths/starting commit and launch bindings. B additionally owns `host/durable.db` with the existing NORMAL durability setting. These are not a production adapter migration.
+- `owners/workers/<attempt>/allocation.json` is the actual verified Treehouse allocation. `report.json` is the complete Pi run report, written after execute returns; it names the actual runtime directory, binding, full result, child exit and failure details. Actual launch bindings, heartbeat, activity and exit observations are in **`owners/runtime/switchboard.db`**, with result/session/artefact files under its hashed context/lease directories. A small mirrored runtime fixture task/reservation lets unmodified `RuntimeRecords` and `PiWorker` enforce their own immutable launch fence without conflicting with the scenario's already-claimed synthetic launch row. Neither ledger is replay authority; this is explicit prototype-only duplication, not a proposed production design.
+- `owners/effects/*.json` have exactly the shared `FakeOwners` shape. Counters scan these receipts, never checkpoints. The launch receipt is an **intent before execute**, not independent proof of spawn. The prompt receipt follows PiWorker's checked `Worker started` activity note (after RPC disposition `started`). A worker-exit receipt is written only after execute reports a positively observed direct-child exit; a result file or cancelled workflow is insufficient. Invalid/missing results become failed scenario reports and cannot pass acceptance. Review/merge receipts stay simulated; the designs never call a real forge.
+- Before finalisation the adapter derives cleanliness/retention from production `checkRetention`, including every reported Git/artefact reference, and checks the real lease listing. Owner control fields cannot fake these checks. Scoped operator approvals still live only in `owners/controls.json`. For fake Pi, the external RPC log and `fixture-launch.json` additionally verify one actual prompt/process launch; real Pi does not supply that fixture log. Inspect its immutable runtime binding, activity/session evidence and the adapter's receipts without treating an intent as proof of successful delivery.
+- Only acquisition/return hooks bracket actual Treehouse calls. Launch is deliberately receipted before execute, and prompt hooks bracket the receipt after the worker's started report – they are not new instrumentation inside production RPC. The `workspace:ack:before` stop is the real lost-acquisition test, not a simulated fake lease.
+- Stop hosts before copying evidence. Preserve the entire fixture (repository with output branches, pools, both databases/WAL where present, receipts, reports and sessions) outside recyclable workspaces, for example `tar -czf /absolute/retained/real-a.tgz "$A"`. Preserve source-config/instruction provenance without leaking credentials. An evidence copy is **offline evidence**, not a resumable backup: runtime/worktree paths are absolute and restoring old fences can repeat effects. Keep the original until the authorised operator has resolved every retained lease. The script never publishes or merges branches.
+
+Validate without any agent/model calls:
+
+```sh
+npm run check --prefix investigations/durable-orchestration
+npm run test:real --prefix investigations/durable-orchestration
+npm test --prefix investigations/durable-orchestration
+npm run check
+npm test
+```
+
+The real-adapter suite uses only fake Pi and disposable Treehouse fixtures. It covers both full designs, stable-ID retries, actual host process restart at review, duplicate review, missing/no-processes/wrong/stale approvals, actual Git retention, result-file-before-exit refusal, and SIGKILL at the lost-acquisition acknowledgement with `acquisition_uncertain` on retry. It does not qualify actual model/provider behaviour, descendant containment, power loss, automatic recovery or a choice between A and B.

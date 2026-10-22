@@ -10,6 +10,7 @@ import { SqliteTaskStore } from "../../../src/tasks/sqlite.ts";
 import type { Allocation } from "../../../src/workspaces/provider.ts";
 import { checkRetention } from "../../../src/workspaces/retention.ts";
 import { TreehouseProvider } from "../../../src/workspaces/treehouse.ts";
+import { fixtureDirectory } from "../design-b/paths.ts";
 import type { Effect, Identity, Interrupt, Request, WorkerResult } from "../scenario/contract.ts";
 import { FakeOwners, type EffectRecord, type OwnerControls } from "../scenario/owners.ts";
 
@@ -43,6 +44,7 @@ export class RealOwners extends FakeOwners {
   }
 
   static async open(root: string, settings: RealSettings, interrupt?: Interrupt): Promise<RealOwners> {
+    root = await fixtureDirectory(root);
     const provider = await TreehouseProvider.open({ treehouse: onPath("treehouse"), git: onPath("git"),
       repository: join(root, "repository"), poolRoot: join(root, "pool"), fetch: false, environment: environment() });
     return new RealOwners(root, provider, settings, interrupt);
@@ -102,7 +104,9 @@ export class RealOwners extends FakeOwners {
     const pi = new PiWorker(records, { executable: process.execPath, entrypoint: worker.piEntrypoint,
       provider: worker.provider, model: worker.model, thinking: worker.thinking, shellTool: worker.shellTool,
       runMs: worker.runMs, statsMs: worker.statsMs, maxCost: worker.maxCost, maxTokens: worker.maxTokens,
-      keepAwake: this.settings.keepAwake, environment: worker.environment ?? environment() });
+      keepAwake: this.settings.keepAwake, environment: worker.environment ?? Object.fromEntries(
+        ["PATH", "HOME", "USER", "TMPDIR", "LANG", "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec"]
+          .flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])) });
     const { attemptId: _, ...workerIdentity } = identity;
     const running = (async () => {
       const report = await pi.execute({ identity: workerIdentity, workspace: allocation.path, instructions,
@@ -140,6 +144,12 @@ export class RealOwners extends FakeOwners {
     const exit = exits[0]!;
     const allocation = await this.allocation(exit.attemptId);
     const report = await this.report(exit.attemptId);
+    const leases = await this.provider.leases();
+    const returned = (await this.forAttempt(exit.attemptId)).some(record => record.effect === "return");
+    if (!returned && !leases.some(lease => lease.leaseId === allocation.leaseId && lease.holder === allocation.holder &&
+      lease.path === allocation.path && lease.branch === allocation.branch)) {
+      return { ...controls, unknown: true, clean: false, retainedCommit: null };
+    }
     const retention = await checkRetention(onPath("git"), environment(), {
       repository: join(this.root, "repository"), workspace: allocation.path, outputBranch: allocation.branch,
       resultCommit: exit.result!.commit, gitReferences: report.result!.workReferences.filter(ref => ref.kind === "git"),
@@ -150,6 +160,7 @@ export class RealOwners extends FakeOwners {
   }
 
   override async returnWorkspace(identity: Identity): Promise<void> {
+    await this.interrupt("return:effect:before");
     const controls = await this.controls();
     if (controls.unknown || !controls.clean || !controls.retainedCommit || !controls.approvals.some(approval =>
       approval.by === "operator" && approval.attemptId === identity.attemptId && approval.leaseId === identity.leaseId &&
@@ -158,7 +169,6 @@ export class RealOwners extends FakeOwners {
     }
     const allocation = await this.allocation(identity.attemptId);
     if (allocation.leaseId !== identity.leaseId) throw new Error("Allocation identity differs from the requested return");
-    await this.interrupt("return:effect:before");
     await this.provider.returnLease(allocation, { discardChanges: false });
     await this.receipt("return", identity);
     await this.interrupt("return:effect:after");

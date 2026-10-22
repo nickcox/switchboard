@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { fork, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { key } from "../../../src/runtime/records.ts";
 import { HostClient } from "../design-b/client.ts";
 import { assertRefused } from "../scenario/assertions.ts";
 import { approve, recoverClaim, review, waitForWorker } from "./control.ts";
 import { initialise, settingsAt } from "./fixture.ts";
 import { RealOwners, environment } from "./owners.ts";
 
-async function fixture(design: "A" | "B") {
+async function fixture(design: "A" | "B", scenario = "commit-result") {
   const temporary = resolve(import.meta.dirname, "../../../.investigation/durable-orchestration");
   await mkdir(temporary, { recursive: true });
   const parent = await mkdtemp(join(temporary, `real-${design}-`));
@@ -23,7 +25,7 @@ async function fixture(design: "A" | "B") {
     delivery: { baseRef: "main", requiredEvidence: ["tests"], requiredDeliverables: ["code"] }, keepAwake: false,
     worker: { piEntrypoint: resolve(import.meta.dirname, "../../../tests/fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", thinking: "high",
       runMs: 5000, statsMs: 100, maxCost: 1, maxTokens: 10000,
-      environment: { ...environment(), FAKE_PI_SCENARIO: "commit-result", FAKE_PI_LOG: join(parent, "rpc.jsonl") } },
+      environment: { ...environment(), FAKE_PI_SCENARIO: scenario, FAKE_PI_LOG: join(parent, "rpc.jsonl") } },
   }));
   await initialise(directory, design, config, instructions);
   const settings = await settingsAt(directory);
@@ -92,6 +94,9 @@ for (const design of ["A", "B"] as const) {
       assert.equal(report.binding.input.delivery.startingCommit, allocation.startingCommit);
       assert.ok(report.directory.startsWith(join(f.directory, "owners", "runtime")));
       assert.equal(report.workerTermination, "unverified");
+      for (const path of ["forbidden-runtime", "forbidden.db", "forbidden-repository", "forbidden-pool"]) {
+        await assert.rejects(() => stat(join(f.parent, path)), { code: "ENOENT" });
+      }
       const rpc = (await readFile(join(f.parent, "rpc.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
       assert.equal(rpc.filter(record => record.type === "prompt").length, 1);
       const launch = JSON.parse(await readFile(join(report.directory, "fixture-launch.json"), "utf8"));
@@ -113,11 +118,11 @@ for (const design of ["A", "B"] as const) {
         accept: true, noProcesses: false, expiresMs: 60_000 });
       assertRefused(await f.client.advance(f.settings.request.requestId), "process_confirmation_required");
       await assert.rejects(() => f.owners.returnWorkspace(attempt.identity!), /scoped/);
-      // Replace the acceptance-only scope rather than leaving two competing current approvals.
       const controls = await f.owners.controls();
-      await f.owners.setControls({ ...controls, approvals: [] });
+      assert.equal(controls.approvals.length, 1);
       await approve(f.directory, { attemptId: attempt.id, leaseId: attempt.identity!.leaseId, commit: attempt.result.commit,
         accept: true, noProcesses: true, expiresMs: 60_000 });
+      assert.equal((await f.owners.controls()).approvals.length, 1, "a new grant replaces the same scope");
       assert.equal((await f.client.advance(f.settings.request.requestId)).status, "completed");
       assert.equal((await f.owners.provider.leases()).length, 0);
       assert.deepEqual(await f.owners.counters(attempt.id), {
@@ -159,3 +164,56 @@ for (const design of ["A", "B"] as const) {
     } finally { await f.close(); }
   });
 }
+
+test("RealOwners records a prompt on started, but never an exit from result-file presence alone", async () => {
+  const f = await fixture("A", "delay-exit");
+  try {
+    const identity = await f.owners.acquire("scenario", f.settings.request.taskId, randomUUID());
+    await f.owners.launch(identity);
+    assert.equal((await f.owners.counters(identity.attemptId)).launch, 1);
+    assert.equal((await f.owners.counters(identity.attemptId)).prompt, 0);
+    await f.owners.prompt(identity);
+    assert.equal((await f.owners.counters(identity.attemptId)).prompt, 1);
+    const runtime = join(f.directory, "owners", "runtime", key(identity.contextId), key(identity.leaseId));
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try { await stat(join(runtime, "fixture-eof")); break; } catch { await new Promise(resolve => setTimeout(resolve, 5)); }
+    }
+    await stat(join(runtime, "fixture-eof"));
+    await stat(join(runtime, "result.json"));
+    assert.equal((await f.owners.counters(identity.attemptId)).worker_exit, 0);
+    await f.owners.waitForWorker();
+    assert.equal((await f.owners.counters(identity.attemptId)).worker_exit, 1);
+    assert.deepEqual((await f.owners.report(identity.attemptId)).childExit, { started: true, code: 0, signal: null });
+    // This fake scenario reports a non-existent commit, which actual Git retention rejects.
+    const result = (await f.owners.forAttempt(identity.attemptId)).find(receipt => receipt.effect === "worker_exit")!.result!;
+    await approve(f.directory, { attemptId: identity.attemptId, leaseId: identity.leaseId, commit: result.commit,
+      accept: true, noProcesses: true, expiresMs: 60_000 });
+    assert.equal((await f.owners.controls()).retainedCommit, null);
+    await assert.rejects(() => f.owners.returnWorkspace(identity), /retained output/);
+    assert.equal((await f.owners.provider.leases()).length, 1);
+  } finally { await f.close(); }
+});
+
+test("RealOwners rejects wrong and expired scopes even when called outside a design", async () => {
+  const f = await fixture("A");
+  try {
+    const identity = await f.owners.acquire("scenario", f.settings.request.taskId, randomUUID());
+    await f.owners.launch(identity);
+    await f.owners.prompt(identity);
+    await f.owners.waitForWorker();
+    const result = (await f.owners.forAttempt(identity.attemptId)).find(receipt => receipt.effect === "worker_exit")!.result!;
+    await assert.rejects(() => approve(f.directory, { attemptId: identity.attemptId, leaseId: "wrong-lease", commit: result.commit,
+      accept: true, noProcesses: true, expiresMs: 60_000 }), /scope differs/);
+    await approve(f.directory, { attemptId: identity.attemptId, leaseId: identity.leaseId, commit: result.commit,
+      accept: true, noProcesses: true, expiresMs: 60_000 });
+    const controls = await f.owners.controls();
+    for (const changes of [{ leaseId: "wrong-lease" }, { attemptId: "wrong-attempt" }, { commit: "0".repeat(40) },
+      { expiresAt: Date.now() - 1 }, { by: "model" }, { accept: false }, { noProcesses: false }]) {
+      await f.owners.setControls({ ...controls, approvals: [{ ...controls.approvals[0]!, ...changes } as typeof controls.approvals[number]] });
+      await assert.rejects(() => f.owners.returnWorkspace(identity), /scoped/);
+    }
+    assert.equal((await f.owners.counters(identity.attemptId)).return, 0);
+    assert.equal((await f.owners.provider.leases()).length, 1);
+  } finally { await f.close(); }
+});
