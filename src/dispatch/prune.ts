@@ -1,8 +1,10 @@
 import { lstat, rm } from "node:fs/promises";
 import { isMissing } from "../runtime/records.ts";
-import { inspect, isOpen, type Dependencies } from "./dispatch.ts";
+import type { Dependencies } from "./dispatch.ts";
+import { observeAttempt, observeAttempts } from "./observe.ts";
+import { assessAttempt, assessAttempts } from "./assess.ts";
+import { checkCanPrune } from "./safety.ts";
 import { result, type DispatchResult } from "./result.ts";
-import { status } from "./status.ts";
 
 /** Owner uncertainty preserves records regardless of age. Directory removal follows the archive transaction. */
 export async function prune(deps: Dependencies, options: { olderThan: number; dryRun?: boolean }): Promise<DispatchResult> {
@@ -18,24 +20,31 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     const roots = await deps.workspaces.recyclableRoots();
     await deps.attempts.checkStorage(roots);
     await deps.runtime.checkStorage(roots);
-    const view = await status(deps);
-    if (view.reason === "refused") return report(false, "refused", view.detail ?? "Owner state could not be read");
-    const state = await inspect(deps);
-    if ("failed" in state) return report(false, "refused", state.failed.detail ?? "Owner state could not be read");
+    const context = await observeAttempts(deps);
+    const errors = [context.records, context.runtime, context.leases, context.pool].flatMap(owner => owner.known ? [] : [owner.reason]);
+    if (errors.length) return report(false, "refused", errors.join("; "));
     const cutoff = Date.now() - options.olderThan * 86400000;
-    for (const record of state.attempts) {
-      if (Date.parse(record.entries.at(-1)!.recordedAt) >= cutoff) continue;
-      const attempt = view.attempts.find(a => a.attempt.taskId === record.taskId && a.attempt.attempt === record.attempt);
-      const reason = !attempt ? "unknown" : isOpen(record) ? "unfinished" : attempt.state !== "finished" ? attempt.state
-        : state.leases.some(l => l.holder === record.taskId || l.leaseId === attempt.attempt.leaseId) ? "lease_held"
-        : state.runtime.some(r => r.binding.input.identity.taskId === record.taskId && r.child.status === "unknown") ? "possibly_running" : undefined;
-      if (reason) { skipped.push({ taskId: record.taskId, attempt: record.attempt, reason }); continue; }
+    for (const attempt of assessAttempts(context)) {
+      const { taskId, attempt: number } = attempt.attempt;
+      const permission = checkCanPrune(attempt.facts, cutoff);
+      if (!permission.allowed) {
+        if (permission.reason !== "too_recent") skipped.push({ taskId, attempt: number, reason: permission.reason });
+        continue;
+      }
       if (!options.dryRun) {
-        const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === attempt!.attempt.leaseId);
-        await deps.attempts.archiveAttempt(record, { ...attempt!.attempt, state: attempt!.state }, runtime ? [runtime.directory] : []);
+        // External owners are checked again; archiveAttempt also checks the records in its transaction.
+        const current = await observeAttempt(deps, { taskId, attempt: number });
+        if (!current) { skipped.push({ taskId, attempt: number, reason: "unknown" }); continue; }
+        const assessment = assessAttempt(current);
+        const permission = checkCanPrune(assessment.facts, cutoff);
+        if (!permission.allowed) { skipped.push({ taskId, attempt: number, reason: permission.reason }); continue; }
+        const record = current.record.known ? current.record.value : undefined;
+        if (!record) { skipped.push({ taskId, attempt: number, reason: "unknown" }); continue; }
+        const runtime = current.runtime.known ? current.runtime.value : undefined;
+        await deps.attempts.archiveAttempt(record, { ...assessment.attempt, state: assessment.state }, runtime ? [runtime.directory] : []);
         changed = true;
       }
-      removed.push({ taskId: record.taskId, attempt: record.attempt, archive: deps.attempts.database.path });
+      removed.push({ taskId, attempt: number, archive: deps.attempts.database.path });
     }
     if (!options.dryRun) for (const deletion of deps.attempts.pendingDeletions()) {
       await removeRuntimeDirectory(deps, deletion.directory);

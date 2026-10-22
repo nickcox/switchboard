@@ -1,97 +1,65 @@
-import { inspect, isOpen, resolvedBy, summarise, type Dependencies } from "./dispatch.ts";
+import { resolvedBy, type Dependencies } from "./dispatch.ts";
+import { observeAttempt, type AttemptSelector } from "./observe.ts";
+import { assessAttempt } from "./assess.ts";
+import { checkCanConfirmLeaseReturned, checkCanConfirmStopped } from "./safety.ts";
 import { result, type DispatchResult } from "./result.ts";
-import { dispatcherRunning } from "../runtime/heartbeat.ts";
 
 const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
 
-/**
- * Operator-only: records that a worker with no observed exit has stopped, so its attempt stops blocking dispatch.
- * Without `confirmed` it only reports what each owner holds. It never changes the task or the lease; the operator
- * applies the task outcome afterwards (Phase 1 PRD, operator recovery).
- */
+/** Operator-only stop confirmation. It never changes the task or returns a lease. */
 export async function resolveStopped(
   deps: Dependencies, options: { leaseId: string; confirmed: boolean; note?: string },
 ): Promise<DispatchResult> {
-  const state = await inspect(deps);
-  if ("failed" in state) return state.failed;
-  const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === options.leaseId);
-  const attempt = state.attempts.find(a => a.entries.some(e => e.kind === "leased" && e.data.leaseId === options.leaseId));
-  const taskId = attempt?.taskId ?? runtime?.binding.input.identity.taskId;
-  if (!taskId) {
-    return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: { leaseId: options.leaseId }, detail: "No attempt or runtime record in this context has this lease ID", nextAction: "inspect_attempt" });
-  }
-  let task;
-  try { task = await deps.tasks.read(taskId); }
-  catch (error) {
-    // Unknown is not absence: every command that changes an attempt refuses while one of its owners cannot be read.
-    return result({ ok: false, reason: "refused", stage: "resolve", lease: "unknown", observed: { leaseId: options.leaseId, task: "unreadable" }, detail: `The attempt's task cannot be read: ${error instanceof Error ? error.message : String(error)}`, nextAction: "inspect_attempt" });
-  }
-  const leaseHeld = state.leases.some(l => l.leaseId === options.leaseId);
-  const summary = attempt ? summarise(attempt) : { contextId: deps.contextId, taskId, attempt: 0, leaseId: options.leaseId, ...(runtime ? { sessionId: runtime.binding.input.identity.sessionId } : {}) };
-  const observed = { runtime: runtime?.child.status ?? "no runtime record", leaseHeld, task: task ? { state: task.state, held: task.held } : "unreadable" };
-  const common = { stage: "resolve" as const, attempt: summary, lease: leaseHeld ? "preserved" as const : "none" as const, observed };
+  const observation = await observeAttempt(deps, { leaseId: options.leaseId });
+  if (!observation) return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: { leaseId: options.leaseId }, detail: "No attempt or runtime record in this context has this lease ID", nextAction: "inspect_attempt" });
+  const assessment = assessAttempt(observation);
+  const runtime = observation.runtime.known ? observation.runtime.value : undefined;
+  const attempt = observation.record.known ? observation.record.value : undefined;
+  const observed = { runtime: runtime?.child.status ?? "no runtime record", leaseHeld: assessment.leaseHeld, task: assessment.task };
+  const common = { stage: "resolve" as const, attempt: assessment.attempt, lease: assessment.leaseHeld ? "preserved" as const : "none" as const, observed };
+  const permission = checkCanConfirmStopped(assessment.facts, options.confirmed);
+  if (!permission.allowed) return result({ ...common, ok: false, reason: "refused", detail: permission.detail, nextAction: permission.nextAction, observed: { ...observed, refusal: permission } });
+  if (!attempt) return result({ ...common, ok: false, reason: "refused", detail: "The runtime has no attempt to record this confirmation against; restore or import its attempt records first", nextAction: "inspect_attempt" });
 
-  if (!state.possiblyRunning.some(p => p.leaseId === options.leaseId)) {
-    return result({ ok: false, reason: "refused", ...common, detail: "No worker for this lease is waiting for confirmation that it has stopped", nextAction: "none" });
+  // The immutable launch row prevents a pending launch after this confirmation.
+  if (!runtime && attempt.entries.some(e => e.kind === "launched") && !await deps.runtime.fence(deps.contextId, options.leaseId)) {
+    return result({ ...common, ok: false, reason: "refused", detail: "The dispatcher is starting this worker now; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
   }
-  if (runtime && await dispatcherRunning(runtime)) {
-    return result({ ok: false, reason: "refused", ...common, detail: "The owning dispatcher appears to be running; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
-  }
-  if (!options.confirmed) return result({ ok: false, reason: "refused", ...common, detail: "Resolving needs the operator's confirmation that the worker has stopped", nextAction: "confirm_worker_stopped" });
-
-  if (!attempt) return result({ ok: false, reason: "refused", ...common, detail: "The runtime has no attempt to record this confirmation against; restore or import its attempt records first", nextAction: "inspect_attempt" });
-
-  // Fence a pending launch by inserting its launch row first. If permission was already inserted, refuse rather
-  // than assuming a dispatcher that is about to start its worker has stopped.
-  if (!runtime && attempt?.entries.some(e => e.kind === "launched") && !await deps.runtime.fence(deps.contextId, options.leaseId)) {
-    return result({ ok: false, reason: "refused", ...common, detail: "The dispatcher is starting this worker now; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
-  }
+  const current = await observeAttempt(deps, { leaseId: options.leaseId });
+  const rechecked = current && checkCanConfirmStopped(assessAttempt(current).facts, options.confirmed);
+  if (!rechecked || !rechecked.allowed) return result({ ...common, ok: false, reason: "refused", detail: rechecked ? rechecked.detail : "The attempt disappeared", nextAction: rechecked ? rechecked.nextAction : "inspect_attempt" });
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) },
-    { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(summary.sessionId ? { sessionId: summary.sessionId } : {}) } }, operator);
-  return result({ ok: true, reason: "resolved", ...common, nextAction: "apply_task_outcome" });
+    { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(assessment.attempt.sessionId ? { sessionId: assessment.attempt.sessionId } : {}) } }, operator);
+  return result({ ...common, ok: true, reason: "resolved", nextAction: "apply_task_outcome" });
 }
 
-/**
- * Operator-only: records that any lease an attempt holds has been returned, so it stops blocking its task. It applies
- * to a lease in a workspace pool the provider no longer lists, and to an unfinished attempt whose dispatcher has
- * stopped without logging a lease. Switchboard cannot see either lease, so this is the operator's confirmation, not an
- * observation. It never changes the task or the lease.
- */
+/** Confirms a lease the provider cannot observe was returned. It never returns a lease itself. */
 export async function resolveLeaseReturned(
   deps: Dependencies,
   options: ({ leaseId: string; taskId?: never; attempt?: never } | { taskId: string; attempt?: number; leaseId?: never }) & { note?: string },
 ): Promise<DispatchResult> {
-  const state = await inspect(deps);
-  if ("failed" in state) return state.failed;
-  const candidates = state.attempts.filter(a => a.taskId === options.taskId);
-  const attempt = options.taskId !== undefined
-    ? options.attempt !== undefined ? candidates.find(a => a.attempt === options.attempt) : candidates.sort((a, b) => b.attempt - a.attempt)[0]
-    : state.attempts.find(a => summarise(a).leaseId === options.leaseId);
-  if (!attempt) {
-    return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: options, detail: "No attempt in this context matches the given lease or task and attempt", nextAction: "inspect_attempt" });
-  }
-  const leaseId = summarise(attempt).leaseId;
-  if (resolvedBy(attempt, "lease_returned")) {
-    return result({ ok: false, reason: "refused", stage: "resolve", attempt: summarise(attempt), lease: "unknown", observed: { leaseId }, detail: "The operator has already confirmed this lease was returned", nextAction: "none" });
-  }
-  const other = state.leasesInOtherPools.find(a => a.taskId === attempt.taskId && a.attempt === attempt.attempt);
-  const observed = { leaseId, pool: state.pool, ...(other ? { leasePool: other.pool } : {}) };
-  const common = { stage: "resolve" as const, attempt: summarise(attempt), observed };
-  if (!other && isOpen(attempt)) {
-    if (state.possiblyRunning.some(p => p.taskId === attempt.taskId && p.attempt === attempt.attempt)) {
-      return result({ ok: false, reason: "refused", ...common, lease: "unknown", detail: "This attempt's worker may still be running; confirm it stopped first", nextAction: "stop_worker" });
-    }
-    // An unfinished attempt may hold a lease it never logged; look for one by its holder and output branch.
-    const outputBranch = summarise(attempt).outputBranch ?? `${deps.delivery.branchPrefix}${attempt.taskId}/attempt-${attempt.attempt}`;
-    const listed = state.leases.find(l => l.leaseId === leaseId || (l.holder === attempt.taskId && l.branch === outputBranch));
-    if (listed) {
-      return result({ ok: false, reason: "refused", ...common, observed: { ...observed, leaseId: listed.leaseId }, lease: "preserved", detail: `Lease ${listed.leaseId} for this attempt is still listed; return it through Treehouse first`, nextAction: "return_unused_lease" });
-    }
-  } else if (!other) {
-    const held = state.leases.some(l => l.leaseId === leaseId);
-    return result({ ok: false, reason: "refused", ...common, lease: held ? "preserved" : "none", detail: "This lease is in the workspace pool Switchboard currently lists, so its state is read from the provider and needs no confirmation", nextAction: "none" });
-  }
+  const selector: AttemptSelector = options.taskId !== undefined ? { taskId: options.taskId, ...(options.attempt === undefined ? {} : { attempt: options.attempt }) } : { leaseId: options.leaseId };
+  const observation = await observeAttempt(deps, selector);
+  if (!observation) return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: options, detail: "No attempt in this context matches the given lease or task and attempt", nextAction: "inspect_attempt" });
+  const assessment = assessAttempt(observation);
+  const attempt = observation.record.known ? observation.record.value : undefined;
+  const summary = assessment.attempt;
+  // An unfinished attempt may have acquired a lease without recording its ID.
+  const outputBranch = summary.outputBranch ?? `${deps.delivery.branchPrefix}${summary.taskId}/attempt-${summary.attempt}`;
+  const listed = observation.leases.known ? observation.leases.value.find(l => l.leaseId === summary.leaseId || (l.holder === summary.taskId && l.branch === outputBranch)) : undefined;
+  const facts = { ...assessment.facts, leaseHeld: listed !== undefined, leaseReturnedConfirmed: attempt !== undefined && resolvedBy(attempt, "lease_returned") };
+  const observed = { leaseId: listed?.leaseId ?? summary.leaseId, pool: observation.pool.known ? observation.pool.value : "unknown", ...(assessment.leaseInOtherPool ? { leasePool: assessment.leaseInOtherPool } : {}) };
+  const common = { stage: "resolve" as const, attempt: summary, observed, lease: listed ? "preserved" as const : "unknown" as const };
+  const permission = checkCanConfirmLeaseReturned(facts);
+  if (!permission.allowed) return result({ ...common, ok: false, reason: "refused", detail: permission.detail, nextAction: permission.nextAction, observed: { ...observed, refusal: permission } });
+  if (!attempt) return result({ ...common, ok: false, reason: "refused", detail: "The attempt could not be read", nextAction: "inspect_attempt" });
+  const current = await observeAttempt(deps, selector);
+  if (!current) return result({ ...common, ok: false, reason: "refused", detail: "The attempt disappeared", nextAction: "inspect_attempt" });
+  const rechecked = assessAttempt(current);
+  const currentListed = current.leases.known && current.leases.value.some(l => l.leaseId === summary.leaseId || (l.holder === summary.taskId && l.branch === outputBranch));
+  const fresh = checkCanConfirmLeaseReturned({ ...rechecked.facts, leaseHeld: currentListed });
+  if (!fresh.allowed) return result({ ...common, ok: false, reason: "refused", detail: fresh.detail, nextAction: fresh.nextAction });
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "lease_returned", ...(options.note ? { note: options.note } : {}) },
-    { fact: "lease_returned", scope: { outputBranch: summarise(attempt).outputBranch ?? `${deps.delivery.branchPrefix}${attempt.taskId}/attempt-${attempt.attempt}`, ...(leaseId ? { leaseId } : {}) } }, operator);
-  return result({ ok: true, reason: "resolved", ...common, lease: "unknown", nextAction: "dispatch_again" });
+    { fact: "lease_returned", scope: { outputBranch, ...(summary.leaseId ? { leaseId: summary.leaseId } : {}) } }, operator);
+  return result({ ...common, ok: true, reason: "resolved", nextAction: "dispatch_again" });
 }

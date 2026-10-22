@@ -2,9 +2,10 @@ import { readActivity } from "../runtime/activity.ts";
 import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Lease } from "../workspaces/provider.ts";
-import type { Task } from "../tasks/store.ts";
-import { inspect, isOpen, summarise, type Dependencies } from "./dispatch.ts";
-import { classify, type AttemptState } from "./state.ts";
+import type { Dependencies } from "./dispatch.ts";
+import type { AttemptState } from "./state.ts";
+import { observeAttempts } from "./observe.ts";
+import { assessAttempts } from "./assess.ts";
 import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
 import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch.ts";
 import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
@@ -101,60 +102,34 @@ const action = (code: NextAction) => ({ code, description: nextActions[code] });
 
 /** Read-only view of every attempt and the owner state that decides what happens next. Changes nothing. */
 export async function status(deps: Dependencies): Promise<StatusResult> {
-  const state = await inspect(deps);
-  if ("failed" in state) {
-    return {
-      version: 1, ok: false, reason: "refused", ready: [], inFlight: [], unaccountedLeases: [], orphanedInFlight: [], attempts: [],
-      ...(state.failed.detail ? { detail: state.failed.detail } : {}), nextAction: action("fix_configuration"),
-    };
-  }
+  const context = await observeAttempts(deps);
+  const assessed = assessAttempts(context);
+  const leases = context.leases.known ? context.leases.value : [];
+  const records = context.records.known ? context.records.value : [];
+  const runtime = context.runtime.known ? context.runtime.value : [];
+  const errors = [context.records, context.runtime, context.leases, context.pool].flatMap(owner => owner.known ? [] : [owner.reason]);
+  let ready: string[] = [], inFlight: string[] = [];
+  try { ready = await deps.tasks.ready(); inFlight = await deps.tasks.inFlight(); }
+  catch (error) { errors.push(`The task store could not be read: ${error instanceof Error ? error.message : String(error)}`); }
   const attempts: AttemptStatus[] = [];
-  for (const record of state.attempts) {
-    const summary = summarise(record);
-    const possiblyRunning = state.possiblyRunning.some(p => p.taskId === summary.taskId && (p.attempt === summary.attempt || p.leaseId === summary.leaseId));
-    const leaseHeld = summary.leaseId !== undefined && state.leases.some(l => l.leaseId === summary.leaseId);
-    let task: AttemptStatus["task"];
-    try {
-      const read: Task | undefined = await deps.tasks.read(summary.taskId);
-      task = read ? { state: read.state, held: read.held, holdReason: read.holdReason } : "missing";
-    } catch { task = "unreadable"; }
-    const otherPool = state.leasesInOtherPools.find(a => a.taskId === summary.taskId && a.attempt === summary.attempt)?.pool;
-    const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === summary.leaseId);
-    const running = possiblyRunning && runtime !== undefined && await dispatcherRunning(runtime);
-    const unfinished = isOpen(record) && state.openTasks.includes(summary.taskId);
-    const classified = classify({ record, possiblyRunning, dispatcherRunning: running, leaseHeld, leaseInOtherPool: otherPool !== undefined, unfinished, task });
-    attempts.push({
-      ...(record.entries.some(e => e.kind === "task_recorded" && e.data.applied === false) ? { taskDisagreement: true } : {}),
-      attempt: summary, state: classified.state, changeable: classified.changeable, lastEntry: record.entries.at(-1)!.kind, possiblyRunning, leaseHeld, ...(otherPool === undefined ? {} : { leaseInOtherPool: otherPool }), task,
-      ...await workerView(runtime, possiblyRunning, deps.staleMs ?? defaultStaleMs, state.leases), nextAction: action(classified.nextAction),
-    });
-  }
-  // Runtime records with no matching attempt, for example after a crash before the attempt was logged.
-  for (const p of state.possiblyRunning.filter(p => p.attempt === 0)) {
-    const runtime = state.runtime.find(r => r.binding.input.identity.leaseId === p.leaseId);
-    const leaseHeld = state.leases.some(l => l.leaseId === p.leaseId);
-    const classified = classify({
-      record: undefined, possiblyRunning: true, dispatcherRunning: runtime !== undefined && await dispatcherRunning(runtime),
-      leaseHeld, leaseInOtherPool: false, unfinished: false, task: "unreadable",
-    });
-    attempts.push({
-      attempt: p, state: classified.state, changeable: classified.changeable, lastEntry: "none", possiblyRunning: true, leaseHeld, task: "unreadable",
-      ...await workerView(runtime, true, deps.staleMs ?? defaultStaleMs, state.leases), nextAction: action(classified.nextAction),
-    });
+  for (const { facts, ...assessment } of assessed) {
+    const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
+    attempts.push({ ...assessment, changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning,
+      ...await workerView(worker, assessment.possiblyRunning, deps.staleMs ?? defaultStaleMs, leases).catch(() => ({})) });
   }
   const known = new Set(attempts.map(a => a.attempt.leaseId).filter(Boolean));
-  const unaccountedLeases = state.leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
-  const orphanedInFlight = state.inFlight.filter(id => !state.attempts.some(a => a.taskId === id) &&
-    !state.runtime.some(r => r.binding.input.identity.taskId === id) && !state.leases.some(l => l.holder === id));
+  const unaccountedLeases = leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
+  const orphanedInFlight = inFlight.filter(id => !records.some(a => a.taskId === id) &&
+    !runtime.some(r => r.binding.input.identity.taskId === id) && !leases.some(l => l.holder === id));
   const unaccounted = unaccountedLeases.length > 0 || orphanedInFlight.length > 0;
   const policy = deps.policy === undefined ? undefined
     : await resolvePolicy(deps.policy).then(resolved => ({ resolved }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   // A policy that cannot be resolved needs fixing before any attempt can be finished.
   const attention = attempts.some(a => a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt") || unaccounted || (policy !== undefined && "error" in policy);
   return {
-    version: 1, ok: !attention, reason: attention ? "attention" : "clear", ready: state.ready, inFlight: state.inFlight, unaccountedLeases, orphanedInFlight, attempts,
-    ...(policy ? { policy } : {}),
-    nextAction: action(overall(attempts, unaccounted)),
+    version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts,
+    ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
+    nextAction: action(errors.length ? "fix_configuration" : overall(attempts, unaccounted)),
   };
 }
 

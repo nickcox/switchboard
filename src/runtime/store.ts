@@ -49,8 +49,10 @@ export class RuntimeStore {
     return this.use(database => database.get("SELECT kind FROM launches WHERE context = ? AND lease_id = ?", context, leaseId)?.kind as "launch" | "fence" | undefined);
   }
 
-  async discover(context: string) {
-    return this.use(database => database.all("SELECT * FROM launches WHERE context = ? AND kind = 'launch' ORDER BY created_at, directory", context));
+  async discover(context: string, selector: { leaseId?: string; taskId?: string } = {}) {
+    return this.use(database => database.all(`SELECT * FROM launches WHERE context = ? AND kind = 'launch'
+      ${selector.leaseId === undefined ? "" : "AND lease_id = ?"} ${selector.taskId === undefined ? "" : "AND task = ?"}
+      ORDER BY created_at, directory`, context, ...[selector.leaseId, selector.taskId].filter((value): value is string => value !== undefined)));
   }
 
   async observation(directory: string, kind: string): Promise<unknown> {

@@ -3,7 +3,7 @@ import type { NextAction } from "./result.ts";
 
 /**
  * Each attempt's state across the attempt log, the runtime records, the workspace leases and the task store (Phase 2
- * PRD, attempt states). It is the single source of an attempt's next action and of whether a command may change it.
+ * PRD, attempt states). These labels and next actions are for people, not permission to change an owner.
  */
 export type AttemptState =
   | "running" | "possibly_running" | "unfinished" | "lease_in_other_pool"
@@ -39,10 +39,9 @@ const nextActionFor: Record<AttemptState, NextAction> = {
 };
 
 /** The checks are ordered from the most urgent: a worker that may be running outranks everything else. */
-export function classify(input: StateInput): { state: AttemptState; nextAction: NextAction; changeable: boolean } {
+export function classify(input: StateInput): { state: AttemptState; nextAction: NextAction } {
   const state = stateOf(input);
-  // A command may change an attempt only once its worker has stopped and every owner's state is known.
-  return { state, nextAction: nextActionFor[state], changeable: !["running", "possibly_running", "unknown"].includes(state) };
+  return { state, nextAction: nextActionFor[state] };
 }
 
 function stateOf(input: StateInput): AttemptState {

@@ -393,7 +393,7 @@ export function isOpen(attempt: AttemptRecord): boolean {
  * have acquired a lease in the pool recorded when it was requested, for example if its dispatcher was killed before
  * logging the lease, unless the provider refused the acquisition outright.
  */
-function possibleLeasePool(attempt: AttemptRecord): string | undefined {
+export function possibleLeasePool(attempt: AttemptRecord): string | undefined {
   const leased = attempt.entries.find(e => e.kind === "leased")?.data.pool;
   if (typeof leased === "string") return leased;
   if (attempt.entries.some(e => e.kind === "leased")) return undefined;

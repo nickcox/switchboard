@@ -137,11 +137,11 @@ export class RuntimeRecords {
   async recordOperatorStop(record: Pick<RuntimeRecord, "directory">, note?: string): Promise<void> {
     await this.storage.confirmStopped(record.directory, note);
   }
-  async discover(contextId: string): Promise<RuntimeRecord[]> {
+  async discover(contextId: string, selector: { leaseId?: string; taskId?: string } = {}): Promise<RuntimeRecord[]> {
     const context = await lstat(join(this.root, key(contextId))).catch(error => { if (!isMissing(error)) throw error; });
     if (context && (!context.isDirectory() || context.isSymbolicLink())) throw new Error("Unsafe runtime context directory");
     const records: RuntimeRecord[] = [];
-    for (const row of await this.storage.discover(contextId)) {
+    for (const row of await this.storage.discover(contextId, selector)) {
       const binding = bindingSchema.parse(JSON.parse(String(row.binding)));
       const directory = String(row.directory);
       if (binding.input.identity.contextId !== contextId || binding.input.identity.leaseId !== row.lease_id ||

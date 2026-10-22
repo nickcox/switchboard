@@ -32,7 +32,24 @@ export class AttemptStore {
   constructor(database: Database, contextId: string) { this.database = database; this.contextId = nonempty.parse(contextId); }
 
   async checkStorage(roots: string[]): Promise<void> { await requireRetainedStorage(this.database.path, roots); }
-  async forTask(taskId: string): Promise<AttemptRecord[]> { return this.list().filter(record => record.taskId === taskId); }
+  async forTask(taskId: string): Promise<AttemptRecord[]> {
+    return this.database.all("SELECT number FROM attempts WHERE context = ? AND task = ? AND number IS NOT NULL ORDER BY number", this.contextId, taskId)
+      .map(row => this.read({ contextId: this.contextId, taskId, attempt: Number(row.number) }));
+  }
+  async findByLease(leaseId: string): Promise<AttemptRecord | undefined> {
+    const row = this.database.get(`SELECT task, attempt FROM attempt_entries WHERE context = ?
+      AND json_extract(entry, '$.kind') IN ('leased', 'halted') AND json_extract(entry, '$.data.leaseId') = ?`, this.contextId, leaseId);
+    return row ? this.read({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.attempt) }) : undefined;
+  }
+  findForTask(taskId: string, attempt?: number): AttemptRecord | undefined {
+    const number = attempt ?? this.latestNumber(taskId);
+    if (number === undefined || !this.database.get("SELECT 1 FROM attempts WHERE context = ? AND task = ? AND number = ?", this.contextId, taskId, number)) return undefined;
+    return this.read({ contextId: this.contextId, taskId, attempt: number });
+  }
+  latestNumber(taskId: string): number | undefined {
+    const row = this.database.get("SELECT max(number) AS n FROM attempts WHERE context = ? AND task = ?", this.contextId, taskId);
+    return row?.n == null ? undefined : Number(row.n);
+  }
   activeCount(): number {
     return Number(this.database.get("SELECT count(*) AS n FROM attempts WHERE context = ? AND number IS NOT NULL AND closed = 0", this.contextId)!.n);
   }
