@@ -145,6 +145,8 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
     store.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
     store.database.run("UPDATE tasks SET started_body = 'Original instructions' WHERE id = 'a'");
     for (const table of ["control_requests", "worker_activity", "worker_observations", "launches", "worker_claims"]) store.database.run(`DROP TABLE ${table}`);
+    store.database.run("DROP INDEX worker_stop_per_attempt");
+    store.database.run("ALTER TABLE confirmations DROP COLUMN note");
     store.database.run("PRAGMA user_version = 2");
   });
   store.close();

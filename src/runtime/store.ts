@@ -45,6 +45,10 @@ export class RuntimeStore {
     }));
   }
 
+  async launchKind(context: string, leaseId: string): Promise<"launch" | "fence" | undefined> {
+    return this.use(database => database.get("SELECT kind FROM launches WHERE context = ? AND lease_id = ?", context, leaseId)?.kind as "launch" | "fence" | undefined);
+  }
+
   async discover(context: string) {
     return this.use(database => database.all("SELECT * FROM launches WHERE context = ? AND kind = 'launch' ORDER BY created_at, directory", context));
   }
@@ -56,17 +60,30 @@ export class RuntimeStore {
     });
   }
 
-  async recordObservation(directory: string, kind: "exit" | "session_start" | "operator_stop", value: ChildExit | ThinkingLevel | { confirmedAt: string; note?: string }): Promise<void> {
+  async recordObservation(directory: string, kind: "exit" | "session_start", value: ChildExit | ThinkingLevel): Promise<void> {
     await this.use(database => database.transaction(() => {
-      database.run("INSERT INTO worker_observations VALUES(?,?,?)", directory, kind, JSON.stringify(value));
-      if (kind === "operator_stop") {
-        const launch = database.get("SELECT * FROM launches WHERE directory = ?", directory)!;
-        const binding = JSON.parse(String(launch.binding)) as RuntimeBinding;
-        database.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope) VALUES(?,?,?,?,?,?,?)",
-          String(launch.context), String(launch.task), Number(launch.attempt), "worker_stopped", operator,
-          (value as { confirmedAt: string }).confirmedAt, JSON.stringify({ leaseId: binding.input.identity.leaseId, sessionId: binding.input.identity.sessionId }));
-      }
+      database.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, kind, new Date().toISOString(), JSON.stringify(value));
     }));
+  }
+
+  async confirmStopped(directory: string, note?: string): Promise<void> {
+    await this.use(database => database.transaction(() => {
+      const launch = database.get("SELECT * FROM launches WHERE directory = ? AND kind = 'launch'", directory);
+      if (!launch) throw new Error("A stop confirmation requires a launch");
+      const binding = JSON.parse(String(launch.binding)) as RuntimeBinding;
+      database.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope,note) VALUES(?,?,?,?,?,?,?,?)",
+        String(launch.context), String(launch.task), Number(launch.attempt), "worker_stopped", operator, new Date().toISOString(),
+        JSON.stringify({ leaseId: binding.input.identity.leaseId, sessionId: binding.input.identity.sessionId }), note ?? null);
+    }));
+  }
+
+  async stopConfirmation(directory: string): Promise<{ confirmedAt: string; note?: string } | undefined> {
+    return this.use(database => {
+      const row = database.get(`SELECT c.confirmed_at, c.note FROM confirmations c JOIN launches l
+        ON l.context = c.context AND l.task = c.task AND l.attempt = c.attempt
+        WHERE l.directory = ? AND c.fact = 'worker_stopped'`, directory);
+      return row ? { confirmedAt: String(row.confirmed_at), ...(row.note === null ? {} : { note: String(row.note) }) } : undefined;
+    });
   }
 
   async heartbeat(claimId: string) {
@@ -101,7 +118,8 @@ export class RuntimeStore {
 
   async submit(claimId: string, request: ControlRequest): Promise<void> {
     await this.use(database => database.transaction(() => {
-      database.run("INSERT INTO control_requests(id,claim_id,request,created_at) VALUES(?,?,?,?)", request.id, claimId, JSON.stringify(request), request.createdAt);
+      database.run("INSERT INTO control_requests(id,claim_id,request,created_at,sender_pid,sender_started_at) VALUES(?,?,?,?,?,?)",
+        request.id, claimId, JSON.stringify(request), request.createdAt, process.pid, ownerStartedAt);
     }));
   }
 
@@ -112,9 +130,10 @@ export class RuntimeStore {
 
   async claimRequest(claimId: string, id: string, by: "dispatcher" | "withdrawn"): Promise<boolean> {
     return this.use(database => database.transaction(() => Boolean(database.run(`UPDATE control_requests SET claimed_by = ?, claimed_at = ?
-      WHERE id = ? AND claim_id = ? AND claimed_by IS NULL AND (? = 'withdrawn' OR EXISTS(
-        SELECT 1 FROM worker_claims WHERE id = ? AND owner_pid = ? AND owner_started_at = ? AND released_at IS NULL))`,
-    by, new Date().toISOString(), id, claimId, by, claimId, process.pid, ownerStartedAt).changes)));
+      WHERE id = ? AND claim_id = ? AND claimed_by IS NULL AND
+        ((? = 'withdrawn' AND sender_pid = ? AND sender_started_at = ?) OR (? = 'dispatcher' AND EXISTS(
+          SELECT 1 FROM worker_claims WHERE id = ? AND owner_pid = ? AND owner_started_at = ? AND released_at IS NULL)))`,
+    by, new Date().toISOString(), id, claimId, by, process.pid, ownerStartedAt, by, claimId, process.pid, ownerStartedAt).changes)));
   }
 
   async recordResult(claimId: string, id: string, result: RequestResult): Promise<void> {

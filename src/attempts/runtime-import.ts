@@ -11,7 +11,7 @@ const startSchema = z.strictObject({ version: z.literal(1), identity: identitySc
 const heartbeatSchema = z.strictObject({ version: z.literal(1), at: z.iso.datetime(), pid: z.number().int().positive() });
 export type LegacyRuntime = {
   directory: string; binding: RuntimeBinding; child: RuntimeRecord["child"]; thinkingLevel?: RuntimeRecord["thinkingLevel"];
-  exit?: z.infer<typeof receiptSchema>; stop?: z.infer<typeof stopSchema>;
+  exit?: z.infer<typeof receiptSchema>; stop?: z.infer<typeof stopSchema>; start?: z.infer<typeof startSchema>;
 };
 const optionalJson = async (path: string) => readJsonFile(path).catch(error => { if (!isMissing(error)) throw error; return undefined; });
 const names = async (path: string) => readdir(path).catch(error => { if (!isMissing(error)) throw error; return []; });
@@ -58,7 +58,7 @@ export async function readLegacyRuntime(root: string, contextId: string) {
     const start = startValue === undefined ? undefined : startSchema.parse(startValue);
     for (const fact of [exit, stop, start]) if (fact && !sameIdentity(fact.identity, binding.input.identity)) throw new Error("Stale runtime observation");
     records.push({ directory, binding, child: exit ? { status: "exited", exit: exit.childExit } : stop ? { status: "operator_confirmed_stopped", confirmedAt: stop.confirmedAt, ...(stop.note ? { note: stop.note } : {}) } : { status: "unknown" },
-      ...(exit ? { exit } : {}), ...(stop ? { stop } : {}), ...(start ? { thinkingLevel: start.thinkingLevel } : {}) });
+      ...(exit ? { exit } : {}), ...(stop ? { stop } : {}), ...(start ? { start, thinkingLevel: start.thinkingLevel } : {}) });
   }
   return { records, directories, freshHeartbeat, pendingRequest };
 }

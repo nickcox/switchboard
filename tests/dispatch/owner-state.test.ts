@@ -141,6 +141,9 @@ test("Phase 2 review finding 18: status shows the observed worker exit and the d
   const f = await fixture({ tasks: [task("final-a1")], scenario: "commit-result" });
   await dispatchOnce(f.deps);
   const view = await status(f.deps);
-  assert.deepEqual(view.attempts[0]?.worker, { exit: "observed", code: 0, signal: null, dispatcherHeartbeat: "stale_or_missing" });
+  assert.partialDeepStrictEqual(view.attempts[0]?.worker, { exit: "observed", code: 0, signal: null, dispatcherHeartbeat: "stale_or_missing" });
+  const claim = view.attempts[0]?.worker?.claim;
+  assert.equal(claim?.ownerPid, process.pid);
+  assert.ok(claim?.id && claim.heartbeatAt && claim.releasedAt);
   assert.match(describeStatus(view), /Worker exit: observed \(code 0\); dispatcher heartbeat stale or missing/);
 });

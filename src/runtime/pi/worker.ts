@@ -229,9 +229,7 @@ export function workerPrompt(binding: RuntimeBinding, deadline: Date): string {
     JSON.stringify(resultJsonSchema, null, 2),
     "validationEvidence is an array of {name,summary}. It reports your checks; it is not independent acceptance verification.",
     "workReferences is an array of {kind:'git',name,branch,commit} or {kind:'artefact',name,path,description}.",
-    ...(binding.artefactDirectory ? [
-      `Write reports and other artefact deliverables under ${JSON.stringify(binding.artefactDirectory)}, which survives after the workspace is recycled, and give their absolute paths in workReferences. Files left only in the workspace are not retained.`,
-    ] : []),
+    `Write reports and other artefact deliverables under ${JSON.stringify(binding.artefactDirectory)}, which survives after the workspace is recycled, and give their absolute paths in workReferences. Files left only in the workspace are not retained.`,
     "For completed work, include every required evidence and deliverable name. Code must be committed to the named output branch.",
     "For hold or failed, also include nonempty reason and nextAction strings. Report completed implementation honestly even when review remains; Switchboard decides task acceptance.",
     "Use JSON double quotes. Missing or invalid results are failures, not completion. Do not create background processes; stop any tool subprocesses before finishing.",

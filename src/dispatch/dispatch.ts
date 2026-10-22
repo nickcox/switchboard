@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory } from "../attempts/log.ts";
 import { AttemptStore, AttemptStoreError } from "../attempts/store.ts";
 import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
@@ -326,7 +325,7 @@ async function finalise(
     gitReferences: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
     recyclableRoots: await deps.workspaces.recyclableRoots(),
-    ...(report ? { artefactDirectory: report.binding.artefactDirectory ?? join(report.directory, "artefacts") } : {}),
+    ...(report ? { artefactDirectory: report.binding.artefactDirectory } : {}),
     // For a non-code contract the workspace is scratch; reported deliverables are still checked.
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   });

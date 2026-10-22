@@ -117,6 +117,8 @@ export class Database {
       if (Number(result.get("PRAGMA user_version")!.user_version) < 4) await result.transaction(() => {
         if (Number(result.get("PRAGMA user_version")!.user_version) >= 4) return;
         db.exec(`
+          ALTER TABLE confirmations ADD COLUMN note TEXT;
+          CREATE UNIQUE INDEX worker_stop_per_attempt ON confirmations(context, task, attempt) WHERE fact = 'worker_stopped';
           CREATE TABLE worker_claims (
             id TEXT PRIMARY KEY, context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL,
             owner_pid INTEGER NOT NULL, owner_started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT,
@@ -139,18 +141,26 @@ export class Database {
             BEGIN SELECT RAISE(ABORT, 'Launch rows cannot be removed while the attempt exists'); END;
           CREATE TABLE worker_observations (
             directory TEXT NOT NULL REFERENCES launches(directory) ON DELETE CASCADE,
-            kind TEXT NOT NULL CHECK(kind IN ('exit','session_start','operator_stop')),
+            kind TEXT NOT NULL CHECK(kind IN ('exit','session_start')), recorded_at TEXT NOT NULL,
             value TEXT NOT NULL CHECK(json_valid(value)), PRIMARY KEY(directory, kind));
+          CREATE TRIGGER worker_observations_immutable BEFORE UPDATE ON worker_observations BEGIN
+            SELECT RAISE(ABORT, 'Worker observations cannot be changed');
+          END;
           CREATE TABLE worker_activity (
             directory TEXT NOT NULL REFERENCES launches(directory) ON DELETE CASCADE, sequence INTEGER NOT NULL,
             entry TEXT NOT NULL CHECK(json_valid(entry)), PRIMARY KEY(directory, sequence));
           CREATE TABLE control_requests (
             id TEXT PRIMARY KEY, claim_id TEXT NOT NULL REFERENCES worker_claims(id) ON DELETE CASCADE,
             request TEXT NOT NULL CHECK(json_valid(request)), created_at TEXT NOT NULL,
+            sender_pid INTEGER NOT NULL, sender_started_at TEXT NOT NULL,
             claimed_by TEXT CHECK(claimed_by IN ('dispatcher','withdrawn')), claimed_at TEXT,
             result TEXT CHECK(result IS NULL OR json_valid(result)),
             CHECK((claimed_by IS NULL) = (claimed_at IS NULL)),
             CHECK(result IS NULL OR claimed_by = 'dispatcher'));
+          CREATE TRIGGER request_claim_immutable BEFORE UPDATE OF claimed_by, claimed_at ON control_requests
+            WHEN OLD.claimed_by IS NOT NULL BEGIN SELECT RAISE(ABORT, 'Request claims cannot be changed'); END;
+          CREATE TRIGGER request_result_immutable BEFORE UPDATE OF result ON control_requests
+            WHEN OLD.result IS NOT NULL BEGIN SELECT RAISE(ABORT, 'Request results cannot be changed'); END;
           PRAGMA user_version = 4;
         `);
       });

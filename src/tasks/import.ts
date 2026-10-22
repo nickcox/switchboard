@@ -18,7 +18,7 @@ const exists = async (path: string) => lstat(path).then(() => true, error => { i
 
 /**
  * Import is offline: every attempt must be settled and no dispatcher may be running, so no Switchboard process can be
- * writing the old records. Old attempts and runtime records stay in place until their own migration.
+ * writing the old records. The import reads these files only; workers' outputs and transcripts stay where they are.
  */
 export async function requireSettled(config: Config): Promise<void> {
   const attempts = await new AttemptLog(config.runtimeRoot, config.contextId).list();
@@ -73,6 +73,7 @@ export async function importTasks(config: Config, backlog: string, archive = joi
   const timedHolds: { task: string; until: string; kept: boolean }[] = [];
   const holdOf = (task: (typeof tasks)[number]) => (task.hold && isHoldActive(task) ? task.hold.reason : null);
   let activated = false;
+  let records = { attempts: 0, runtime: 0 };
   try {
     for (const task of tasks) {
       await store.add({ id: task.id, title: task.title, body: task.body ?? "", repo: task.repo ?? null, kind: task.kind ?? null });
@@ -85,6 +86,7 @@ export async function importTasks(config: Config, backlog: string, archive = joi
       if (!ids.has(dep.id)) dropped.push({ task: task.id, blocker: dep.id });
       else await store.block(task.id, dep.id);
     }
+    records = await (await import("../attempts/import.ts")).importLegacyRecords(config, store.database);
     const imported = await store.list();
     assert.equal(imported.length, tasks.length, "Imported task count differs");
     for (const [index, task] of tasks.entries()) {
@@ -111,7 +113,7 @@ export async function importTasks(config: Config, backlog: string, archive = joi
     store.close();
     await removeStaging();
   }
-  return { ok: activated, count: tasks.length, dropped, timedHolds, path };
+  return { ok: activated, count: tasks.length, ...records, dropped, timedHolds, path };
 }
 
 export async function importCommand(argv: string[]): Promise<number> {

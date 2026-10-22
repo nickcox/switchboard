@@ -16,10 +16,9 @@ export const activityEntrySchema = z.discriminatedUnion("kind", [
 export type ActivityEntry = z.infer<typeof activityEntrySchema>;
 export type Payload = ActivityEntry extends infer E ? E extends ActivityEntry ? Omit<E, "v" | "ts"> : never : never;
 
-export const activityFile = "activity.jsonl";
 const textLimit = 200;
 const entryLimit = 2048;
-export const activityFileLimit = 5 * 1024 * 1024;
+export const activityByteLimit = 5 * 1024 * 1024;
 
 export function shorten(text: string, limit = textLimit): string {
   const single = text.replace(/\s+/g, " ").trim();
@@ -44,7 +43,7 @@ export class ActivityWriter {
     const entry = activityEntrySchema.parse({ v: 1, ts: new Date().toISOString(), ...payload });
     let line = `${JSON.stringify(entry)}\n`;
     if (Buffer.byteLength(line) > entryLimit) line = `${JSON.stringify({ v: 1, ts: entry.ts, kind: "note", text: `${entry.kind} entry omitted: too large` })}\n`;
-    if (this.written + Buffer.byteLength(line) > activityFileLimit) {
+    if (this.written + Buffer.byteLength(line) > activityByteLimit) {
       this.full = true;
       line = `${JSON.stringify({ v: 1, ts: entry.ts, kind: "note", text: "Activity log size limit reached; later activity is not recorded" })}\n`;
     }

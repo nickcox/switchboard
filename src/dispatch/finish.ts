@@ -36,13 +36,12 @@ async function locate(deps: Dependencies, leaseId: string): Promise<Located | Di
 }
 
 /**
- * Makes sure no dispatcher can still start a worker in this lease's workspace. A dispatcher reserves the lease's runtime
- * directory exclusively before it starts a worker, so creating that directory first stops any launch still pending, for
- * example from a dispatch paused between acquiring the lease and launching. If the directory exists, it must belong to a
- * worker whose exit was observed, or to a launch the operator confirmed stopped with `resolve --worker-stopped`.
+ * Fence a pending launch by inserting its immutable launch row first. If permission already exists, the worker must
+ * have an observed exit or the operator's stop confirmation. A fence remains safe when a command is run again.
  */
 async function fenceLaunch(deps: Dependencies, record: AttemptRecord, leaseId: string): Promise<string | undefined> {
   if (await deps.runtime.fence(deps.contextId, leaseId)) return undefined;
+  if (await deps.runtime.storage.launchKind(deps.contextId, leaseId) === "fence") return undefined;
   const runtime = (await deps.runtime.discover(deps.contextId)).find(r => r.binding.input.identity.leaseId === leaseId);
   const stopped = deps.attempts.confirmations(record).some(c => c.fact === "worker_stopped" && c.scope.leaseId === leaseId &&
     (c.scope.sessionId === undefined || c.scope.sessionId === runtime?.binding.input.identity.sessionId));
@@ -89,7 +88,7 @@ async function recheck(deps: Dependencies, attempt: AttemptStatus): Promise<Rete
     gitReferences: report.workReferences.flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: report.workReferences.flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
     recyclableRoots: await deps.workspaces.recyclableRoots(),
-    ...(runtime.binding.artefactDirectory ? { artefactDirectory: runtime.binding.artefactDirectory } : {}),
+    artefactDirectory: runtime.binding.artefactDirectory,
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   });
 }

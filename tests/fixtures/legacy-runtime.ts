@@ -18,7 +18,7 @@ export class LegacyRuntimeFixture {
   async recordChildExit(record: { directory: string; binding: RuntimeBinding }, childExit: ChildExit) {
     await writeOnce(join(record.directory, "child-exit.json"), { version: 1, identity: record.binding.input.identity, observedAt: new Date().toISOString(), childExit });
   }
-  async recordOperatorStop(record: { directory: string; binding: RuntimeBinding }) {
-    await writeOnce(join(record.directory, "operator-stopped.json"), { version: 1, identity: record.binding.input.identity, confirmedAt: new Date().toISOString() });
+  async recordOperatorStop(record: { directory: string; binding: RuntimeBinding }, note?: string) {
+    await writeOnce(join(record.directory, "operator-stopped.json"), { version: 1, identity: record.binding.input.identity, confirmedAt: new Date().toISOString(), ...(note ? { note } : {}) });
   }
 }

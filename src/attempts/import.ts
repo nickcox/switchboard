@@ -70,13 +70,13 @@ async function snapshot(config: Config, database: Database) {
   const records = original.map(record => convert(record, config.delivery.branchPrefix));
   const runtimeRecords = await readLegacyRuntime(root, context);
   for (const runtime of runtimeRecords.records) {
-    if (runtime.child.status !== "operator_confirmed_stopped") continue;
+    if (!runtime.stop) continue;
     const identity = runtime.binding.input.identity;
     const target = records.find(r => r.record.taskId === identity.taskId && summarise(r.record).leaseId === identity.leaseId);
     if (!target) throw new Error("A runtime stop confirmation has no attempt");
     if (!target.confirmations.some(c => c.fact === "worker_stopped")) target.confirmations.push({
       contextId: context, taskId: target.record.taskId, attempt: target.record.attempt, fact: "worker_stopped",
-      scope: { leaseId: identity.leaseId, sessionId: identity.sessionId }, confirmedBy: "operator", confirmedAt: runtime.child.confirmedAt,
+      scope: { leaseId: identity.leaseId, sessionId: identity.sessionId }, confirmedBy: "operator", confirmedAt: runtime.stop.confirmedAt,
     });
   }
   const reservations = await Promise.all((await names(join(root, "request-ids", key(context)))).filter(name => !name.startsWith(".")).map(async name => {
@@ -116,25 +116,7 @@ async function snapshot(config: Config, database: Database) {
   return { original, records, reservations, numbers, archives, originalArchives, runtimeRecords };
 }
 
-/** Offline migration into a validated VACUUM copy of the database that already owns the tasks. */
-export async function importAttempts(config: Config) {
-  await requireSettled(config);
-  const path = databasePath(config);
-  await requireRetainedStorage(path, [config.workspaces.poolRoot]);
-  await stat(path); // Do not create an empty task database by accident.
-  const staging = `${path}.attempt-import-${randomUUID()}`;
-  let source: Database | undefined;
-  let copy: Database | undefined;
-  try {
-    source = await Database.open(path, config.databaseRetryMs, { migrate: false });
-    if (hasAttempts(source)) {
-      throw new TaskStoreError("rejected", "The database already has attempts or reservations");
-    }
-    const before = await snapshot(config, source);
-    const tasks = source.all("SELECT * FROM tasks ORDER BY position");
-    const dependencies = source.all("SELECT * FROM dependencies ORDER BY task, blocker");
-    await source.vacuumInto(staging);
-    copy = await Database.open(staging, config.databaseRetryMs);
+async function writeSnapshot(config: Config, copy: Database, before: Awaited<ReturnType<typeof snapshot>>) {
     const store = new AttemptStore(copy, config.contextId);
     await copy.transaction(() => {
       for (const number of before.numbers) copy!.run("INSERT INTO attempt_numbers VALUES(?,?,?)", config.contextId, number.taskId, number.attempt);
@@ -145,8 +127,11 @@ export async function importAttempts(config: Config) {
         copy!.run("INSERT INTO attempts(context,task,number,request_id,reserved_at,closed) VALUES(?,?,?,?,?,?)", config.contextId,
           record.taskId, record.attempt, requestId ?? null, reservation?.reservedAt ?? record.entries[0]!.recordedAt, isOpen(record) ? 0 : 1);
         for (const entry of record.entries) copy!.run("INSERT INTO attempt_entries VALUES(?,?,?,?,?)", config.contextId, record.taskId, record.attempt, entry.sequence, JSON.stringify(entry));
-        for (const confirmation of confirmations) copy!.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope) VALUES(?,?,?,?,?,?,?)",
-          config.contextId, record.taskId, record.attempt, confirmation.fact, confirmation.confirmedBy, confirmation.confirmedAt, JSON.stringify(confirmation.scope));
+        for (const confirmation of confirmations) {
+          const stopNote = confirmation.fact === "worker_stopped" ? before.runtimeRecords.records.find(r => r.binding.input.identity.leaseId === confirmation.scope.leaseId)?.stop?.note : undefined;
+          copy!.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope,note) VALUES(?,?,?,?,?,?,?,?)",
+            config.contextId, record.taskId, record.attempt, confirmation.fact, confirmation.confirmedBy, confirmation.confirmedAt, JSON.stringify(confirmation.scope), stopNote ?? null);
+        }
       }
       for (const { record } of before.records) {
         const summary = summarise(record);
@@ -158,9 +143,8 @@ export async function importAttempts(config: Config) {
         if (claimId) copy!.run("INSERT INTO worker_claims VALUES(?,?,?,?,?,?,?,?)", claimId, config.contextId, record.taskId, record.attempt, 0, at, at, at);
         copy!.run("INSERT INTO launches VALUES(?,?,?,?,?,?,?,?,?)", config.contextId, record.taskId, record.attempt, summary.leaseId,
           at, runtime ? "launch" : "fence", directory, runtime ? JSON.stringify(runtime.binding) : null, claimId);
-        if (runtime?.exit) copy!.run("INSERT INTO worker_observations VALUES(?,?,?)", directory, "exit", JSON.stringify(runtime.exit.childExit));
-        if (runtime?.stop) copy!.run("INSERT INTO worker_observations VALUES(?,?,?)", directory, "operator_stop", JSON.stringify({ confirmedAt: runtime.stop.confirmedAt, ...(runtime.stop.note ? { note: runtime.stop.note } : {}) }));
-        if (runtime?.thinkingLevel) copy!.run("INSERT INTO worker_observations VALUES(?,?,?)", directory, "session_start", JSON.stringify(runtime.thinkingLevel));
+        if (runtime?.exit) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "exit", runtime.exit.observedAt, JSON.stringify(runtime.exit.childExit));
+        if (runtime?.start) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "session_start", runtime.start.observedAt, JSON.stringify(runtime.start.thinkingLevel));
       }
       for (const runtime of before.runtimeRecords.records) {
         if (!before.records.some(({ record }) => summarise(record).leaseId === runtime.binding.input.identity.leaseId)) throw new Error("A runtime binding has no attempt");
@@ -179,13 +163,57 @@ export async function importAttempts(config: Config) {
       assert.deepEqual(store.confirmations(record), confirmations, "Imported confirmations differ");
     }
     const importedRuntime = await new RuntimeRecords(config.runtimeRoot, copy).discover(config.contextId);
-    assert.deepEqual(importedRuntime.map(({ storage: _storage, claimId: _claimId, ...record }) => record),
-      before.runtimeRecords.records.map(({ exit: _exit, stop: _stop, ...record }) => record), "Imported runtime records and paths differ");
+    const byDirectory = (a: { directory: string }, b: { directory: string }) => a.directory.localeCompare(b.directory);
+    const expectedRuntime = before.runtimeRecords.records.map(({ exit, stop, start: _start, ...runtime }) => {
+      const confirmation = before.records.flatMap(r => r.confirmations).find(c => c.fact === "worker_stopped" && c.scope.leaseId === runtime.binding.input.identity.leaseId);
+      return { ...runtime, child: exit ? runtime.child : confirmation ? {
+        status: "operator_confirmed_stopped", confirmedAt: confirmation.confirmedAt, ...(stop?.note ? { note: stop.note } : {}),
+      } : runtime.child };
+    });
+    assert.deepEqual(importedRuntime.map(({ storage: _storage, claimId: _claimId, ...record }) => record).sort(byDirectory),
+      expectedRuntime.sort(byDirectory), "Imported runtime records and paths differ");
     assert.equal(store.list().length, before.records.length);
     assert.deepEqual(copy.all("SELECT task, number FROM attempt_numbers WHERE context = ? ORDER BY task, number", config.contextId).map(row => ({ taskId: String(row.task), attempt: Number(row.number) })),
       [...before.numbers].sort((a, b) => (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : a.attempt - b.attempt)));
     for (const reservation of before.reservations) assert.partialDeepStrictEqual(copy.get("SELECT task, reserved_at FROM attempts WHERE context = ? AND request_id = ?", config.contextId, reservation.requestId), { task: reservation.taskId, reserved_at: reservation.reservedAt });
     for (const archive of before.archives) assert.deepEqual(JSON.parse(String(copy.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", config.contextId, archive.taskId, archive.attempt)!.summary)), archive);
+}
+
+function compareSnapshots(before: Awaited<ReturnType<typeof snapshot>>, after: Awaited<ReturnType<typeof snapshot>>) {
+  assert.deepEqual(after.reservations, before.reservations);
+  assert.deepEqual(after.numbers, before.numbers);
+  assert.deepEqual(after.originalArchives, before.originalArchives);
+  assert.deepEqual(after.original, before.original, "Attempt files changed during import");
+  assert.deepEqual(after.runtimeRecords, before.runtimeRecords, "Runtime files changed during import");
+}
+
+/** Adds and validates every legacy record before a new task database is activated. */
+export async function importLegacyRecords(config: Config, database: Database) {
+  const before = await snapshot(config, database);
+  await writeSnapshot(config, database, before);
+  await requireSettled(config);
+  compareSnapshots(before, await snapshot(config, database));
+  return { attempts: before.records.length, runtime: before.runtimeRecords.records.length };
+}
+
+/** Offline migration into a validated VACUUM copy of the database that already owns the tasks. */
+export async function importAttempts(config: Config) {
+  await requireSettled(config);
+  const path = databasePath(config);
+  await requireRetainedStorage(path, [config.workspaces.poolRoot]);
+  await stat(path); // Do not create an empty task database by accident.
+  const staging = `${path}.attempt-import-${randomUUID()}`;
+  let source: Database | undefined;
+  let copy: Database | undefined;
+  try {
+    source = await Database.open(path, config.databaseRetryMs, { migrate: false });
+    if (hasAttempts(source)) throw new TaskStoreError("rejected", "The database already has attempts or reservations");
+    const before = await snapshot(config, source);
+    const tasks = source.all("SELECT * FROM tasks ORDER BY position");
+    const dependencies = source.all("SELECT * FROM dependencies ORDER BY task, blocker");
+    await source.vacuumInto(staging);
+    copy = await Database.open(staging, config.databaseRetryMs);
+    await writeSnapshot(config, copy, before);
     // Version 3 drops the obsolete body snapshot; every current task field must still match.
     const currentTasks = tasks.map(({ started_body: _startedBody, ...task }) => task);
     assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), currentTasks, "Task fields changed in the copy");
@@ -195,12 +223,7 @@ export async function importAttempts(config: Config) {
     assert.deepEqual(source.all("SELECT * FROM dependencies ORDER BY task, blocker"), dependencies, "Dependencies changed during import");
     if (hasAttempts(source)) throw new TaskStoreError("rejected", "Attempts were created during import");
     // Compare the files again without generating new conversion IDs.
-    const after = await snapshot(config, source);
-    assert.deepEqual(after.reservations, before.reservations);
-    assert.deepEqual(after.numbers, before.numbers);
-    assert.deepEqual(after.originalArchives, before.originalArchives);
-    assert.deepEqual(after.original, before.original, "Attempt files changed during import");
-    assert.deepEqual(after.runtimeRecords, before.runtimeRecords, "Runtime files changed during import");
+    compareSnapshots(before, await snapshot(config, source));
     copy.checkpoint();
     copy.close();
     source.checkpoint();

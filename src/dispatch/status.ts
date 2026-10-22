@@ -35,7 +35,11 @@ export type AttemptStatus = {
    * child's exit was observed or confirmed by the operator, and whether the owning dispatcher's heartbeat is fresh.
    * Neither proves that no process from the worker remains.
    */
-  worker?: { exit: "observed" | "operator_confirmed_stopped" | "not_observed"; code?: number | null; signal?: string | null; dispatcherHeartbeat: "fresh" | "stale_or_missing" };
+  worker?: {
+    exit: "observed" | "operator_confirmed_stopped" | "not_observed"; code?: number | null; signal?: string | null;
+    dispatcherHeartbeat: "fresh" | "stale_or_missing";
+    claim?: { id: string; ownerPid: number; ownerStartedAt: string; heartbeatAt: string; releasedAt: string | null };
+  };
   /** How to continue the work by hand. Offered only once the worker is known to have stopped. */
   takeover?: string;
   nextAction: { code: NextAction; description: string };
@@ -51,9 +55,12 @@ function quote(path: string): string {
 async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, staleMs: number, leases: Lease[]): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover" | "thinkingLevel" | "worker">> {
   if (!record) return {};
   const child = record.child;
+  const claim = await record.storage.heartbeat(record.claimId);
   const worker: AttemptStatus["worker"] = {
     ...(child.status === "exited" ? { exit: "observed" as const, code: child.exit.code, signal: child.exit.signal } : { exit: child.status === "operator_confirmed_stopped" ? "operator_confirmed_stopped" as const : "not_observed" as const }),
     dispatcherHeartbeat: await dispatcherRunning(record) ? "fresh" : "stale_or_missing",
+    ...(claim ? { claim: { id: record.claimId, ownerPid: Number(claim.owner_pid), ownerStartedAt: String(claim.owner_started_at),
+      heartbeatAt: String(claim.heartbeat_at), releasedAt: claim.released_at === null ? null : String(claim.released_at) } } : {}),
   };
   const activity = summariseActivity(await readActivity(record));
   const stale = possiblyRunning && (activity.lastActivity === null || Date.now() - Date.parse(activity.lastActivity) > staleMs);
@@ -190,6 +197,8 @@ export function describeStatus(value: StatusResult): string {
       const exit = a.worker.exit === "observed" ? `observed (${a.worker.code !== null && a.worker.code !== undefined ? `code ${a.worker.code}` : `signal ${a.worker.signal}`})`
         : a.worker.exit === "operator_confirmed_stopped" ? "not observed; the operator confirmed the worker stopped" : "not observed";
       lines.push(`  Worker exit: ${exit}; dispatcher heartbeat ${a.worker.dispatcherHeartbeat === "fresh" ? "fresh" : "stale or missing"}`);
+      const claim = a.worker.claim;
+      if (claim) lines.push(`  Dispatcher claim ${claim.id}: PID ${claim.ownerPid}, started ${claim.ownerStartedAt}; last heartbeat ${claim.heartbeatAt}${claim.releasedAt ? `; released ${claim.releasedAt}` : ""}`);
     }
     if (a.transcript) lines.push(`  Transcript: ${a.transcript}`);
     if (a.takeover) lines.push(`  Take over by hand: ${a.takeover}`);

@@ -135,7 +135,7 @@ export class RuntimeRecords {
     await this.storage.recordObservation(record.directory, "exit", childExitSchema.parse(exit));
   }
   async recordOperatorStop(record: Pick<RuntimeRecord, "directory">, note?: string): Promise<void> {
-    await this.storage.recordObservation(record.directory, "operator_stop", { confirmedAt: new Date().toISOString(), ...(note === undefined ? {} : { note }) });
+    await this.storage.confirmStopped(record.directory, note);
   }
   async discover(contextId: string): Promise<RuntimeRecord[]> {
     const context = await lstat(join(this.root, key(contextId))).catch(error => { if (!isMissing(error)) throw error; });
@@ -148,7 +148,7 @@ export class RuntimeRecords {
         binding.resultPath !== join(directory, "result.json") || binding.sessionDirectory !== join(directory, "sessions") ||
         binding.artefactDirectory !== join(directory, "artefacts")) throw new Error("Runtime binding does not match its storage identity");
       const exit = await this.storage.observation(directory, "exit");
-      const stop = await this.storage.observation(directory, "operator_stop") as { confirmedAt: string; note?: string } | undefined;
+      const stop = await this.storage.stopConfirmation(directory);
       const thinking = await this.storage.observation(directory, "session_start");
       records.push({ directory, binding, storage: this.storage, claimId: String(row.claim_id),
         child: exit !== undefined ? { status: "exited", exit: childExitSchema.parse(exit) } : stop ? { status: "operator_confirmed_stopped", ...stop } : { status: "unknown" },
