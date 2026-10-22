@@ -62,6 +62,7 @@ export function defineCommonTests(name: string, create: CreateFixture): void {
       assert.deepEqual(await fixture.driver.submit(request), outcome);
       assert.deepEqual(await fixture.driver.advance(request.requestId), outcome);
       await assertSuccessful(fixture.driver, fixture.owners, request, outcome);
+      assertRefused(await fixture.driver.submit({ ...request, requestId: "new-request-for-done-task" }), "not_ready");
     });
   }
 
@@ -85,6 +86,16 @@ export function defineCommonTests(name: string, create: CreateFixture): void {
     assert.equal(outcomes.filter(outcome => outcome.status === "waiting").length, 1);
     assertRefused(outcomes.find(outcome => outcome.status === "refused")!, "capacity");
     assert.equal((await fixture.driver.inspect()).attempts.length, 1);
+    await assertSafe(fixture.driver, fixture.owners);
+  });
+
+  test(`${name}: a configured maximum of two admits only two simultaneous submissions`, async t => {
+    const fixture = await create({ maxAttempts: 2 });
+    t.after(() => fixture.close());
+    const outcomes = await Promise.all(["one", "two", "three"].map(id => fixture.driver.submit(sampleRequest(id))));
+    assert.equal(outcomes.filter(outcome => outcome.status === "waiting").length, 2);
+    assertRefused(outcomes.find(outcome => outcome.status === "refused")!, "capacity");
+    assert.equal((await fixture.driver.inspect()).attempts.length, 2);
     await assertSafe(fixture.driver, fixture.owners);
   });
 
@@ -114,7 +125,10 @@ export function defineCommonTests(name: string, create: CreateFixture): void {
     });
   }
 
-  check("duplicate review signals produce one accepted transition", async fixture => {
+  test(`${name}: duplicate review signals produce one accepted transition`, async t => {
+    const acknowledgements: string[] = [];
+    const fixture = await create({ interrupt: async point => { acknowledgements.push(point); } });
+    t.after(() => fixture.close());
     const request = sampleRequest();
     await fixture.driver.submit(request);
     await finishWorker(fixture, request);
@@ -123,6 +137,8 @@ export function defineCommonTests(name: string, create: CreateFixture): void {
     await assertSuccessful(fixture.driver, fixture.owners, request, await fixture.driver.advance(request.requestId));
     const attempt = await findAttempt(fixture.driver, request.requestId);
     assert.equal((await fixture.owners.counters(attempt.id)).review, 2, "The independent owner must preserve duplicate signals");
+    assert.equal(acknowledgements.filter(point => point === "review:ack:after").length, 1);
+    assert.equal(acknowledgements.filter(point => point === "accepted:ack:after").length, 1);
   });
 
   check("review rejection retains the lease", async fixture => {
@@ -169,6 +185,38 @@ export function defineCommonTests(name: string, create: CreateFixture): void {
     assertRefused(await fixture.driver.advance(request.requestId), "approval_required");
     await assertRetained(fixture.driver, fixture.owners, request.requestId);
   });
+
+  test(`${name}: readiness is rechecked after acquisition and before starting work`, async t => {
+    let owners: FakeOwners;
+    const fixture = await create({ interrupt: async point => {
+      if (point === "workspace:ack:after") await owners.setControls({ ...await owners.controls(), ready: false });
+    } });
+    owners = fixture.owners;
+    t.after(() => fixture.close());
+    const request = sampleRequest();
+    assertRefused(await fixture.driver.submit(request), "not_ready");
+    const attempt = await findAttempt(fixture.driver, request.requestId);
+    assert.equal(attempt.started, false);
+    assert.equal((await owners.counters(attempt.id)).launch, 0);
+    await assertRetained(fixture.driver, owners, request.requestId);
+  });
+
+  for (const boundary of ["accepted:ack:after", "done:ack:after"] as const) {
+    test(`${name}: approval is rechecked after ${boundary}`, async t => {
+      let owners: FakeOwners;
+      const fixture = await create({ interrupt: async point => {
+        if (point === boundary) await owners.setControls({ ...await owners.controls(), approvals: [] });
+      } });
+      owners = fixture.owners;
+      t.after(() => fixture.close());
+      const request = sampleRequest();
+      await fixture.driver.submit(request);
+      await finishWorker(fixture, request);
+      await acceptReview(fixture, request);
+      assertRefused(await fixture.driver.advance(request.requestId), "approval_required");
+      await assertRetained(fixture.driver, owners, request.requestId);
+    });
+  }
 
   check("cancellation is not termination evidence or permission to return", async fixture => {
     const request = sampleRequest();

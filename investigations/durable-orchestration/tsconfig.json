@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "target": "ESNext" },
+  "include": ["*.ts", "scenario/**/*.ts"]
+}

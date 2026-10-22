@@ -155,4 +155,91 @@ node_modules/.bin/tsc --noEmit --strict --target esnext --module nodenext --allo
 
 ### Remaining work, not conclusions
 
-Steps 3–7 remain: shared fake adapters/counters and refusal contracts, A/B implementations, full interruption matrix (including SIGKILL, lost acknowledgements and concurrent clients), real disposable Pi/Treehouse integrations, ownership enforcement, upgrade/reopen, storage durability and supported-platform qualification, code-removal estimates and a decision proposal. No automatic recovery policy or worker containment has been added. A working checkpoint happy path neither selects Durable nor justifies retaining Switchboard-owned execution.
+At the end of steps 1–2, steps 3–7 remained: shared fake adapters/counters and refusal contracts, A/B implementations, full interruption matrix (including SIGKILL, lost acknowledgements and concurrent clients), real disposable Pi/Treehouse integrations, ownership enforcement, upgrade/reopen, storage durability and supported-platform qualification, code-removal estimates and a decision proposal. Step 3 is recorded below. No automatic recovery policy or worker containment has been added. A working checkpoint happy path neither selects Durable nor justifies retaining Switchboard-owned execution.
+
+## Step 3 – shared scenario contract
+
+Added on 22 October 2026. This completes the common test-scenario step only. Neither design A nor design B is implemented by this addition. The earlier dependency qualification and its pinned 1.3.0 release remain unchanged.
+
+### Inputs and outcomes
+
+`scenario/contract.ts` is the typed, engine-independent contract. A request supplies a non-empty stable `requestId`, a `taskId` and a frozen delivery contract: exact output branch, required evidence names, required deliverable names and acceptance gate (`review` or `forge_merge`). A repeated ID must identify the same inputs and the same attempt, including after a client loses its response. Changed inputs refuse with `request_conflict`. An accepted task cannot be dispatched again merely by supplying a fresh request ID.
+
+The fixture, not request or worker arguments, supplies context identity, configured capacity, clock, readiness, owner observations and scoped operator approvals. `FakeOwners` is test control infrastructure, not a model-facing tool. The abbreviated worker result has the full scenario identity (context, task, attempt, lease and session), outcome, exact branch/commit and named evidence/deliverables. It is a deliberately small fake contract, **not** a replacement for production `WorkerInput`/`WorkerResult` schemas or actual Git retention checks. Neither prototype imports or changes production code.
+
+| Common step | Inputs and domain checks | Outcome and acknowledgement |
+| --- | --- | --- |
+| 1. Reserve | Stable caller ID, frozen delivery, current readiness and context maximum; capacity admission and task exclusion must be serialised by the domain owner | One attempt; `reserved`. Invalid, conflicting, unready or full requests have no acquisition or launch |
+| 2. Acquire | Context/task/attempt correlation supplied to the workspace owner | One exact lease/session binding; `workspace`. A lost acquisition response requires owner inspection or `acquisition_uncertain`, never blind reacquisition |
+| 3. Start and launch | Recheck readiness after acquiring; record start before launch; use the recorded binding | `started`, then one launch (`launched`) and one initial prompt (`prompted`). Uncertainty refuses as `possibly_running`; restart never grants permission to adopt, relaunch or reprompt |
+| 4. Observe | Positive external exit receipt plus result identity, completed outcome, commit/branch and every required evidence/deliverable | Validated `result`, or `invalid_result`. Missing exit remains `waiting/worker`; no process seen is not proof of success |
+| 5. Wait | Review or forge evidence for the **exact result commit**; the test/operator drives it, not a model | `waiting/review`, rejected review, or one `review` acknowledgement despite duplicate signals. No lease return or task acceptance merely because the worker completed |
+| 6. Finalise | Recheck current owner readability, retained commit, clean workspace and unexpired operator approval scoped to attempt/lease/commit. Record done before return; recheck authority and retention before returning and require explicit no-processes confirmation | `accepted`, `done`, external exact-identity return, `returned`, then `completed`. Approval, task completion and lease return are separate facts; partial completion remains visible |
+
+`ScenarioDriver` exposes `submit`, `advance`, `inspect` and `cancel`, without Durable types. Submission or advancement returns `waiting` (worker/review), `completed`, or `refused` with stable code, non-empty operator next action and an attempt ID when known. `inspect` presents domain facts and active/capacity counts, not engine-private tables. Cancellation requests are observable separately from exit; `cancelled` always retains an unresolved lease and never counts as termination evidence.
+
+All refusal codes and their next actions are enumerated in `refusalActions`:
+
+| Codes | Required response |
+| --- | --- |
+| `invalid_request`, `request_conflict` | Correct the input or reuse the original frozen request |
+| `not_ready`, `capacity` | Inspect readiness or wait for domain capacity; no external effect on refused admission |
+| `acquisition_uncertain`, `possibly_running` | Inspect the external owner; preserve the lease; never acquire, launch or prompt again blindly |
+| `invalid_result`, `review_rejected` | Inspect result/evidence or ask the operator to review retained work |
+| `approval_required`, `process_confirmation_required` | Obtain current, correctly scoped operator authority; worker/model arguments cannot provide it |
+| `not_retained`, `owner_unknown` | Repair retention or inspect the unknown owner before a protected action |
+| `finalisation_uncertain` | Inspect integration/return owners instead of repeating a possibly completed effect |
+| `cancelled`, `host_unavailable` | Inspect cancellation/host/storage state and confirm termination separately; no automatic replacement worker |
+
+A later design may recover by inspecting owner evidence and acknowledging the discovered effect, or refuse with the corresponding action. It must not turn an uncertain receipt into another destructive or publishing call. These are scenario codes, not changes to production CLI reason codes.
+
+### Independent fake owners and storage
+
+`scenario/owners.ts` supplies fake workspace acquisition/return, worker launch/prompt/exit/cancellation and forge review/merge operations. Each invocation writes a **new**, exclusive, flushed JSON receipt in `owners/effects/<random-id>.json`. Receipts include effect kind, attempt correlation and the relevant identity, result or exact commit. Reads and counters scan those files afresh. Counters never consult the execution design's acknowledgements, checkpoints or claimed outcome. In particular, calling launch or prompt twice leaves count **2**; the adapter does not hide duplicate calls through idempotency. Duplicate review signals likewise remain independently visible.
+
+Each fixture uses sibling directories under `.investigation/durable-orchestration/<unique-run>/`:
+
+- `owners/` – external effect receipts and atomically replaced `controls.json`; survives killing or deleting the execution host.
+- `host/` – execution-design storage, disposable independently of the owners. The in-process exerciser has no durable execution state; the kill-test child writes only a canary here.
+
+The adapter rejects lexically overlapping owner/host roots. These are test-owned paths without symlinks, not a production filesystem security boundary. `controls.json` belongs to the test/operator: readiness, owner readability, retained commit, cleanliness and approvals. Approvals name the operator, attempt, lease, commit, expiry and separate acceptance/no-processes facts. Request arguments and worker output cannot modify them.
+
+Ordinary effect receipts use Node's `writeFile(..., { flag: "wx", flush: true })`; control updates flush a temporary file before rename. No directory fsync, atomic owner/application commit, filesystem-failure recovery or power-loss guarantee is claimed. A kill during an uninstrumented file write could leave an unreadable receipt, which must be treated as unknown rather than permission to repeat an effect. The tests kill only at explicitly reported before/after boundaries. This storage does not qualify Durable's backend or supersede the durability limitations recorded above.
+
+### Interruption protocol
+
+`interruptionPoints` enumerates **38** names:
+
+- `<effect>:effect:before` and `:after` for `acquire`, `launch`, `prompt`, `worker_exit`, `review`, `merge`, `return`, `cancel`.
+- `<acknowledgement>:ack:before` and `:after` for `reserved`, `workspace`, `started`, `launched`, `prompted`, `result`, `review`, `accepted`, `done`, `returned`, `cancelled`.
+
+Effects are bracketed in the fake adapter; acknowledgements use `acknowledge(name, interrupt, record)`. A/B must put the actual domain-record or execution checkpoint write inside `record`, not report an acknowledgement before it commits. Domain facts and engine progress are still distinct owners; this hook does not make their writes atomic. Additional engine checkpoint boundaries should be named and tested in those implementations rather than mislabelled as external effects.
+
+`pauseAt(point)` sends an IPC marker and stops at that exact boundary until its parent kills it. `interruptions.test.ts` forks `interruption-child.ts`, waits for the marker, reads independent receipts, sends **SIGKILL**, joins the child, deletes all `host/` storage and reads the same receipts through a new adapter. It checks the expected 0/1 counts for every effect. All 38 named points are exercised, including launch/prompt success before acknowledgement and return success before acknowledgement. Child processes have bounded waits and are killed/joined on test failure too. There is no detached host or graceful close that could conceal the interruption.
+
+These tests qualify boundary placement and survival of fake evidence, **not A/B recovery**. The in-process domain acknowledgements are volatile; killing that runner is intentionally not a restartable implementation. The parent never tries to reconstruct it or rerun its worker.
+
+### Shared assertions and hand-off
+
+`scenario/assertions.ts` checks request/attempt uniqueness, capacity, independently counted acquisitions/launches/prompts/returns/merges, exact identity correlation, validated output, retained unresolved leases and successful finalisation. It counts effects even if no matching acknowledgement appears in host state. `scenario/common-tests.ts` exports `defineCommonTests(name, createFixture)`, which imports neither execution implementation. It exercises both review gates, lost client responses/retries, frozen request conflicts, admission at maxima 1 and 2, waiting without exit, invalid results, duplicate/rejected review, missing/stale/wrong-scope/model approvals, retention, process confirmation, cancellation, and readiness/approval changes between steps. Duplicate review assertions also count the shared acknowledgement hooks, not just a final boolean.
+
+For step 4, implement `ScenarioDriver` separately for A and B, then register **the same** `defineCommonTests("A", createA)` and `defineCommonTests("B", createB)`. Each fixture must supply the same fake owners and controlled clock, honour `maxAttempts` and the supplied interruption hook, expose domain facts via `inspect`, and close/join its host before cleanup. Neither design may derive counters from its own execution state or manufacture operator approval from workflow inputs. `assertSafe`, `assertRetained`, `assertRefused` and `assertSuccessful` are also reusable by the later process-recovery harness.
+
+`scenario/reference.ts` is only a trivial in-process contract exerciser. Its promise queue serialises admission within that process; it has no database, transport, claim, persisted wait or restart mechanism and must not be counted as design A. It preserves a conservative unresolved outcome around an uncertain external call and never retries that call. The fake merge is driven only by the fixture/operator; the runner never requests a merge. The separate-process children in this step are execution-host kill targets, **not** real external workers. Lightweight worker lifecycle/containment evidence, two real CLI clients, host exclusivity, storage failures, reopen/upgrade, deadlines and the full recovered-operation matrix remain steps 4–5; real Pi/Treehouse runs remain step 6. No A/B simplification or adoption conclusion follows from this contract suite.
+
+### Commands and results
+
+From the repository root:
+
+```sh
+npm install --ignore-scripts
+npm ci --prefix investigations/durable-orchestration --ignore-scripts
+npm run check --prefix investigations/durable-orchestration
+npm test --prefix investigations/durable-orchestration
+npm run check
+npm test
+```
+
+The isolated check uses the repository's existing development compiler with the local `tsconfig.json`; no runtime dependency was added or upgraded. Production test/check scripts and `src/` are unchanged. Temporary fixtures are removed after each test; retained manual diagnostics must also stay under `.investigation/`.
+
+On macOS with Node **v26.7.0**, the shared suite passes against the in-process exerciser, and every named kill point preserves exactly the expected owner receipts after deleting host storage. These are single runs per boundary, not repeated reliability or power-loss experiments. The existing Durable smoke test is still included. Validation passed: the isolated check and all **69** investigation tests (38 kill boundaries, 30 scenario/adapter tests and the existing smoke test), repository `npm run check`, and repository `npm test` (**419** tests: 417 passed, two skipped, zero failed). The earlier 403-test baseline above is historical. Linux/Windows kill semantics and real integrations have not been qualified here.

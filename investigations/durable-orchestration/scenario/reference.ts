@@ -46,7 +46,7 @@ export class InProcessScenario implements ScenarioDriver {
         : refuse("request_conflict", previous.id);
       let controls = await this.owners.controls();
       if (controls.unknown) return refuse("owner_unknown");
-      if (!controls.ready || [...this.attempts.values()].some(attempt => attempt.request.taskId === request.taskId && !attempt.done)) {
+      if (!controls.ready || [...this.attempts.values()].some(attempt => attempt.request.taskId === request.taskId)) {
         return refuse("not_ready");
       }
       if (this.active() >= this.maximum) return refuse("capacity");
@@ -107,7 +107,9 @@ export class InProcessScenario implements ScenarioDriver {
       controls = await this.owners.controls();
       if (controls.unknown) return this.remember(attempt, refuse("owner_unknown", attempt.id));
       if (!controls.clean || controls.retainedCommit !== result.commit) return this.remember(attempt, refuse("not_retained", attempt.id));
-      if (!approvalFor(attempt, this.now(), controls)) return this.remember(attempt, refuse("approval_required", attempt.id));
+      const acceptanceApproval = approvalFor(attempt, this.now(), controls);
+      if (!acceptanceApproval) return this.remember(attempt, refuse("approval_required", attempt.id));
+      if (!acceptanceApproval.noProcesses) return this.remember(attempt, refuse("process_confirmation_required", attempt.id));
       if (!attempt.accepted) await this.ack("accepted", () => { attempt.accepted = true; });
       controls = await this.owners.controls();
       if (controls.unknown) return this.remember(attempt, refuse("owner_unknown", attempt.id));
