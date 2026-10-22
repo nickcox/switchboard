@@ -6,7 +6,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
 import { discard, finish } from "../../src/dispatch/finish.ts";
-import { status } from "../../src/dispatch/status.ts";
+import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import type { LeaseIdentity } from "../../src/workspaces/provider.ts";
 import { attemptsWith, fixture, task } from "./fixture.ts";
@@ -75,11 +75,18 @@ test("accepted output can finish after a failed lease return", async () => {
   assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "finished");
 });
 
-test("accept-output dry run and missing process confirmation do not record acceptance", async () => {
+test("accept-output dry run does not record acceptance, then finish retains the lease", async () => {
   const { f, leaseId } = await failedOutput();
-  assert.equal((await finish(f.deps, { leaseId, noProcesses: false, acceptOutput: true })).nextAction.code, "confirm_no_processes");
-  assert.equal((await finish(f.deps, { leaseId, noProcesses: false, acceptOutput: true, dryRun: true })).reason, "planned");
+  const plan = await finish(f.deps, { leaseId, noProcesses: false, acceptOutput: true, dryRun: true });
+  assert.equal(plan.reason, "planned");
+  assert.match(plan.detail ?? "", /accept output commit.*record the task as done.*retain lease/);
   assert.equal((await kinds(f)).includes("output_accepted"), false);
+  const outcome = await finish(f.deps, { leaseId, noProcesses: false, acceptOutput: true });
+  assert.equal(outcome.reason, "finished");
+  assert.equal(outcome.lease, "preserved");
+  assert.equal(outcome.nextAction.code, "finish_attempt");
+  assert.equal((await kinds(f)).includes("output_accepted"), true);
+  assert.equal((await kinds(f)).includes("lease_return_started"), false);
   assert.equal(await listed(f, leaseId), true);
 });
 
@@ -97,6 +104,49 @@ for (const fault of ["missing branch", "no new commits", "untracked", "uncommitt
     assert.equal((await kinds(f)).includes("output_accepted"), false);
     assert.equal(await listed(f, leaseId), true);
   });
+}
+
+for (const step of ["output_accepted", "integrated", "task_recorded"] as const) {
+  for (const when of ["before", "after"] as const) {
+    test(`finish resumes ${when} ${step} without process confirmation or repeating completed records`, async () => {
+      const { f, leaseId, branch } = await failedOutput();
+      let interrupted = false;
+      const interrupt = async <T>(action: () => Promise<T>): Promise<T> => {
+        if (interrupted) return action();
+        interrupted = true;
+        if (when === "after") await action();
+        throw new Error(`Interrupted ${when} ${step}`);
+      };
+      const attempts = attemptsWith(f, {
+        appendConfirmed: async (...args) => step === "output_accepted" && args[1] === step
+          ? interrupt(() => f.deps.attempts.appendConfirmed(...args)) : f.deps.attempts.appendConfirmed(...args),
+        append: async (...args) => step === "integrated" && args[1] === step
+          ? interrupt(() => f.deps.attempts.append(...args)) : f.deps.attempts.append(...args),
+        finishAttempt: async (...args) => step === "task_recorded"
+          ? interrupt(() => f.deps.attempts.finishAttempt(...args)) : f.deps.attempts.finishAttempt(...args),
+      });
+      const deps = { ...f.deps, policy: localMerge(f), attempts };
+      const first = await finish(deps, { leaseId, noProcesses: false, acceptOutput: true });
+      assert.equal(first.reason, "stopped", first.detail ?? "");
+      assert.equal(await listed(f, leaseId), true);
+      assert.equal((await kinds(f)).includes("lease_return_started"), false);
+      const plan = await finish(deps, { leaseId, noProcesses: false, acceptOutput: step === "output_accepted" && when === "before", dryRun: true });
+      assert.equal(plan.reason, "planned", plan.detail ?? "");
+      if ((await kinds(f)).includes("output_accepted")) assert.doesNotMatch(plan.detail ?? "", /accept output commit/);
+      if ((await kinds(f)).includes("integrated")) assert.doesNotMatch(plan.detail ?? "", /fast-forward|record that/);
+      const resumed = await finish(deps, { leaseId, noProcesses: false, acceptOutput: step === "output_accepted" && when === "before" });
+      assert.equal(resumed.reason, "finished", resumed.detail ?? "");
+      assert.equal(resumed.lease, "preserved");
+      assert.equal(f.run(["rev-parse", "main"]), f.run(["rev-parse", branch]));
+      const completed = await kinds(f);
+      assert.equal(completed.filter(k => k === "output_accepted").length, 1);
+      assert.equal(completed.filter(k => k === "integrated").length, 1);
+      const record = (await f.deps.attempts.forTask("finish-a1"))[0]!;
+      assert.equal(record.entries.filter(e => e.kind === "task_recorded" && e.data.outcome === "done").length, 1);
+      assert.equal((await finish(deps, { leaseId, noProcesses: true })).reason, "finished");
+      assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned"]);
+    });
+  }
 }
 
 test("accepted output survives a partial failure without needing a worker result on the next run", async () => {
@@ -161,6 +211,26 @@ test("a later finish integrates the accepted commit, not commits added to the br
   assert.equal(f.run(["rev-parse", "main"]), accepted);
 });
 
+test("finish integrates the worker's exact result commit, not a later branch head", async () => {
+  const { f, leaseId, branch, workspace } = await reviewed();
+  const commit = f.run(["rev-parse", branch]);
+  writeFileSync(join(workspace, "later.txt"), "committed after the worker result\n");
+  const git = (...args: string[]) => execFileSync(onPath("git"), ["-C", workspace, ...args], { env: f.environment });
+  git("add", "later.txt");
+  git("commit", "-q", "--no-gpg-sign", "-m", "Later");
+  const deps = { ...f.deps, policy: localMerge(f) };
+  const plan = await finish(deps, { leaseId, noProcesses: false, dryRun: true });
+  assert.match(plan.detail ?? "", new RegExp(`fast-forward main to ${commit}`));
+  const outcome = await finish(deps, { leaseId, noProcesses: false });
+  assert.equal(outcome.reason, "finished", outcome.detail ?? "");
+  assert.equal(f.run(["rev-parse", "main"]), commit);
+  assert.notEqual(f.run(["rev-parse", branch]), commit);
+  const completed = await kinds(f);
+  assert.equal((await finish(deps, { leaseId, noProcesses: true })).reason, "finished");
+  assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned"]);
+  assert.equal(f.run(["rev-parse", "main"]), commit);
+});
+
 test("accepted output is checked again immediately before the lease is returned", async () => {
   const { f, leaseId, workspace } = await failedOutput();
   const deps = { ...f.deps, attempts: attemptsWith(f, {
@@ -189,14 +259,41 @@ const listed = async (f: Fixture, leaseId: string) => (await f.deps.workspaces.l
 const kinds = async (f: Fixture) => (await f.deps.attempts.forTask("finish-a1"))[0]!.entries.map(e => e.kind);
 const state = async (deps: Dependencies) => (await status(deps)).attempts.find(a => a.attempt.taskId === "finish-a1")?.state;
 
-test("finish without the operator's no-processes confirmation changes nothing", async () => {
-  const { f, leaseId } = await reviewed();
-  const outcome = await finish(f.deps, { leaseId, noProcesses: false });
-  assert.equal(outcome.reason, "refused");
-  assert.equal(outcome.nextAction.code, "confirm_no_processes");
-  assert.equal(await listed(f, leaseId), true);
-  assert.equal((await f.tasks.read("finish-a1"))?.state, "queued");
-});
+for (const policy of ["manual", "local-merge"] as const) {
+  test(`finish under ${policy} completes work without process confirmation, then only returns the lease`, async () => {
+    const { f, leaseId, branch } = await reviewed();
+    await f.tasks.add({ id: "dependent-b1", title: "Dependent", repo: "fixture" });
+    await f.tasks.block("dependent-b1", "finish-a1");
+    const deps = policy === "manual" ? f.deps : { ...f.deps, policy: localMerge(f) };
+    const before = await kinds(f);
+    const plan = await finish(deps, { leaseId, noProcesses: false, dryRun: true });
+    assert.match(plan.detail ?? "", /record the task as done, then retain lease/);
+    assert.deepEqual(await kinds(f), before);
+    assert.equal((await f.tasks.ready()).includes("dependent-b1"), false);
+    const outcome = await finish(deps, { leaseId, noProcesses: false });
+    assert.equal(outcome.reason, "finished", outcome.detail ?? "");
+    assert.equal(outcome.lease, "preserved");
+    assert.match(outcome.detail ?? "", new RegExp(`Lease retained.*finish --lease ${leaseId} --no-processes`));
+    assert.equal(await listed(f, leaseId), true);
+    assert.equal((await f.tasks.read("finish-a1"))?.state, "done");
+    if (policy === "local-merge") assert.equal(f.run(["rev-parse", "main"]), f.run(["rev-parse", branch]));
+    const view = await status(deps);
+    assert.ok(view.ready.includes("dependent-b1"));
+    assert.equal(view.attempts[0]?.state, "awaiting_finish");
+    assert.match(describeStatus(view), new RegExp(`task is done with its lease retained.*finish --lease ${leaseId} --no-processes`));
+    assert.equal((await dispatchOnce(deps, { taskId: "dependent-b1", dryRun: true })).reason, "dry_run");
+    const completed = await kinds(f);
+    const repeated = await finish(deps, { leaseId, noProcesses: false });
+    assert.equal(repeated.reason, "finished");
+    assert.deepEqual(await kinds(f), completed);
+    const returning = await finish(deps, { leaseId, noProcesses: true, dryRun: true });
+    assert.equal(returning.detail, `Would return lease ${leaseId}`);
+    assert.deepEqual(await kinds(f), completed);
+    assert.equal((await finish(deps, { leaseId, noProcesses: true })).reason, "finished");
+    assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned"]);
+    assert.equal(await listed(f, leaseId), false);
+  });
+}
 
 test("finish under the manual policy records the task as done and returns the lease", async () => {
   const { f, leaseId } = await reviewed();

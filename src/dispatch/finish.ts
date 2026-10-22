@@ -14,9 +14,9 @@ import { assessAttempt, type AttemptAssessment } from "./assess.ts";
 import { checkCanAcceptOutput, checkCanDiscard, checkCanFinish, checkCanIntegrate, checkCanReturnLease } from "./safety.ts";
 
 /**
- * `finish` and `discard` (Phase 2 PRD): the only commands that return a lease. Each refuses unless every condition in
- * the PRD's "Returning a lease" holds, and each step reads back its owner and is recorded in the attempt log, so a
- * command interrupted partway can be run again to complete what is left.
+ * `finish` and `discard` (Phase 2 PRD): the only commands that return a lease, subject to every condition in
+ * "Returning a lease". Finishing work does not require returning its lease. Each step reads back its owner and is
+ * recorded in the attempt log, so a command interrupted partway can be run again to complete what is left.
  */
 
 type Located = { attempt: AttemptAssessment; record: AttemptRecord };
@@ -82,7 +82,7 @@ async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt
 }
 
 /** Runs the retention check again from the worker's recorded result, as dispatch did when the attempt finished. */
-async function recheck(deps: Dependencies, attempt: AttemptAssessment): Promise<RetentionResult | string> {
+async function recheck(deps: Dependencies, attempt: AttemptAssessment): Promise<(RetentionResult & { outputCommit?: string }) | string> {
   const runtime = (await deps.runtime.discover(deps.contextId, { leaseId: attempt.attempt.leaseId! })).find(r => r.binding.input.identity.leaseId === attempt.attempt.leaseId);
   if (!runtime) return "The attempt has no runtime records, so its worker's result cannot be checked";
   let report;
@@ -90,7 +90,7 @@ async function recheck(deps: Dependencies, attempt: AttemptAssessment): Promise<
   catch (error) { return `The worker's result cannot be read: ${error instanceof Error ? error.message : String(error)}`; }
   if (report.outcome !== "completed") return `The worker reported ${report.outcome}, not completed work; use --accept-output to accept its committed output instead`;
   const delivery = runtime.binding.input.delivery;
-  return deps.retention({
+  const retention = await deps.retention({
     repository: deps.repository, workspace: runtime.binding.input.workspace, outputBranch: delivery.outputBranch,
     gitReferences: report.workReferences.flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: report.workReferences.flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
@@ -98,6 +98,8 @@ async function recheck(deps: Dependencies, attempt: AttemptAssessment): Promise<
     artefactDirectory: runtime.binding.artefactDirectory,
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   });
+  const output = report.workReferences.find(w => w.kind === "git" && w.branch === delivery.outputBranch);
+  return { ...retention, ...(output?.kind === "git" ? { outputCommit: output.commit } : {}) };
 }
 
 /**
@@ -118,7 +120,6 @@ export async function discard(deps: Dependencies, options: { leaseId: string; no
 }
 
 async function finishAttempt(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean; acceptOutput?: boolean }): Promise<DispatchResult> {
-  if (!options.noProcesses && !options.dryRun) return refused("confirm_no_processes", "Returning the lease needs your confirmation that no worker process remains (--no-processes)");
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
   const { attempt, record } = located;
@@ -146,7 +147,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
     } catch (error) { return refused("inspect_attempt", `The output branch cannot be checked: ${String(error)}`, base); }
   }
-  const check = () => acceptedCommit ? deps.retention({
+  const check = (): Promise<(RetentionResult & { outputCommit?: string }) | string> => acceptedCommit ? deps.retention({
     repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch: attempt.attempt.outputBranch!,
     resultCommit: acceptedCommit, artefacts: [],
   }) : recheck(deps, attempt);
@@ -160,9 +161,9 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   let integration: { target: string; from: string; to: string } | undefined;
   // The target already contains the work, but an earlier run's fast-forward may not have been recorded.
   let unrecorded: { target: string; commit: string } | undefined;
-  if (policy.kind === "local-merge") {
+  if (policy.kind === "local-merge" && !record.entries.some(e => e.kind === "integrated")) {
     const git = { git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository };
-    const to = acceptedCommit ?? await branchHead(git, outputBranch);
+    const to = acceptedCommit ?? retention.outputCommit ?? await branchHead(git, outputBranch);
     const from = await branchHead(git, policy.targetBranch!);
     if (!to || !from) return refused("inspect_attempt", `Branch ${!to ? outputBranch : policy.targetBranch} cannot be read in the backing repository`, base);
     if (!await isAncestor(git, to, from)) {
@@ -174,13 +175,16 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
 
   const task = await deps.tasks.read(attempt.attempt.taskId).catch(() => undefined);
   if (!task) return refused("inspect_attempt", "The task cannot be read", base);
+  const recordTask = task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done");
+  const retainedDetail = `Lease retained. Once no worker process remains, return it with switchboard finish --lease ${options.leaseId} --no-processes`;
   const steps = [
-    ...(acceptedCommit ? [`accept output commit ${acceptedCommit} as the operator`] : []),
+    ...(acceptedCommit && accepted?.scope.commit !== acceptedCommit ? [`accept output commit ${acceptedCommit} as the operator`] : []),
     ...(integration ? [`fast-forward ${integration.target} to ${integration.to}`] : []),
-    ...(task.state === "done" ? [] : ["record the task as done"]),
-    `return lease ${options.leaseId}`,
+    ...(unrecorded ? [`record that ${unrecorded.target} contains the work`] : []),
+    ...(recordTask ? ["record the task as done"] : []),
+    options.noProcesses ? `return lease ${options.leaseId}` : `retain lease ${options.leaseId}`,
   ];
-  if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: `Would ${steps.join(", then ")}`, nextAction: "none" });
+  if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: `Would ${steps.join(", then ")}${options.noProcesses ? "" : `. ${retainedDetail}`}`, nextAction: options.noProcesses ? "none" : "finish_attempt" });
 
   // From here each step changes an owner; a failure leaves what is done recorded and the rest for a later run.
   const stopped = (error: unknown, step: string) => result({
@@ -216,7 +220,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
     try { await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: unrecorded.target, commit: unrecorded.commit }); }
     catch (error) { return stopped(error, `record that ${unrecorded.target} contains the work`); }
   }
-  if (task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done")) {
+  if (recordTask) {
     try {
       const current = await locate(deps, options.leaseId);
       if (!("record" in current)) return current;
@@ -226,6 +230,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
     }
     catch (error) { return stopped(error, "record the task as done"); }
   }
+  if (!options.noProcesses) return result({ ok: true, reason: "finished", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: retainedDetail, nextAction: "finish_attempt" });
   // The PRD's condition 2: retention is checked again immediately before the lease is returned.
   const finalRetention = await check().catch((error: unknown) => `The retention check failed: ${error instanceof Error ? error.message : String(error)}`);
   if (typeof finalRetention === "string" || !finalRetention.retained) {

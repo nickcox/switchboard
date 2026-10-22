@@ -26,7 +26,7 @@ const usage = `Usage:
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
-  switchboard finish <attempt> --no-processes [--accept-output] [--dry-run] [--json] [--config <path>]
+  switchboard finish <attempt> [--no-processes] [--accept-output] [--dry-run] [--json] [--config <path>]
   switchboard discard <attempt> --confirm --no-processes [--note <text>] [--dry-run] [--json] [--config <path>]
   switchboard watch <attempt> [--no-follow] [--json] [--config <path>]
   switchboard stop <attempt> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
@@ -52,7 +52,9 @@ Use exactly one of --lease and --task. --task is only for --lease-returned; --at
 finish --accept-output accepts committed output from a held attempt as your decision, without a worker result.
 The output branch must advance the starting commit and the workspace must be clean.
 finish completes an attempt awaiting review or awaiting finish under the context's finalisation policy (manual,
-or local-merge, which first fast-forwards the target branch), records the task as done and returns the lease.
+or local-merge, which first fast-forwards the target branch to the exact accepted commit) and records the task as done.
+Without --no-processes it retains the lease, without blocking other tasks or the task's dependents. Run finish again
+with --no-processes to return the lease, skipping completed steps.
 discard returns the lease of an attempt whose work is not wanted, removing the workspace's contents, and holds its
 task. Both return a lease only with --no-processes, your confirmation that no worker process remains; discard
 also needs --confirm. --dry-run shows what would be done.

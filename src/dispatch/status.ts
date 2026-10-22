@@ -116,6 +116,8 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   for (const { facts, ...assessment } of assessed) {
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
     attempts.push({ ...assessment, changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning,
+      ...(assessment.state === "awaiting_finish" ? { nextAction: { code: "finish_attempt" as const,
+        description: `The task is done with its lease retained. Once no worker process remains, return it with switchboard finish --lease ${assessment.attempt.leaseId} --no-processes` } } : {}),
       ...(facts.unknown.length ? { unknownOwners: facts.unknown } : {}),
       ...await workerView(worker, assessment.possiblyRunning, facts.dispatcherRunning, deps.staleMs ?? defaultStaleMs, leases, options).catch(() => ({})) });
   }
