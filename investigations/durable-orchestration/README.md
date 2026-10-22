@@ -482,3 +482,107 @@ The adapter lost-acknowledgement cases are exceptions after acquire/launch/promp
 Still required before an architecture decision: the full A/B failure matrix and repeat counts, unfinished-work 1.3-to-1.4 SQLite upgrade/reopen and rollback procedure, storage faults/power-loss qualification, missing/incompatible-definition recovery tooling, real forge timing/backpressure, platform qualification and one explicitly authorised real Pi/Treehouse integration per design (step 6). No real agent may be launched under this task's no-other-agents instruction. The conservative claim protocol is not production containment or automatic workspace return. These successful paths neither select B nor establish that its additional host/dependency cost is worthwhile.
 
 Final validation for this step passed on macOS/Node **v26.7.0**: clean isolated `npm ci --ignore-scripts`, isolated TypeScript check and all **151 investigation tests** (including **44 B tests** and the rerun baseline restart probe); repository `npm run check`; repository `npm test` – **419 tests, 417 passed, two platform-specific skips, zero failures**. The root scripts still exclude investigation tests, so both suites were run explicitly. No production source or authoritative task/lease records were changed.
+
+## Step 5 – repeated process-crash failure matrix
+
+Run on **22 October 2026, Darwin arm64, Node v26.7.0**, starting from repository **`a14d813b782515ea1e65f627cc893487d89a9bee`**. This section supersedes the earlier statements that the A/B matrix and unfinished SQLite upgrade remain untested. It does not select an architecture, qualify power-loss durability or complete step 6. No Pi, Treehouse or other agent was launched by this investigation. The only worker executable was A's existing synthetic `worker-child.ts`; workspace, review and forge owners remained disposable fakes. Repository tests separately use their existing disposable Treehouse fixtures, not real workspaces or agents.
+
+### Commands, repeats and retained evidence
+
+From the repository root:
+
+```sh
+npm install --ignore-scripts
+npm ci --prefix investigations/durable-orchestration --ignore-scripts
+npm run check --prefix investigations/durable-orchestration
+# All investigation tests, including the matrix; default MATRIX_REPEATS is 3.
+MATRIX_REPEATS=3 npm test --prefix investigations/durable-orchestration
+# Matrix/dependency probes alone, with independently counted receipts in the report:
+MATRIX_REPEATS=3 npm run test:failures --prefix investigations/durable-orchestration
+npm run check
+npm test
+```
+
+The default report is `.investigation/durable-orchestration/matrix-results.jsonl`, appended once per completed case. Use an absolute `MATRIX_REPORT` path to retain it elsewhere; start with an absent report for an unambiguous run. Fixtures remain under ignored `.investigation/durable-orchestration/matrix-*` and `storage-matrix-*`, and are removed after joining their processes. The final run's JSONL and test logs are retained with this task's result artefacts, outside the recyclable workspace. Development runs are not included in its repeat counts.
+
+The final investigation suite passed **473/473 tests**: the existing 151 plus **322 new checks**. The latter comprise **52 cases × 2 designs × 3 repeats = 312**, plus **three dependency probes × 3 repeats and one settings measurement = 10**. Each of the **38 named interruption points** was exercised **three times in each design**, for **228 boundary SIGKILL/reopen checks**. Every matrix row below has separate-process crash coverage; additional probes distinguish graceful shutdown, abrupt `process.exit`, injected storage errors and artificial record rollback. Repository `npm run check` passed; `npm test` passed **419 tests, 417 passed, two platform skips, zero failures**. The isolated TypeScript configuration now includes `failures/**/*.ts`, not just the older suites.
+
+### Harness and ownership qualifications
+
+`failures/host-child.ts` runs the actual A driver or B `ExecutionHost` in a fresh process. Adapter effects and actual application acknowledgement writes use the shared before/after hooks. At the requested hook, the child sends an IPC boundary marker and waits indefinitely; its parent sends **SIGKILL** and joins it, without running close/finally handlers. A separate process first demonstrates that the surviving owner claim blocks replacement. Only then does the fixture operator remove that disposable claim and start a new process. This is not stale takeover, worker adoption or permission to alter a production lease.
+
+The matrix adds A's previously missing **minimal fixture context host claim**: an exclusively created `host/owner/` directory, a flushed PID record before application open, and release only after closing the driver and known child. It has no expiry, heartbeat or automatic recovery. This exclusion lives in the matrix host, not in the reusable A driver; production A would still need its planned dispatcher claim and diagnostics. B uses its existing exclusive `ExecutionHost` claim before opening either store. A second live host and a post-crash replacement are both refused. Neither implementation relies on SQLite's ordinary writer lock to exclude long-lived hosts.
+
+The matrix's small loopback HTTP transport is **test infrastructure**, shared by both designs. Independent `failures/client.ts` CLI processes concurrently submit requests through it. For B, this transport calls the same engine as the existing host API; the earlier B-specific tests still exercise its actual authenticated transport, disconnected HTTP submit and CLI. Do not count the matrix transport as a proposed production A daemon or B transport simplification. Its fixture-only `effect`, `queryOnly` and clock controls are not worker-facing operations.
+
+All acquisition/launch/prompt/return/cancellation counters come from independent owner receipts. Assertions also scan receipt attempt IDs absent from application identity acknowledgements, so a lost workspace acknowledgement cannot hide an orphan acquisition. Actual child cases additionally read its independent PID, prompt log and result file. Every normal recovery case asserts capacity, request uniqueness and at-most-one acquisition, launch, prompt, return and cancellation delivery per attempt. An unresolved refusal has an explicit operator next action; no refusal is treated as completion.
+
+### Full plan matrix – three repeats per case, per design
+
+Point names below expand to both `:before` and `:after` unless stated otherwise. `effect` means the external fake owner wrote its receipt; `ack` means the actual application record write completed. The engine and application still do not commit atomically.
+
+| Plan row | Crash cases and independent evidence | A outcome | B outcome |
+| --- | --- | --- | --- |
+| Duplicate request, including lost client response | `reserved`, `launched`, `prompted` acknowledgement kills; three concurrent CLI clients and stable-ID retry after killing the host | Same reservation, at most one launch/prompt; interrupted worker state is `possibly_running`. Before the reservation exists, retry can safely create the first attempt | Same application reservation and launch/prompt bound. A surviving task at `reserve` can conservatively reserve then refuse `acquisition_uncertain`, even if no acquisition occurred |
+| Concurrent submissions at capacity, including two CLI clients | Three separate CLI processes submit distinct requests against maximum 2, then host is killed and a stable ID retried | Exactly two admitted, third `capacity`, active count 2, still two attempts after restart. Enforced by production `AttemptStore.reserveAttempt`'s `BEGIN IMMEDIATE` transaction; A also serialises its invocation | Same counts and transactional application enforcement. Durable task count is not capacity; the refused request may retain a terminal engine receipt |
+| Stop before workspace acquisition, or after effect before acknowledgement | `acquire:effect`, `workspace:ack`, `reserved:ack` | Zero or one independent acquisition, `acquisition_uncertain` if identity was not acknowledged; an acknowledged workspace without launch/exit evidence remains `possibly_running`. No return | Zero or one acquisition. Recovered acquire phase refuses `acquisition_uncertain`, including after the workspace fact committed but before the engine checkpoint did. No blind reacquisition or return |
+| Stop before launch, or after launch before acknowledgement | `launch:effect`, `launched:ack`, `prompt:effect`, `prompted:ack`, `started:ack` | `possibly_running`; zero or one launch/prompt and no return. Launch fence survives | Same safety result, with engine recovery layered over the same immutable application launch row |
+| Worker finishes before orchestration records result | `worker_exit:effect`, `result:ack`; valid and wrong-session reports delivered while host is stopped; actual-child crash without exit receipt | Positive valid exit/result becomes `waiting/review`; wrong identity gives `invalid_result`. Missing positive exit stays `possibly_running`, even with a result file and a dead direct child | Same validation/refusal. A recovered wait does not adopt the process or infer success from process absence |
+| Finalisation succeeds before recording completion | `accepted:ack`, `done:ack`, `return:effect`, `returned:ack` | Accept/done facts can be inspected and continued. Return intent or a surviving return effect without acknowledgement gives `finalisation_uncertain`; return count remains 0 or 1. A committed return is completed | Same result even when the application fact is ahead of the checkpoint. No repeated uncertain return |
+| Review delivered twice or around restart | `review:effect`, `merge:effect`, `review:ack`; duplicate signal delivered once before kill and once with no host | No signal leaves visible `waiting/review`; surviving exact-commit signal can complete with current approval. Two receipts produce exactly one application review fact and one return | Same result. Owner signals, not a transient in-memory delivery, preserve unanswered work across host loss |
+| Restart during wait, including after deadline | Worker and review wait kills; duplicate-review wait before deadline; `overdue_review_wait` | Review facts survive; explicit `advance` re-reads owners. A has no persisted timer/deadline or autonomous wake mechanism to qualify | Controlled engine clock starts at 1,000,000. Reopen before the saved deadline preserves it exactly; explicit advance moves to it and resumes. Reopen at 1,010,000 makes overdue work runnable during host `resume()`, with no client advance, then records the next review sleep. No signal means still waiting, not success |
+| Cancellation or shutdown interrupts active work | `cancel:effect`, `cancelled:ack`; actual synthetic child under kill, cancellation followed by kill, and graceful host shutdown | Cancellation intent excludes redelivery and yields `cancelled`; orchestration shutdown reports termination unverified. No positive exit is manufactured and lease is retained | Abort handler requests cancellation separately from host close. Same retained lease and no inferred termination. Durable abort/close is not proof a worker stopped |
+| Second host, storage failure, or workflow cannot resume | Live and stale owner refusal; read-only application writes then kill; corrupt application database after kill; B engine storage and missing-definition probes below | Competing host exits 2. SQLite read-only error returns `host_unavailable`; corrupt database prevents startup with a visible error. No effects or replacement worker | Same host/application results. Missing definitions remain visible `blocked/missing_task`; engine commit failure seals its session. No silent replacement execution |
+| Missing/stale/model-claimed approval | Each variant kills host after worker/review evidence and before protected effects, then resumes with a fixed domain clock | All give `approval_required`, with no acceptance or lease return | Same result; model-controlled extra request arguments never populate owner approvals |
+
+The simulated merge is a **fixture/operator forge observation**, not a publishing or destructive action performed by either runner. The finalisation side effect tested here is exact fake lease return, not real Git integration, publication or merge. The actual-child tests exercise lifecycle, not process containment. The child writes a result and waits; loss of its IPC owner makes this simple child exit. Test cleanup observes that PID disappear, but supplies neither design with an exit receipt or no-processes authority. Unknown workers still require operator resolution and retained leases.
+
+### Storage and lost-record experiments – not power-loss tests
+
+Measured on configured live connections, not on fresh raw SQLite connections whose connection-local pragmas would differ:
+
+| Setting | Application store, A and B | Durable 1.4.0 engine store, B |
+| --- | --- | --- |
+| Journal | WAL | WAL |
+| `synchronous` | **FULL (2)** | **NORMAL (1)** |
+| `fullfsync` | ON (1) | OFF (0) |
+| `checkpoint_fullfsync` | ON (1) | OFF (0) |
+| Busy timeout | 0 ms; application async retries | 5,000 ms; synchronous backend wait |
+| WAL auto-checkpoint | 1,000 pages | 1,000 pages |
+
+The engine measurement uses Chord's same `openNodeSqliteDatabase` opener called by Durable's `openNodeSqliteStorage`. Inspected published Chord code explicitly sets WAL and NORMAL; there is no synchronous/fullfsync option in this opener's public options (only busy timeout and WAL checkpoint threshold). Sharing a file would not make application and engine commits atomic or configure both connections alike.
+
+ADR-0007 requires flushed FULL commits, plus macOS fullfsync, precisely because surviving effects with lost exclusion records undermine safety. Durable's **default NORMAL does not meet that requirement**: individual acknowledged WAL commits are not flushed as FULL commits are, and recent progress can disappear after power/OS/storage loss. FULL requests a commit flush; fullfsync requests the stronger macOS drive-cache flush. Actual guarantees still depend on SQLite, filesystem and hardware honouring those requests. **SIGKILL results do not verify any of that.** The earlier JSONL `fsync: true` caveat also stands: affected sidecars are flushed but ordinary main commit markers are not explicitly flushed. Owner receipt files are flushed, but their directories are not fsynced. None of these fixtures qualifies power-loss behaviour.
+
+Two explicit **artificial rollback** experiments, repeated three times per design, clarify the consequences without pretending to simulate power failure:
+
+1. Preserve domain fences, but restore B's engine database to a clean pre-request offline copy. Retrying the same ID refuses `acquisition_uncertain`; application reservation, workspace identity and exclusion facts prevent another launch/prompt. A has no engine store: deleting only its response cache yields `possibly_running` with the same one launch/prompt. Presentation/checkpoint loss alone is not permission to repeat an effect.
+2. Restore **all** host databases to their clean pre-request copies while leaving external receipts intact. **Both prototypes launch and prompt twice for the same caller request across two generated attempt IDs.** This deliberately unsupported disaster case is asserted as a demonstrated hazard, not counted as safe crash recovery. The fake owner can enumerate old receipts but neither submit path reconciles an entirely lost domain identity namespace before admission. Stable caller IDs alone cannot deduplicate against records that no longer exist. Whole-store rollback, lost domain fences or a restored backup therefore require fencing dispatch and external-owner/operator reconciliation before any submission; neither design supplies that disaster-recovery procedure. ADR-0007's FULL domain store must not be weakened on the strength of these process tests.
+
+B's two engine commit-failure probes wrap the published storage API, throwing once **before** or **after** the underlying checkpoint commit. Both report `session_failed`, reject pending/later calls and make no automatic retry. The independent `prepare` effect survives in both. A separate inspection-only process finds checkpoint `prepare` when the write did not commit and `finish` when it did. It does not resume either task or repeat the effect. This tests the API's ambiguous-failure contract, not disk-full recovery, torn writes or actual device failure. The application read-only test uses SQLite `PRAGMA query_only`, and the corrupt-database test replaces an offline disposable file with invalid bytes; both are synthetic faults.
+
+### Unfinished upgrade/reopen and definition availability
+
+The investigation now additionally pins npm aliases **`durable-1-3` → `@earendil-works/pi-durable@1.3.0`** and **`pi-ai-1-3` → `@earendil-works/pi-ai@1.3.0`**, solely for the offline upgrade probe. B and the ordinary smoke/scenario tests still use **1.4.0**. The 1.3.0 Durable tarball integrity is the same one recorded in step 2; all alias/transitive integrity hashes are in the local lockfile. No production dependency changed.
+
+Three independent runs created unfinished SQLite work using the published 1.3.0 engine, committed checkpoint `finish`, and abruptly exited 75 without close. With all writers stopped, the test copied the complete database/WAL file set. Opening 1.4.0 without the task definition migrated the backend but preserved unfinished work as public `blocked/missing_task`; installing the matching definition on another open completed `finish` once without rerunning `prepare`. Reopening the migrated database with 1.3.0 was refused (`Durable SQLite schema version 2 is newer than supported version 1`). Offline replacement from the pre-upgrade complete backup reopened under 1.3.0 at `finish`; it was **not resumed**, because external effects from after the backup remained and needed reconciliation.
+
+This qualifies one unfinished deterministic task and one supported schema transition, not every workflow/document version or arbitrary task-code migration. Rollout still needs a stopped-writer backup, compatible definitions and an explicit no-downgrade decision. Restoring an old backup and blindly resuming is unsafe, as the lost-record experiment demonstrates. The existing release crash-loop probe also still passes: five abrupt no-progress invocations park at `blocked/restart_limit` with `task_parked`; it is not reset automatically.
+
+### Operator hand-off for `durable-real-runs-p5b`
+
+Step 6 is deliberately **not run here**. The operator's separate task should:
+
+- Run one explicitly authorised real Pi/Treehouse attempt per design in disposable workspaces, retaining the output branches, exact bindings, result files, session evidence and simulated review state. Do not publish or merge.
+- Count actual RPC launch and initial prompt delivery independently. Retry a stable caller ID after a lost client response and verify the same reservation; never re-prompt or relaunch after uncertainty. A recovered workflow alone is not launch authority.
+- Inspect Treehouse's real lease identity after an acquisition response is lost. Record the unresolved state and operator action rather than using the fake owner's receipt directory as proof of real discoverability.
+- Check real result/identity/commit retention after worker exit and around host loss. Confirm direct-child exit is distinct from tool descendants; a worker-written result file alone must not establish success or no remaining processes.
+- Exercise a host restart during the simulated review wait and duplicate review delivery. B's host must be explicitly restarted by the operator; persisted deadlines cannot start Node. Check current scoped approval and retained output again before finalisation.
+- Test shutdown/cancellation visibility without assuming agent termination, and retain every lease until the existing checks pass and the operator explicitly confirms no worker/tool process remains. Do not apply the fixture claim-removal procedure to a live worker.
+- Retain the evidence outside recyclable workspaces. Report actual runtime/platform differences, adapter discovery limitations and any refusal that needs manual resolution. Do not interpret synthetic return, controlled-clock success or the NORMAL backend as qualification for automatic recovery/return or power-loss safety.
+
+### Conclusion and remaining boundaries
+
+The matrix supports conservative process-crash recovery in **both** prototypes; it does not show that Durable removes the application exclusion/intent/authority mechanisms. B additionally retains cross-store reconciliation and host availability obligations, while supplying persisted waits and blocked-task visibility. A's minimal context claim added by this harness is additional custom execution machinery, not existing production capability. No net code-removal estimate or design selection follows from this step alone.
+
+Remaining adoption checks include real integrations, supported-platform evidence beyond macOS, real owner discovery and descendant containment limits, storage/device/power-loss qualification, broader task/document migration and operator disaster-recovery tooling. Step 7 must weigh these results with the earlier ownership and code-cost tables. No ADR, Phase 3 PRD, production source, authoritative task record or real Treehouse lease was changed.

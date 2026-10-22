@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile, fork, type ChildProcess } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { ApplicationStore } from "../design-a/store.ts";
 import { sampleRequest } from "../scenario/common-tests.ts";
-import { interruptionPoints, type Attempt, type Outcome, type Point, type Snapshot, type WorkerResult } from "../scenario/contract.ts";
+import { interruptionPoints, type Attempt, type Outcome, type Snapshot, type WorkerResult } from "../scenario/contract.ts";
 import { FakeOwners } from "../scenario/owners.ts";
 
 const root = fileURLToPath(new URL("../../../.investigation/durable-orchestration/", import.meta.url));
@@ -164,6 +164,8 @@ for (const design of ["A", "B"]) for (let repeat = 1; repeat <= repeats; repeat+
     const hosts: Host[] = [];
     t.after(async () => { for (const host of hosts) await kill(host); await rm(directory, { recursive: true, force: true }); });
     const host = start(directory, design); hosts.push(host); await until(host, "ready");
+    const second = start(directory, design); hosts.push(second);
+    assert.equal((await second.exited).code, 2, "A live host excludes a competing host before storage opens");
     const requests = ["one", "two", "three"].map(id => sampleRequest(id));
     const outcomes = await Promise.all(requests.map(request => cli(directory, { method: "submit", request })));
     assert.equal(outcomes.filter(outcome => outcome.status === "waiting").length, 2);
@@ -262,6 +264,92 @@ for (const design of ["A", "B"]) for (let repeat = 1; repeat <= repeats; repeat+
     const blocked = start(directory, design); hosts.push(blocked);
     assert.equal((await blocked.exited).code, 2);
     await record({ design, repeat, case: "storage_read_only", outcome, effects: 0, staleClaimBlocksRestart: true });
+  });
+
+  for (const invalid of [false, true]) test(`${design} unrecorded worker result identity ${invalid ? "invalid" : "valid"} repeat ${repeat}`, async t => {
+    const { directory, owners } = await fixture();
+    const hosts: Host[] = [];
+    t.after(async () => { for (const host of hosts) await kill(host); await rm(directory, { recursive: true, force: true }); });
+    const host = start(directory, design); hosts.push(host); await until(host, "ready");
+    const request = sampleRequest();
+    await call(directory, { method: "submit", request });
+    const attempt = (await snapshot(directory)).attempts[0]!;
+    await kill(host);
+    const report = result(attempt);
+    if (invalid) report.identity = { ...report.identity, sessionId: "another-session" };
+    // External result arrives while orchestration is stopped. Absence of a process alone
+    // would have no positive receipt and is covered by the synthetic-child crash cases.
+    await owners.exit(report);
+    await rm(join(directory, "host", "owner"), { recursive: true });
+    const recovered = start(directory, design); hosts.push(recovered); await until(recovered, "ready");
+    const outcome = await call(directory, { method: "advance", requestId: request.requestId });
+    assert.equal(outcome.status, invalid ? "refused" : "waiting");
+    if (outcome.status === "refused") assert.equal(outcome.code, "invalid_result");
+    else if (outcome.status === "waiting") assert.equal(outcome.waitingFor, "review");
+    await record({ design, repeat, case: `unrecorded_result_${invalid ? "invalid" : "valid"}`, outcome, counts: await countersSafe(owners, await snapshot(directory)) });
+  });
+
+  test(`${design} corrupt application storage cannot silently resume repeat ${repeat}`, async t => {
+    const { directory, owners } = await fixture();
+    const hosts: Host[] = [];
+    t.after(async () => { for (const host of hosts) await kill(host); await rm(directory, { recursive: true, force: true }); });
+    const host = start(directory, design); hosts.push(host); await until(host, "ready");
+    await call(directory, { method: "submit", request: sampleRequest() });
+    const before = await owners.records();
+    await kill(host);
+    await rm(join(directory, "host", "owner"), { recursive: true });
+    for (const suffix of ["-wal", "-shm"]) await rm(join(directory, "host", `switchboard.db${suffix}`), { force: true });
+    await writeFile(join(directory, "host", "switchboard.db"), "deliberately invalid SQLite fixture");
+    const failed = start(directory, design); hosts.push(failed);
+    assert.equal((await failed.exited).code, 2);
+    assert.match(failed.output(), /database|SQLite|file/i);
+    assert.deepEqual(await owners.records(), before);
+    await record({ design, repeat, case: "corrupt_application_storage", startupFailed: true, failure: failed.output().trim(), effectsUnchanged: true });
+  });
+
+  test(`${design} simulated lost execution records are distinct from process crashes repeat ${repeat}`, async t => {
+    const { directory, owners } = await fixture();
+    const hosts: Host[] = [];
+    t.after(async () => { for (const host of hosts) await kill(host); await rm(directory, { recursive: true, force: true }); });
+    const initial = start(directory, design); hosts.push(initial); await until(initial, "ready");
+    await call(directory, { method: "shutdown" });
+    assert.equal((await initial.exited).code, 0);
+    const backup = join(directory, "offline-backup");
+    await mkdir(backup);
+    for (const name of await readdir(join(directory, "host"))) if (/\.db$/.test(name)) await cp(join(directory, "host", name), join(backup, name));
+    const host = start(directory, design); hosts.push(host); await until(host, "ready");
+    const request = sampleRequest();
+    await call(directory, { method: "submit", request });
+    await kill(host);
+    await rm(join(directory, "host", "owner"), { recursive: true });
+    if (design === "B") {
+      // Artificially lose only NORMAL engine progress, preserving FULL domain fences.
+      for (const suffix of ["", "-wal", "-shm"]) await rm(join(directory, "host", `durable.db${suffix}`), { force: true });
+      await cp(join(backup, "durable.db"), join(directory, "host", "durable.db"));
+    } else {
+      // A has no engine database. Lose only its presentation cache, never the domain facts.
+      const store = await ApplicationStore.open(join(directory, "host"));
+      await store.tasks.database.transaction(() => store.tasks.database.run("DELETE FROM prototype_responses"));
+      store.close();
+    }
+    const fenced = start(directory, design); hosts.push(fenced); await until(fenced, "ready");
+    const outcome = await call(directory, { method: "submit", request });
+    assert.equal(outcome.status, "refused");
+    const safe = await countersSafe(owners, await snapshot(directory));
+    await kill(fenced);
+    await rm(join(directory, "host", "owner"), { recursive: true });
+    // Separate, deliberately unsupported disaster: roll back ALL execution/domain stores.
+    // This is not power-loss emulation. It demonstrates why losing FULL exclusion facts
+    // cannot be made safe by checkpoint replay or a stable caller ID alone.
+    for (const name of await readdir(join(directory, "host"))) if (/\.db(?:-wal|-shm)?$/.test(name)) await rm(join(directory, "host", name));
+    for (const name of await readdir(backup)) await cp(join(backup, name), join(directory, "host", name));
+    const rolledBack = start(directory, design); hosts.push(rolledBack); await until(rolledBack, "ready");
+    const unsafeOutcome = await call(directory, { method: "submit", request });
+    const records = await owners.records();
+    assert.equal(records.filter(receipt => receipt.effect === "launch").length, 2, "Full record rollback is a demonstrated deduplication hazard, not supported recovery");
+    assert.equal(records.filter(receipt => receipt.effect === "prompt").length, 2);
+    await record({ design, repeat, case: "simulated_record_loss_not_crash_evidence", survivingDomainFences: { outcome, counts: safe },
+      allStoresRolledBack: { outcome: unsafeOutcome, launchesForSameCaller: 2, promptsForSameCaller: 2, adoptionHazard: true } });
   });
 
   test(`${design} restart after review deadline repeat ${repeat}`, async t => {
