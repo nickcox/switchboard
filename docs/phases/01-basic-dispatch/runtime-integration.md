@@ -21,7 +21,7 @@ The adapter:
 
 Optional `worker.thinking` accepts exactly `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` and supplies `--thinking <level>`. Pi 1.2.0's `get_state` reports the actual level as `thinkingLevel`; the adapter reads it before prompting, whether configured or not. A configured mismatch fails with `thinking_identity` without sending a prompt, just as a model mismatch does. Pi clamps levels to model capabilities, so an unsupported configured level fails rather than silently using another level. The final idle-state check also checks the configured level. Without configuration, no flag is passed and Pi's own settings select the level.
 
-The write-once `session-start.json` retains the reported startup level even on a configured mismatch; `status` shows it beside usage. Attempts that never obtained valid startup state, and older attempts without this record, show `thinking unknown` – no level is inferred from configuration or usage.
+The write-once startup observation retains the reported level even on a configured mismatch; `status` shows it beside usage. Attempts that never obtained valid startup state, and older attempts without this record, show `thinking unknown` – no level is inferred from configuration or usage.
 
 Request timeouts never cause another prompt or replacement launch. Responses are correlated by request ID and command. Late acknowledgements are ignored rather than retried. Protocol framing splits only on LF, accepts CRLF, preserves split UTF-8 and Unicode line separators, and bounds each record.
 
@@ -45,24 +45,23 @@ The worker writes `result.json` with the standard write tool, without a custom e
 
 `PiRunReport.status = reported` means a valid worker report was obtained after direct-child exit, not that the task is accepted or its workspace may be returned. A valid `failed` or `hold` worker result is still a reported outcome. Callers must inspect the result and remaining runtime obligations separately.
 
-## Runtime-owned records
+## Runtime records
 
-`src/runtime/records.ts` uses a caller-configured absolute runtime root. Context and lease IDs are hashed into directory names; the original identities remain in validated records. Before dispatch writes any attempt or storage probe, runtime and attempt-log roots are checked against the provider's entire recyclable area (Treehouse's configured pool root, including earlier pools and idle workspaces). Existing ancestors are resolved, including for paths not yet created. Paths are also resolved before launch and runtime evidence beneath the worker workspace is refused. Symlinked context directories are refused.
+What the runtime records about each worker is kept in Switchboard's database ([ADR-0007](../../adr/0007-one-sqlite-database.md)). Each attempt also has a runtime directory under the configured absolute runtime root, with context and lease IDs hashed into its name, which holds only what the worker and Pi write themselves; the database records its paths. Before dispatch writes anything, the runtime root and the database are checked against the provider's entire recyclable area (Treehouse's configured pool root, including earlier pools and idle workspaces), resolving existing ancestors even for paths not yet created. Paths are resolved again before launch, and runtime evidence beneath the worker's workspace is refused.
 
-| Path | Owner and purpose |
-| --- | --- |
-| `<root>/<context-hash>/<lease-hash>/binding.json` | Runtime-owned, write-once expected identity, instruction snapshot, resolved delivery contract, exact working directory and session/result locations |
-| `session-start.json` | Runtime-owned, write-once startup observation with version, exact attempt identity, observation timestamp and Pi's reported `thinkingLevel`, written before prompting |
-| `sessions/` | Pi-owned native session files selected with explicit `--session-dir` |
-| `requests/` | Stop requests and operator messages (`<id>.request.json`), each with a claim file created exclusively by the owning dispatcher or, if undelivered, by its sender (`<id>.claim.json`), and the outcome Pi reported (`<id>.result.json`) |
-| `heartbeat.json` | Diagnostic dispatcher heartbeat, atomically refreshed every five seconds from when the dispatcher claims this directory, before the binding is written, until the worker finishes, with `version: 1`, `at` (UTC timestamp) and `pid`. A timestamp less than 30 seconds old makes `status` offer `watch` and refuses operator stop confirmation. Removed when the dispatcher finishes; missing, invalid or stale heartbeats never prove worker termination or permit dispatch. The PID is informational, never checked for liveness |
-| `activity.jsonl` | Diagnostic record of the worker's tool calls, assistant messages, queue changes and usage snapshots, with size limits. Read by `watch` and `status`; never used to decide task, lease or liveness state |
-| `artefacts/` | Where the worker writes reports and other non-code deliverables, so they survive workspace recycling. The worker prompt gives its path |
-| `result.json` | Worker-reported outcome through the agreed runtime contract |
-| `operator-stopped.json` | Write-once operator confirmation, made with `switchboard resolve`, that a worker with no observed exit has stopped. Discovery reports it as `operator_confirmed_stopped`, never as an observed exit, and an observed exit takes precedence |
-| `child-exit.json` | Runtime-owned, write-once observation of direct-child exit or a definite no-child launch failure; not proof that all worker descendants stopped |
+| Record | Where | Purpose |
+| --- | --- | --- |
+| Launch row | Database | Exactly one per attempt. Written by the dispatcher as permission to launch, with the binding (expected identity, instruction snapshot, resolved delivery contract, exact working directory, and session and result locations) and a claim; or by `finish`, `discard` or `resolve --worker-stopped` as a fence that stops a pending launch. Whichever is written first wins, and nothing changes or removes it while the attempt exists |
+| Claim | Database | The dispatcher supervising the worker, with an ID generated for it, its process ID and start time, and a heartbeat refreshed every five seconds. A heartbeat less than 30 seconds old makes `status` offer `watch` and refuses an operator stop confirmation. A missing or stale heartbeat never proves the worker stopped or permits dispatch, and a stale claim is reported, never taken over. The process ID is never checked for liveness |
+| Observations | Database | Write-once startup observation (Pi's reported `thinkingLevel`, written before prompting) and observation of the direct child's exit or of a definite failure to start one; an exit is not proof that every process the worker started has stopped |
+| Stop confirmation | Database | The operator's confirmation, made with `switchboard resolve --worker-stopped`, that a worker with no observed exit has stopped. Reported as `operator_confirmed_stopped`, never as an observed exit; an observed exit takes precedence |
+| Activity | Database | Diagnostic record of the worker's tool calls, assistant messages, queue changes and usage snapshots. Read by `watch` and `status`; never used to decide task, lease or liveness state |
+| Requests | Database | Stop requests and operator messages, addressed to a claim by its ID. Each is claimed exactly once, by the owning dispatcher or, if nobody claims it in time, by its sender withdrawing it, and records the outcome Pi reported |
+| `sessions/` | Runtime directory | Pi's own session files, selected with an explicit `--session-dir` |
+| `artefacts/` | Runtime directory | Where the worker writes reports and other non-code deliverables, so they survive workspace recycling. The worker prompt gives its path |
+| `result.json` | Runtime directory | The worker's reported outcome, through the agreed result contract |
 
-Exclusive directory creation refuses reuse of a lease even with a different session ID or after child exit. This is an attempt-identity guard. Preventing a task from being dispatched twice is the job of exclusive attempt creation in the attempt log.
+The launch row is the attempt-identity guard: a lease is never launched twice, even with a different session ID or after the child exited. Preventing a task from being dispatched twice is the job of the attempt store's reservation transaction.
 
 Discovery starts from the configured root/context, not saved in-memory session IDs. A binding without an exit receipt returns child liveness as unknown. Invalid, incomplete, identity-conflicting or uninspectable records cause refusal rather than an empty inventory. Discovery does not kill or adopt processes by PID, resume a session or reset task state.
 
@@ -74,7 +73,7 @@ These files are not protected from a malicious worker running as the same OS use
 
 This gate applies to automatic workspace return, which is deferred beyond Phase 1. Phase 1 finalises on direct-child exit and preserves every lease (see the [PRD](PRD.md#objective-and-scope)).
 
-The current return value deliberately contains `workerTermination: unverified` on every path. No caller may treat a `child-exit.json`, an idle RPC observation or a valid result file as authority to return a workspace.
+The current return value deliberately contains `workerTermination: unverified` on every path. No caller may treat an observed child exit, an idle RPC observation or a valid result file as authority to return a workspace.
 
 Source inspection of Pi 1.2.0 found that its built-in shell operations launch detached subprocess groups on Unix, track active shell PIDs, and remove tracking after the shell exits. Thus placing only the Pi CLI in a process group and observing that group is not sufficient to establish that all tool-started work has stopped. A background process can outlive its shell and the Pi process.
 

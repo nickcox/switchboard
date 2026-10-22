@@ -45,7 +45,9 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   run(["commit", "-q", "--no-gpg-sign", "-m", "Fixture base"]);
 
   const runtimeRoot = join(dir, "runtime");
-  const runtime = new RuntimeRecords(runtimeRoot, join(dir, "tasks.db"));
+  // Share one database connection between the stores, as createDependencies does.
+  const tasks = await SqliteTaskStore.open({ path: join(dir, "tasks.db"), repo: "fixture" });
+  const runtime = new RuntimeRecords(runtimeRoot, tasks.database);
   const log = join(dir, "requests.jsonl");
   const worker = new PiWorker(runtime, {
     executable: process.execPath, entrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"),
@@ -53,7 +55,6 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
     ...options.worker,
   });
-  const tasks = await SqliteTaskStore.open({ path: join(dir, "tasks.db"), repo: "fixture" });
   const deps: Dependencies & { attempts: FixtureAttemptStore } = {
     contextId: "fixture-context", tasks,
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),

@@ -25,7 +25,7 @@ npm test
 Node.js runs the TypeScript source directly, with no build step. The tests use a synthetic Pi worker and disposable SQLite task stores, verify imports with tasks-axi's parser, and run `treehouse` and `git` against disposable repositories, so both must be on `PATH`. They do not launch Pi agents, call a model, touch real repositories or Treehouse pools, or change a real task store. Fixture data is kept under the ignored `.investigation/` directory. CI runs the same commands on macOS, Linux and Windows (`.github/workflows/test.yml`).
 
 - `src/runtime/contracts.ts`: provider-independent worker input and result schemas.
-- `src/runtime/records.ts`, `activity.ts` and `requests.ts`: runtime-owned records, the worker activity log, and stop requests and messages for a running worker.
+- `src/runtime/records.ts`, `store.ts`, `activity.ts` and `requests.ts`: runtime records in the database (launch rows, claims, observations and activity) and stop requests and messages for a running worker.
 - `src/runtime/pi/`: Pi-specific RPC transport, launch instructions and result-file validation.
 - `src/attempts/store.ts`: transactional attempts, entries, scoped confirmations and archives ([format](docs/phases/01-basic-dispatch/attempt-log.md)); `import.ts` migrates settled file-based records.
 - `src/database.ts`: the versioned SQLite database, durability settings and asynchronous busy retries.
