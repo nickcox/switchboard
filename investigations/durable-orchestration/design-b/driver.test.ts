@@ -7,6 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { assertRefused, assertSuccessful, findAttempt } from "../scenario/assertions.ts";
 import { acceptReview, defineCommonTests, finishWorker, sampleRequest, type CreateFixture } from "../scenario/common-tests.ts";
 import { FakeOwners } from "../scenario/owners.ts";
+import type { Point } from "../scenario/contract.ts";
 import { HostClient } from "./client.ts";
 import { ExecutionHost } from "./host.ts";
 
@@ -78,6 +79,34 @@ test("B: reopening during review preserves the task ID and deadline and rechecks
   assert.equal(counters.prompt, 1);
   assert.equal(counters.return, 0);
 });
+
+for (const boundary of ["acquire:effect:after", "launch:effect:after", "prompt:effect:after", "return:effect:after"] as const) {
+  test(`B: an adapter error at ${boundary} reports uncertainty without repeating its effect`, async t => {
+    let armed = true;
+    const fixture = await create({ interrupt: async (point: Point) => {
+      if (armed && point === boundary) { armed = false; throw new Error(`lost acknowledgement at ${point}`); }
+    } });
+    let reopened: ExecutionHost | undefined;
+    t.after(async () => { await reopened?.close(); await fixture.close(); });
+    const request = sampleRequest();
+    const submitted = await fixture.driver.submit(request);
+    if (boundary === "return:effect:after") {
+      await finishWorker(fixture, request);
+      await acceptReview(fixture, request);
+      assertRefused(await fixture.driver.advance(request.requestId), "host_unavailable");
+    } else assertRefused(submitted, "host_unavailable");
+    const attempt = await findAttempt(fixture.driver, request.requestId);
+    const before = await fixture.owners.counters(attempt.id);
+    assert.equal(before[boundary.split(":")[0] as "acquire" | "launch" | "prompt" | "return"], 1);
+    const reports = fixture.host.engine.reports;
+    assert.ok(reports.some(report => report.message.includes("lost acknowledgement")));
+    await fixture.host.close();
+    reopened = await ExecutionHost.open(fixture.directory, fixture.owners, { manualClock: true, now: () => fixture.now });
+    assertRefused(await fixture.driver.submit(request), "host_unavailable");
+    assertRefused(await fixture.driver.advance(request.requestId), "host_unavailable");
+    assert.deepEqual(await fixture.owners.counters(attempt.id), before);
+  });
+}
 
 test("B: reopen with no positive exit refuses adoption and new dispatch", async t => {
   const fixture = await create({ maxAttempts: 2 });

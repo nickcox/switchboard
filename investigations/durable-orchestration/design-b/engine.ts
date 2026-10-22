@@ -145,6 +145,12 @@ export class DurableScenario implements ScenarioDriver {
       if (previous) {
         const task = await this.harness.getTask(previous.taskId as TaskId<Outcome>, context);
         if (!isDeepStrictEqual(task?.input, request)) return refuse("request_conflict", previous.response?.attemptId ?? null);
+        if (engineWorkerUncertain(this.recovered.has(previous.taskId), previous.response) &&
+          !this.operations.store.byRequest(request.requestId)?.result) {
+          if (this.manual && task?.state.status === "sleeping") this.clock = Math.max(this.clock, task.state.until);
+          this.harness.resume();
+          return this.response(request.requestId, previous.revision);
+        }
         return previous.response ? structuredClone(previous.response) : this.response(request.requestId, 0);
       }
       await this.create(structuredClone(request));
@@ -191,6 +197,10 @@ export class DurableScenario implements ScenarioDriver {
     await this.harness.close(context);
     this.operations.store.close();
   }
+}
+
+function engineWorkerUncertain(recovered: boolean, response: Outcome | null): boolean {
+  return recovered && response?.status === "waiting" && response.waitingFor === "worker";
 }
 
 export function validRequest(value: unknown): value is Request {
