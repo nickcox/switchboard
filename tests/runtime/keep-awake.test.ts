@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -103,6 +104,25 @@ for (const [name, setting] of [
   });
 }
 
+test("Windows stops the custom command's whole process tree", { skip: process.platform !== "win32" }, async () => {
+  const f = fixture();
+  const marker = join(f.dir, "descendant.json");
+  const source = "const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ parent: process.pid, child: child.pid })); setInterval(() => {}, 1000)";
+  const stop = await startKeepAwake({ command: [process.execPath, "-e", source, marker] }, () => {});
+  let tree: { parent: number; child: number } | undefined;
+  try {
+    await until(async () => !!(await readFile(marker, "utf8").catch(() => "")));
+    tree = JSON.parse(await readFile(marker, "utf8"));
+    assert.ok(alive(tree!.parent));
+    assert.ok(alive(tree!.child));
+    await stop();
+    await until(() => !alive(tree!.parent) && !alive(tree!.child));
+  } finally {
+    await stop();
+    if (tree && alive(tree.child)) process.kill(tree.child);
+  }
+});
+
 test("configuration validates the single keepAwake setting when loaded", async () => {
   const f = fixture();
   const config = {
@@ -141,7 +161,9 @@ test("native default starts and stops, or reports the host's inhibitor refusal",
   const notes: string[] = [];
   const stop = await startKeepAwake(true, note => notes.push(note));
   try {
-    await sleep(process.platform === "win32" ? 3000 : 300);
+    if (process.platform === "win32") {
+      await until(() => notes.some(note => note.includes("System sleep prevented") || note.includes("computer may sleep")));
+    } else await sleep(300);
     const warning = notes.find(note => note.includes("computer may sleep"));
     if (warning) {
       // Hosted Linux runners may have no system bus or permission to inhibit sleep.
@@ -154,4 +176,35 @@ test("native default starts and stops, or reports the host's inhibitor refusal",
   } finally { await stop(); }
   const started = notes.find(note => note.includes("command started"));
   if (started) await until(() => !alive(Number(/pid (\d+)/.exec(started)![1])));
+});
+
+test("native default releases its assertion when the dispatcher exits", async t => {
+  const dispatcher = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const dispatcherExit = new Promise<void>(resolve => dispatcher.once("exit", () => resolve()));
+  await new Promise<void>((resolve, reject) => { dispatcher.once("spawn", resolve); dispatcher.once("error", reject); });
+  const notes: string[] = [];
+  const [program, ...args] = defaultKeepAwakeCommand()!;
+  const stop = await startKeepAwake({
+    command: [program!, ...args.map(arg => arg.replaceAll("{pid}", String(dispatcher.pid)))],
+  }, note => notes.push(note));
+  try {
+    if (process.platform === "win32") {
+      await until(() => notes.some(note => note.includes("System sleep prevented") || note.includes("computer may sleep")));
+    } else await sleep(300);
+    const warning = notes.find(note => note.includes("computer may sleep"));
+    if (warning) {
+      assert.equal(process.platform, "linux", warning);
+      t.diagnostic(`Native inhibitor not available: ${notes.join("; ")}`);
+      return;
+    }
+    const pid = Number(/pid (\d+)/.exec(notes.find(note => note.includes("command started"))!)![1]);
+    assert.ok(alive(pid));
+    dispatcher.kill();
+    await dispatcherExit;
+    await until(() => !alive(pid));
+  } finally {
+    dispatcher.kill();
+    await dispatcherExit;
+    await stop();
+  }
 });

@@ -5,9 +5,16 @@ import { shorten } from "./activity.ts";
 
 export const keepAwakeSchema = z.union([
   z.boolean(),
-  z.strictObject({ command: z.tuple([z.string().trim().min(1)]).rest(z.string()) }),
+  z.strictObject({ command: z.tuple([z.string().refine(value => value.trim().length > 0, "Program must not be empty")]).rest(z.string()) }),
 ]);
 export type KeepAwake = z.output<typeof keepAwakeSchema>;
+
+async function waitForExit(exited: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([exited, new Promise<void>(resolve => { timer = setTimeout(resolve, 2000); })]);
+  } finally { clearTimeout(timer); }
+}
 
 export function defaultKeepAwakeCommand(platform: NodeJS.Platform = process.platform): string[] | undefined {
   switch (platform) {
@@ -18,7 +25,7 @@ export function defaultKeepAwakeCommand(platform: NodeJS.Platform = process.plat
     ];
     case "win32": return [
       "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-      "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class SwitchboardPower { [DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint flags); }'; if ([SwitchboardPower]::SetThreadExecutionState([uint32]2147483649) -eq 0) { throw 'SetThreadExecutionState failed' }; Wait-Process -Id {pid} -ErrorAction SilentlyContinue",
+      "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class SwitchboardPower { [DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint flags); }'; if ([SwitchboardPower]::SetThreadExecutionState([uint32]2147483649) -eq 0) { throw 'SetThreadExecutionState failed' }; Write-Output 'System sleep prevented'; Wait-Process -Id {pid} -ErrorAction SilentlyContinue",
     ];
     default: return undefined;
   }
@@ -65,13 +72,12 @@ export async function startKeepAwake(setting: KeepAwake, note: (text: string) =>
             const result = await runCommand("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { cwd: process.cwd(), env, timeoutMs: 5000 });
             if (result.exitCode !== 0 && !ended) warn(`Could not stop process tree: ${result.stderr || result.stdout}`);
           } else child.kill("SIGTERM");
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          try {
-            await Promise.race([exited, new Promise<void>(resolve => { timer = setTimeout(resolve, 2000); })]);
-          } finally { clearTimeout(timer); }
+          await waitForExit(exited);
           if (!ended) {
             child.kill("SIGKILL");
-            warn("The command did not stop on request; forced termination was sent");
+            note("Keep-awake command did not stop on request; forced termination was sent");
+            await waitForExit(exited);
+            if (!ended) warn("The command's exit could not be observed after forced termination");
           }
         }
       } catch (error) { warn(`Could not stop command: ${String(error)}`); }
