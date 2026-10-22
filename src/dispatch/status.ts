@@ -1,5 +1,4 @@
 import { readActivity } from "../runtime/activity.ts";
-import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Lease } from "../workspaces/provider.ts";
 import type { Dependencies } from "./dispatch.ts";
@@ -17,6 +16,7 @@ export type AttemptStatus = {
   state: AttemptState;
   /** Whether a command may change this attempt: false while its worker may be running or any owner state is unknown. */
   changeable: boolean;
+  unknownOwners?: string[];
   lastEntry: string;
   possiblyRunning: boolean;
   leaseHeld: boolean;
@@ -46,6 +46,7 @@ export type AttemptStatus = {
   nextAction: { code: NextAction; description: string };
 };
 
+export type StatusOptions = { activity?: boolean; transcript?: boolean };
 const defaultStaleMs = 20 * 60 * 1000;
 
 /** Quotes a path for the operator's shell: POSIX shells on macOS and Linux, PowerShell on Windows. */
@@ -53,23 +54,23 @@ function quote(path: string): string {
   return process.platform === "win32" ? `"${path.replace(/["`$]/g, "`$&")}"` : `'${path.replace(/'/g, "'\\''")}'`;
 }
 
-async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, staleMs: number, leases: Lease[]): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover" | "thinkingLevel" | "worker">> {
+async function workerView(record: RuntimeRecord | undefined, possiblyRunning: boolean, running: boolean, staleMs: number, leases: Lease[], options: StatusOptions): Promise<Pick<AttemptStatus, "activity" | "transcript" | "takeover" | "thinkingLevel" | "worker">> {
   if (!record) return {};
   const child = record.child;
   const claim = await record.storage.heartbeat(record.claimId);
   const worker: AttemptStatus["worker"] = {
     ...(child.status === "exited" ? { exit: "observed" as const, code: child.exit.code, signal: child.exit.signal } : { exit: child.status === "operator_confirmed_stopped" ? "operator_confirmed_stopped" as const : "not_observed" as const }),
-    dispatcherHeartbeat: await dispatcherRunning(record) ? "fresh" : "stale_or_missing",
+    dispatcherHeartbeat: running ? "fresh" : "stale_or_missing",
     ...(claim ? { claim: { id: record.claimId, ownerPid: Number(claim.owner_pid), ownerStartedAt: String(claim.owner_started_at),
       heartbeatAt: String(claim.heartbeat_at), releasedAt: claim.released_at === null ? null : String(claim.released_at) } } : {}),
   };
-  const activity = summariseActivity(await readActivity(record));
-  const stale = possiblyRunning && (activity.lastActivity === null || Date.now() - Date.parse(activity.lastActivity) > staleMs);
-  const transcript = await transcriptPath(record);
+  const activity = options.activity === false ? undefined : summariseActivity(await readActivity(record));
+  const stale = possiblyRunning && activity !== undefined && (activity.lastActivity === null || Date.now() - Date.parse(activity.lastActivity) > staleMs);
+  const transcript = options.transcript === false ? undefined : await transcriptPath(record);
   const { sessionId } = record.binding.input.identity;
   return {
     worker,
-    activity: { ...activity, stale },
+    ...(activity ? { activity: { ...activity, stale } } : {}),
     ...(record.thinkingLevel === undefined ? {} : { thinkingLevel: record.thinkingLevel }),
     ...(transcript ? { transcript } : {}),
     // Only while the worker has stopped and its own lease still holds the same workspace: once the lease is returned,
@@ -101,7 +102,7 @@ export type StatusResult = {
 const action = (code: NextAction) => ({ code, description: nextActions[code] });
 
 /** Read-only view of every attempt and the owner state that decides what happens next. Changes nothing. */
-export async function status(deps: Dependencies): Promise<StatusResult> {
+export async function status(deps: Dependencies, options: StatusOptions = {}): Promise<StatusResult> {
   const context = await observeAttempts(deps);
   const assessed = assessAttempts(context);
   const leases = context.leases.known ? context.leases.value : [];
@@ -115,7 +116,8 @@ export async function status(deps: Dependencies): Promise<StatusResult> {
   for (const { facts, ...assessment } of assessed) {
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
     attempts.push({ ...assessment, changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning,
-      ...await workerView(worker, assessment.possiblyRunning, deps.staleMs ?? defaultStaleMs, leases).catch(() => ({})) });
+      ...(facts.unknown.length ? { unknownOwners: facts.unknown } : {}),
+      ...await workerView(worker, assessment.possiblyRunning, facts.dispatcherRunning, deps.staleMs ?? defaultStaleMs, leases, options).catch(() => ({})) });
   }
   const known = new Set(attempts.map(a => a.attempt.leaseId).filter(Boolean));
   const unaccountedLeases = leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
@@ -162,6 +164,7 @@ export function describeStatus(value: StatusResult): string {
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
       : `lease ${a.attempt.leaseId} not held`;
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: ${a.state.replaceAll("_", " ")}; last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
+    if (a.unknownOwners) for (const reason of a.unknownOwners) lines.push(`  Unknown: ${reason}`);
     if (a.taskDisagreement) lines.push("  Task unchanged: a newer operator decision disagrees with the attempt outcome");
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;
     if (a.activity?.lastActivity) {

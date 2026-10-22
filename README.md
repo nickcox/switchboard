@@ -32,7 +32,7 @@ Node.js runs the TypeScript source directly, with no build step. The tests use a
 - `src/tasks/`: the task-store interface, SQLite implementation, operator commands and tasks-axi 0.2.6 import.
 - `src/workspaces/`: the workspace-provider interface, the Treehouse adapter (acquire and inspect only) and the read-only Git retention check.
 - `src/infra/`: shared subprocess handling and executable lookup.
-- `src/dispatch/`: dispatch, `status`, `resolve`, `watch`, `stop` and `steer`, and the structured result format with its reason and next-action codes (`result.ts`).
+- `src/dispatch/`: dispatch, `status`, `resolve`, `watch`, `stop` and `steer`, and the structured result format with its reason and next-action codes (`result.ts`). `observe.ts` reads owner evidence, `assess.ts` derives the state and facts without I/O, and `safety.ts` decides each operation. `status.ts` presents the assessment and adds optional activity summaries and transcript paths; mutation commands do not call it.
 - `src/config.ts` and `src/cli.ts`: the configuration file and the `switchboard` command.
 - `tests/`: unit and end-to-end tests, including a fault injected at each dispatch boundary and dispatcher crashes after leasing, after the in-flight update and after launch.
 - `investigations/`: separate probes and the [real dispatch demo](investigations/real-dispatch/README.md), with their own prerequisites. They are not run by the test command.

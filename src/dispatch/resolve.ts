@@ -29,7 +29,7 @@ export async function resolveStopped(
   const rechecked = current && checkCanConfirmStopped(assessAttempt(current).facts, options.confirmed);
   if (!rechecked || !rechecked.allowed) return result({ ...common, ok: false, reason: "refused", detail: rechecked ? rechecked.detail : "The attempt disappeared", nextAction: rechecked ? rechecked.nextAction : "inspect_attempt" });
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) },
-    { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(assessment.attempt.sessionId ? { sessionId: assessment.attempt.sessionId } : {}) } }, operator);
+    { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(assessment.attempt.sessionId ? { sessionId: assessment.attempt.sessionId } : {}) } }, operator, current?.record.known ? current.record.value : undefined);
   return result({ ...common, ok: true, reason: "resolved", nextAction: "apply_task_outcome" });
 }
 
@@ -60,6 +60,6 @@ export async function resolveLeaseReturned(
   const fresh = checkCanConfirmLeaseReturned({ ...rechecked.facts, leaseHeld: currentListed });
   if (!fresh.allowed) return result({ ...common, ok: false, reason: "refused", detail: fresh.detail, nextAction: fresh.nextAction });
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "lease_returned", ...(options.note ? { note: options.note } : {}) },
-    { fact: "lease_returned", scope: { outputBranch, ...(summary.leaseId ? { leaseId: summary.leaseId } : {}) } }, operator);
+    { fact: "lease_returned", scope: { outputBranch, ...(summary.leaseId ? { leaseId: summary.leaseId } : {}) } }, operator, current.record.known ? current.record.value : undefined);
   return result({ ...common, ok: true, reason: "resolved", nextAction: "dispatch_again" });
 }

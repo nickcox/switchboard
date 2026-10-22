@@ -83,7 +83,8 @@ export class RuntimeStore {
     return this.use(database => {
       const row = database.get(`SELECT c.confirmed_at, c.note FROM confirmations c JOIN launches l
         ON l.context = c.context AND l.task = c.task AND l.attempt = c.attempt
-        WHERE l.directory = ? AND c.fact = 'worker_stopped'`, directory);
+        WHERE l.directory = ? AND c.fact = 'worker_stopped' AND json_extract(c.scope, '$.leaseId') = l.lease_id
+          AND (json_extract(c.scope, '$.sessionId') IS NULL OR json_extract(c.scope, '$.sessionId') = json_extract(l.binding, '$.input.identity.sessionId'))`, directory);
       return row ? { confirmedAt: String(row.confirmed_at), ...(row.note === null ? {} : { note: String(row.note) }) } : undefined;
     });
   }
@@ -120,6 +121,11 @@ export class RuntimeStore {
 
   async submit(claimId: string, request: ControlRequest): Promise<void> {
     await this.use(database => database.transaction(() => {
+      const launch = database.get("SELECT directory, context, task, attempt, lease_id FROM launches WHERE claim_id = ?", claimId);
+      if (!launch || database.get("SELECT 1 FROM worker_observations WHERE directory = ? AND kind = 'exit'", String(launch.directory)) ||
+        database.get(`SELECT 1 FROM confirmations WHERE context = ? AND task = ? AND attempt = ? AND fact = 'worker_stopped'
+          AND json_extract(scope, '$.leaseId') = ? AND (json_extract(scope, '$.sessionId') IS NULL OR json_extract(scope, '$.sessionId') = ?)`,
+        String(launch.context), String(launch.task), Number(launch.attempt), String(launch.lease_id), request.identity.sessionId)) throw new Error("The worker is not running");
       database.run("INSERT INTO control_requests(id,claim_id,request,created_at,sender_pid,sender_started_at) VALUES(?,?,?,?,?,?)",
         request.id, claimId, JSON.stringify(request), request.createdAt, process.pid, ownerStartedAt);
     }));

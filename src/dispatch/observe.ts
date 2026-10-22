@@ -1,5 +1,5 @@
 import type { AttemptRecord } from "../attempts/log.ts";
-import { dispatcherRunning } from "../runtime/heartbeat.ts";
+import { readDispatcherHeartbeat } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Lease } from "../workspaces/provider.ts";
 import { isOpen, leaseReturned, possibleLeasePool, resolvedBy, summarise, type Dependencies } from "./dispatch.ts";
@@ -72,7 +72,7 @@ async function observe(deps: Dependencies, selector?: AttemptSelector): Promise<
       const task = await deps.tasks.read(summary.taskId);
       return task ? { state: task.state, held: task.held, holdReason: task.holdReason } : "missing";
     }));
-    const heartbeat = await read("The dispatcher heartbeat", () => worker ? dispatcherRunning(worker) : false);
+    const heartbeat = await read("The dispatcher heartbeat", () => worker ? readDispatcherHeartbeat(worker) : false);
     attempts.push({ attempt: summary, record: records.known ? { known: true, value: record } : records,
       runtime: runtime.known ? { known: true, value: worker } : runtime, leases, pool, task: tasks.get(summary.taskId)!, heartbeat,
       latest: selector ? latestNumber === summary.attempt :

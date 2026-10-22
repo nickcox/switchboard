@@ -16,14 +16,19 @@ export async function requestControl(
   const observation = await observeAttempt(deps, { leaseId: options.leaseId });
   const record = observation?.runtime.known ? observation.runtime.value : undefined;
   const base = { stage: "control" as const, lease: "preserved" as const, observed: { leaseId: options.leaseId } };
+  if (observation) {
+    const permission = checkCanControl(assessAttempt(observation).facts);
+    if (!permission.allowed) return result({ ...base, ok: false, reason: "refused", attempt: observation.attempt, detail: permission.detail, nextAction: permission.nextAction, observed: { ...base.observed, refusal: permission } });
+  }
   if (!record) {
     return result({ ...base, ok: false, reason: "refused", lease: "none", detail: "No worker in this context has this lease ID", nextAction: "inspect_attempt" });
   }
   const assessment = assessAttempt(observation!);
   const attempt = { ...assessment.attempt, sessionId: record.binding.input.identity.sessionId };
-  const permission = checkCanControl(assessment.facts);
-  if (!permission.allowed) return result({ ...base, ok: false, reason: "refused", attempt, detail: permission.detail, nextAction: permission.nextAction, observed: { ...base.observed, refusal: permission } });
-  const request = await submitRequest(record, { kind: options.kind, sender: options.sender, ...(options.message ? { message: options.message } : {}) });
+  // Submission checks the runtime's exit and scoped stop confirmation again in its transaction.
+  let request;
+  try { request = await submitRequest(record, { kind: options.kind, sender: options.sender, ...(options.message ? { message: options.message } : {}) }); }
+  catch (error) { return result({ ...base, ok: false, reason: "refused", attempt, detail: error instanceof Error ? error.message : String(error), nextAction: "inspect_attempt" }); }
   const delivery = await awaitDelivery(record, request.id, options.waitMs);
   const observed = { ...base.observed, requestId: request.id };
   if (delivery.state === "undelivered") {

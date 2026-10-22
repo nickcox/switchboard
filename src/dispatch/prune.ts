@@ -41,7 +41,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
         const record = current.record.known ? current.record.value : undefined;
         if (!record) { skipped.push({ taskId, attempt: number, reason: "unknown" }); continue; }
         const runtime = current.runtime.known ? current.runtime.value : undefined;
-        await deps.attempts.archiveAttempt(record, { ...assessment.attempt, state: assessment.state }, runtime ? [runtime.directory] : []);
+        await deps.attempts.archiveAttempt(record, { ...assessment.attempt, state: assessment.state }, runtime ? [runtime.directory] : [], typeof assessment.task === "object" ? assessment.task : undefined);
         changed = true;
       }
       removed.push({ taskId, attempt: number, archive: deps.attempts.database.path });

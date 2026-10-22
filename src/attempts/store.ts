@@ -117,9 +117,10 @@ export class AttemptStore {
     });
   }
 
-  async finishAttempt(ref: AttemptRef, expected: ExpectedTask): Promise<Task> {
+  async finishAttempt(ref: AttemptRef, expected: ExpectedTask, expectedRecord?: AttemptRecord): Promise<Task> {
     return this.database.transaction(() => {
       this.requireAttempt(ref);
+      if (expectedRecord) this.expectRecord(expectedRecord);
       this.expectTask(ref.taskId, expected);
       this.writeOutcome(ref.taskId, "done", "finished");
       this.insert(ref, "task_recorded", { outcome: "done", reason: "finished", category: "done", applied: true });
@@ -128,9 +129,10 @@ export class AttemptStore {
     });
   }
 
-  async discardAttempt(ref: AttemptRef, expected: ExpectedTask, confirmedBy: string, leaseId: string, note?: string): Promise<Task> {
+  async discardAttempt(ref: AttemptRef, expected: ExpectedTask, confirmedBy: string, leaseId: string, note?: string, expectedRecord?: AttemptRecord): Promise<Task> {
     return this.database.transaction(() => {
       this.requireAttempt(ref);
+      if (expectedRecord) this.expectRecord(expectedRecord);
       const task = this.expectTask(ref.taskId, expected);
       this.confirm(ref, { fact: "discard", scope: { leaseId } }, confirmedBy);
       if (task.state !== "done") this.writeOutcome(ref.taskId, "hold", `Switchboard attempt ${ref.attempt} discarded`);
@@ -155,9 +157,10 @@ export class AttemptStore {
     });
   }
 
-  async appendConfirmed<K extends "output_accepted" | "lease_return_started" | "operator_resolved">(ref: AttemptRef, kind: K, data: EntryData<K>, confirmation: Confirmation, confirmedBy: string): Promise<void> {
+  async appendConfirmed<K extends "output_accepted" | "lease_return_started" | "operator_resolved">(ref: AttemptRef, kind: K, data: EntryData<K>, confirmation: Confirmation, confirmedBy: string, expectedRecord?: AttemptRecord): Promise<void> {
     await this.database.transaction(() => {
       this.requireAttempt(ref);
+      if (expectedRecord) this.expectRecord(expectedRecord);
       const payload = data as Record<string, unknown>;
       const matches = kind === "output_accepted" ? confirmation.fact === "output_accepted" && confirmation.scope.commit === payload.commit
         : kind === "lease_return_started" ? confirmation.fact === "no_processes" && confirmation.scope.leaseId === payload.leaseId && confirmation.scope.returnId === payload.returnId
@@ -199,12 +202,15 @@ export class AttemptStore {
       .map(row => this.read({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.number) }));
   }
 
-  async archiveAttempt(expected: AttemptRecord, summary: Record<string, unknown>, directories: string[]): Promise<void> {
+  async archiveAttempt(expected: AttemptRecord, summary: Record<string, unknown>, directories: string[], expectedTask?: { state: string; held: boolean; holdReason: string | null }): Promise<void> {
     if (directories.some(directory => !isAbsolute(directory))) throw new Error("Deletion paths must be absolute");
     await this.database.transaction(() => {
-      const current = this.read(expected);
-      if (JSON.stringify(current.entries) !== JSON.stringify(expected.entries) || JSON.stringify(current.confirmations) !== JSON.stringify(expected.confirmations)) {
-        throw new AttemptStoreError("attempt_changed", "The attempt changed after the archive was planned");
+      const current = this.expectRecord(expected);
+      if (expectedTask) {
+        const task = this.task(expected.taskId);
+        if (!task || task.state !== expectedTask.state || task.held !== expectedTask.held || task.holdReason !== expectedTask.holdReason) {
+          throw new AttemptStoreError("task_changed", "The task changed after the archive was planned");
+        }
       }
       const row = this.requireAttempt(expected);
       if (!row.closed) throw new AttemptStoreError("attempt_changed", "An open attempt cannot be archived");
@@ -237,6 +243,13 @@ export class AttemptStore {
       deletion.contextId, deletion.taskId, deletion.attempt, deletion.directory));
   }
 
+  private expectRecord(expected: AttemptRecord): AttemptRecord {
+    const current = this.read(expected);
+    if (JSON.stringify(current.entries) !== JSON.stringify(expected.entries) || JSON.stringify(current.confirmations) !== JSON.stringify(expected.confirmations)) {
+      throw new AttemptStoreError("attempt_changed", "The attempt changed after the operation was planned");
+    }
+    return current;
+  }
   private checkContext(ref: AttemptRef) {
     if (ref.contextId !== this.contextId) throw new Error("Attempt belongs to another context");
   }

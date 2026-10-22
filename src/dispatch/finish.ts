@@ -44,7 +44,7 @@ async function locate(deps: Dependencies, leaseId: string): Promise<Located | Di
 async function fenceLaunch(deps: Dependencies, record: AttemptRecord, leaseId: string): Promise<string | undefined> {
   if (await deps.runtime.fence(deps.contextId, leaseId)) return undefined;
   if (await deps.runtime.storage.launchKind(deps.contextId, leaseId) === "fence") return undefined;
-  const runtime = (await deps.runtime.discover(deps.contextId)).find(r => r.binding.input.identity.leaseId === leaseId);
+  const runtime = (await deps.runtime.discover(deps.contextId, { leaseId })).find(r => r.binding.input.identity.leaseId === leaseId);
   const stopped = deps.attempts.confirmations(record).some(c => c.fact === "worker_stopped" && c.scope.leaseId === leaseId &&
     (c.scope.sessionId === undefined || c.scope.sessionId === runtime?.binding.input.identity.sessionId));
   if (stopped || (runtime ? runtime.child.status !== "unknown" : resolvedBy(record, "worker_stopped"))) return undefined;
@@ -83,7 +83,7 @@ async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt
 
 /** Runs the retention check again from the worker's recorded result, as dispatch did when the attempt finished. */
 async function recheck(deps: Dependencies, attempt: AttemptAssessment): Promise<RetentionResult | string> {
-  const runtime = (await deps.runtime.discover(deps.contextId)).find(r => r.binding.input.identity.leaseId === attempt.attempt.leaseId);
+  const runtime = (await deps.runtime.discover(deps.contextId, { leaseId: attempt.attempt.leaseId! })).find(r => r.binding.input.identity.leaseId === attempt.attempt.leaseId);
   if (!runtime) return "The attempt has no runtime records, so its worker's result cannot be checked";
   let report;
   try { report = validateWorkerResult(await readJsonFile(runtime.binding.resultPath), runtime.binding.input); }
@@ -132,7 +132,8 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   let policy: ResolvedPolicy;
   try { policy = deps.policy ? await resolvePolicy(deps.policy) : { kind: "manual", sources: { kind: "default" }, forbidden: [] }; }
   catch (error) { return refused("fix_configuration", `The finalisation policy cannot be resolved: ${error instanceof Error ? error.message : String(error)}`, base); }
-  if (policy.refusal) return refused("fix_configuration", policy.refusal, base);
+  const policyPermission = checkCanIntegrate(attempt.facts, { accepting, retained: true, fastForward: true, policyRefusal: policy.refusal });
+  if (!policyPermission.allowed) return refused(policyPermission.nextAction, policyPermission.detail, { ...base, observed: { refusal: policyPermission } });
 
   const leased = record.entries.find(e => e.kind === "leased");
   let acceptedCommit: string | undefined;
@@ -151,7 +152,8 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   }) : recheck(deps, attempt);
   const retention = await check();
   if (typeof retention === "string") return refused("inspect_attempt", retention, base);
-  if (!retention.retained) return refused("inspect_attempt", `The work is not retained: ${retention.findings.join("; ")}`, { ...base, retention });
+  const integrationPermission = checkCanIntegrate(attempt.facts, { accepting, retained: retention.retained, fastForward: true });
+  if (!integrationPermission.allowed) return refused(integrationPermission.nextAction, `${integrationPermission.detail}: ${retention.findings.join("; ")}`, { ...base, retention, observed: { refusal: integrationPermission } });
 
   // Under local-merge, check before any change that the target can be fast-forwarded, or already contains the work.
   const outputBranch = attempt.attempt.outputBranch!;
@@ -164,7 +166,8 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
     const from = await branchHead(git, policy.targetBranch!);
     if (!to || !from) return refused("inspect_attempt", `Branch ${!to ? outputBranch : policy.targetBranch} cannot be read in the backing repository`, base);
     if (!await isAncestor(git, to, from)) {
-      if (!await isAncestor(git, from, to)) return refused("inspect_attempt", `${policy.targetBranch} cannot be fast-forwarded to ${outputBranch}: it has commits the output branch does not`, base);
+      const permission = checkCanIntegrate(attempt.facts, { accepting, retained: true, fastForward: await isAncestor(git, from, to) });
+      if (!permission.allowed) return refused(permission.nextAction, `${policy.targetBranch} cannot be fast-forwarded to ${outputBranch}: it has commits the output branch does not`, { ...base, observed: { refusal: permission } });
       integration = { target: policy.targetBranch!, from, to };
     } else if (!record.entries.some(e => e.kind === "integrated")) unrecorded = { target: policy.targetBranch!, commit: to };
   }
@@ -192,7 +195,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
       if (!("record" in current)) return current;
       const permission = checkCanAcceptOutput(current.attempt.facts, true);
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
-      await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, operator);
+      await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, operator, current.record);
     }
     catch (error) { return stopped(error, "record the operator's output acceptance"); }
   }
@@ -214,7 +217,13 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
     catch (error) { return stopped(error, `record that ${unrecorded.target} contains the work`); }
   }
   if (task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done")) {
-    try { await deps.attempts.finishAttempt(record, task); }
+    try {
+      const current = await locate(deps, options.leaseId);
+      if (!("record" in current)) return current;
+      const permission = checkCanFinish(current.attempt.facts, accepting);
+      if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
+      await deps.attempts.finishAttempt(record, task, current.record);
+    }
     catch (error) { return stopped(error, "record the task as done"); }
   }
   // The PRD's condition 2: retention is checked again immediately before the lease is returned.
@@ -252,7 +261,11 @@ async function discardAttempt(deps: Dependencies, options: { leaseId: string; no
   const fenced = await fenceLaunch(deps, record, options.leaseId);
   if (fenced) return refused("inspect_attempt", fenced, base);
   try {
-    await deps.attempts.discardAttempt(record, task, operator, options.leaseId, options.note);
+    const current = await locate(deps, options.leaseId);
+    if (!("record" in current)) return current;
+    const permission = checkCanDiscard(current.attempt.facts, options.confirm);
+    if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
+    await deps.attempts.discardAttempt(record, task, operator, options.leaseId, options.note, current.record);
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard", async () => false); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }

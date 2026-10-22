@@ -39,6 +39,8 @@ flowchart TD
 
 Worker liveness does not prove task completion. A lease does not prove a worker is running. A task marked in flight does not prove either. Switchboard observes each owner separately.
 
+`observeAttempt` reads one attempt and its owners; `observeAttempts` shares owner reads across a context. An unreadable owner stays unknown with its reason. `assessAttempt` and `assessAttempts` are pure: they derive the state and next action for people, and the facts used by operation-specific safety checks. `status` only presents that assessment, with optional activity summaries and transcript paths. Commands that change anything never call `status`, and an observation is not lasting permission – they recheck the relevant records in the transaction or the owner immediately before an external change.
+
 ## Identity
 
 Use the unchanged task ID as Treehouse's `lease_holder` and propagate it into runtime metadata, worker instructions, logs and future supervisor references. Record the task-store/repository context alongside it; Phase 1 operates within one configured context and does not assume task IDs are globally unique.

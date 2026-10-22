@@ -36,6 +36,18 @@ test("a request is forwarded once or withdrawn, never both; claims and results c
   assert.deepEqual(await unclaimedRequests(record), []);
 });
 
+test("submitting with an old runtime snapshot refuses an observed exit or a stop confirmation", async () => {
+  for (const stopped of [false, true]) {
+    const f = fixture();
+    const record = await f.records.reserve(f.input);
+    if (stopped) await f.records.recordOperatorStop(record);
+    else await f.records.recordChildExit(record, { started: true, code: 0, signal: null });
+    assert.equal(record.child.status, "unknown", "the caller still has its old snapshot");
+    await assert.rejects(submitRequest(record, { kind: "stop", sender: "operator" }), /not running/);
+    assert.deepEqual(await unclaimedRequests(record), []);
+  }
+});
+
 test("only the owning dispatcher or the original sender can claim a request", async () => {
   const f = fixture();
   const record = await f.records.reserve(f.input);
