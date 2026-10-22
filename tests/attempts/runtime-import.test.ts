@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { importAttempts } from "../../src/attempts/import.ts";
+import { importAttempts, importRuntime } from "../../src/attempts/import.ts";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { configSchema, databasePath } from "../../src/config.ts";
 import { RuntimeRecords, key, writeOnce } from "../../src/runtime/records.ts";
@@ -121,4 +121,45 @@ test("import refuses a launch whose directory was reserved before its binding wa
   const directory = join(f.config.runtimeRoot, key("context"), key("pending"));
   await mkdir(directory, { recursive: true });
   await assert.rejects(importAttempts(f.config), /may still be running/);
+});
+
+test("import --runtime brings the runtime files into a database whose attempts were imported before runtime records moved into it", async () => {
+  const f = await fixture();
+  const observed = await f.record("observed");
+  const confirmed = await f.record("confirmed");
+  await f.runtime.recordChildExit(observed, { started: true, code: 0, signal: null });
+  await f.runtime.recordOperatorStop(confirmed, "Checked by the operator");
+  await assert.rejects(importRuntime(f.config), /no attempts; use import --attempts/);
+  // As in real records, each attempt recorded its worker's finish.
+  for (const record of [observed, confirmed]) await f.attempts.append(record.ref, "worker_finished", { status: "reported", runtimeDirectory: record.directory });
+  // Recreate that state: import the attempts with the runtime files out of the way, then remove the launch rows the
+  // current import writes for leased attempts, which the older import did not.
+  const context = join(f.config.runtimeRoot, key("context"));
+  await rename(context, `${context}.hidden`);
+  await importAttempts(f.config);
+  await rename(`${context}.hidden`, context);
+  const tasks = await SqliteTaskStore.open({ path: databasePath(f.config) });
+  try {
+    const trigger = String(tasks.database.get("SELECT sql FROM sqlite_master WHERE name = 'launches_not_removed'")!.sql);
+    await tasks.database.transaction(() => {
+      tasks.database.run("DROP TRIGGER launches_not_removed");
+      tasks.database.run("DELETE FROM launches");
+      tasks.database.run("DELETE FROM worker_claims");
+      tasks.database.run(trigger);
+    });
+  } finally { tasks.close(); }
+  const before = await files(f.config.runtimeRoot);
+  const result = await importRuntime(f.config);
+  assert.deepEqual({ ok: result.ok, runtime: result.runtime, fences: result.fences }, { ok: true, runtime: 2, fences: 0 });
+  assert.deepEqual(await files(f.config.runtimeRoot), before, "Import must leave every old file unchanged");
+  const reopened = await SqliteTaskStore.open({ path: databasePath(f.config) });
+  try {
+    const records = await new RuntimeRecords(f.config.runtimeRoot, reopened.database).discover("context");
+    assert.deepEqual(records.find(r => r.binding.input.identity.taskId === "observed")!.child, { status: "exited", exit: { started: true, code: 0, signal: null } });
+    const stop = records.find(r => r.binding.input.identity.taskId === "confirmed")!;
+    assert.equal(stop.child.status, "operator_confirmed_stopped");
+    if (stop.child.status === "operator_confirmed_stopped") assert.equal(stop.child.note, "Checked by the operator");
+    assert.equal(new AttemptStore(reopened.database, "context").confirmations(confirmed.ref).filter(c => c.fact === "worker_stopped").length, 1);
+  } finally { reopened.close(); }
+  await assert.rejects(importRuntime(f.config), /already has runtime records/);
 });

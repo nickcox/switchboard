@@ -236,3 +236,90 @@ export async function importAttempts(config: Config) {
     for (const suffix of ["", "-wal", "-shm"]) await rm(`${staging}${suffix}`, { force: true });
   }
 }
+
+const hasRuntime = (database: Database) => Boolean(database.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'launches'") &&
+  database.get("SELECT 1 FROM launches LIMIT 1"));
+
+/**
+ * Offline migration of the old runtime files into a database whose attempts were imported before runtime records
+ * moved into the database. Follows importAttempts: settled records only, a validated VACUUM copy, then replacement.
+ */
+export async function importRuntime(config: Config) {
+  await requireSettled(config);
+  const path = databasePath(config);
+  await requireRetainedStorage(path, [config.workspaces.poolRoot]);
+  await stat(path); // Do not create an empty task database by accident.
+  const staging = `${path}.runtime-import-${randomUUID()}`;
+  const context = config.contextId;
+  let source: Database | undefined;
+  let copy: Database | undefined;
+  try {
+    source = await Database.open(path, config.databaseRetryMs, { migrate: false });
+    if (!hasAttempts(source)) throw new TaskStoreError("rejected", "The database has no attempts; use import --attempts, which also imports runtime records");
+    if (hasRuntime(source)) throw new TaskStoreError("rejected", "The database already has runtime records");
+    const open = (database: Database) => Number(database.get("SELECT count(*) AS n FROM attempts WHERE context = ? AND number IS NOT NULL AND closed = 0", context)!.n);
+    if (open(source) > 0) throw new TaskStoreError("rejected", "Import requires every attempt to be settled");
+    const legacy = await readLegacyRuntime(config.runtimeRoot, context);
+    if (legacy.freshHeartbeat) throw new TaskStoreError("rejected", "Import refuses while a dispatcher's heartbeat is fresh");
+    if (legacy.pendingRequest) throw new TaskStoreError("rejected", "Import refuses a control request that was claimed but not answered");
+    const before = { tasks: source.all("SELECT * FROM tasks ORDER BY position"), attempts: source.all("SELECT * FROM attempts ORDER BY context, task, number"),
+      entries: source.all("SELECT * FROM attempt_entries ORDER BY context, task, attempt, sequence"), confirmations: source.all("SELECT * FROM confirmations ORDER BY id") };
+    await source.vacuumInto(staging);
+    copy = await Database.open(staging, config.databaseRetryMs);
+    const store = new AttemptStore(copy, context);
+    const attempts = store.list();
+    for (const runtime of legacy.records) {
+      if (runtime.child.status === "unknown" && !attempts.some(a => summarise(a).leaseId === runtime.binding.input.identity.leaseId &&
+        store.confirmations(a).some(c => c.fact === "worker_stopped"))) throw new TaskStoreError("rejected", "Import refuses a worker that may still be running");
+      if (!attempts.some(a => summarise(a).leaseId === runtime.binding.input.identity.leaseId)) throw new Error("A runtime binding has no attempt");
+    }
+    await copy.transaction(() => {
+      for (const record of attempts) {
+        const summary = summarise(record);
+        if (!summary.leaseId) continue;
+        const runtime = legacy.records.find(r => r.binding.input.identity.leaseId === summary.leaseId);
+        const directory = runtime?.directory ?? join(config.runtimeRoot, key(context), key(summary.leaseId));
+        const claimId = runtime ? randomUUID() : null;
+        const at = runtime?.binding.createdAt ?? record.entries[0]!.recordedAt;
+        if (claimId) copy!.run("INSERT INTO worker_claims VALUES(?,?,?,?,?,?,?,?)", claimId, context, record.taskId, record.attempt, 0, at, at, at);
+        copy!.run("INSERT INTO launches VALUES(?,?,?,?,?,?,?,?,?)", context, record.taskId, record.attempt, summary.leaseId,
+          at, runtime ? "launch" : "fence", directory, runtime ? JSON.stringify(runtime.binding) : null, claimId);
+        if (runtime?.exit) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "exit", runtime.exit.observedAt, JSON.stringify(runtime.exit.childExit));
+        if (runtime?.start) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "session_start", runtime.start.observedAt, JSON.stringify(runtime.start.thinkingLevel));
+        if (runtime?.stop && !store.confirmations(record).some(c => c.fact === "worker_stopped")) {
+          copy!.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope,note) VALUES(?,?,?,?,?,?,?,?)", context, record.taskId,
+            record.attempt, "worker_stopped", "operator", runtime.stop.confirmedAt, JSON.stringify({ leaseId: summary.leaseId, sessionId: runtime.binding.input.identity.sessionId }), runtime.stop.note ?? null);
+        }
+      }
+    });
+    // Every runtime record reads back from the copy as it was in the files, and nothing else changed.
+    const imported = await new RuntimeRecords(config.runtimeRoot, copy).discover(context);
+    const byDirectory = (a: { directory: string }, b: { directory: string }) => a.directory.localeCompare(b.directory);
+    const expected = legacy.records.map(({ exit, stop, start: _start, ...runtime }) => {
+      const record = attempts.find(a => summarise(a).leaseId === runtime.binding.input.identity.leaseId)!;
+      const confirmation = store.confirmations(record).find(c => c.fact === "worker_stopped");
+      return { ...runtime, child: exit ? runtime.child : confirmation ? {
+        status: "operator_confirmed_stopped", confirmedAt: confirmation.confirmedAt, ...(stop?.note ? { note: stop.note } : {}),
+      } : runtime.child };
+    });
+    assert.deepEqual(imported.map(({ storage: _storage, claimId: _claimId, ...record }) => record).sort(byDirectory), expected.sort(byDirectory), "Imported runtime records differ from the files");
+    assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), before.tasks.map(task => ({ ...task })), "Tasks changed in the copy");
+    assert.deepEqual(copy.all("SELECT * FROM attempts ORDER BY context, task, number"), before.attempts, "Attempts changed in the copy");
+    assert.deepEqual(copy.all("SELECT * FROM attempt_entries ORDER BY context, task, attempt, sequence"), before.entries, "Attempt entries changed in the copy");
+    // Check again that nothing changed in the database or the files while the copy was built.
+    await requireSettled(config);
+    if (open(source) > 0 || hasRuntime(source)) throw new TaskStoreError("rejected", "The database changed during import");
+    assert.deepEqual(source.all("SELECT * FROM attempt_entries ORDER BY context, task, attempt, sequence"), before.entries, "Attempts changed during import");
+    assert.deepEqual(source.all("SELECT * FROM confirmations ORDER BY id"), before.confirmations, "Confirmations changed during import");
+    assert.deepEqual((await readLegacyRuntime(config.runtimeRoot, context)).records, legacy.records, "Runtime files changed during import");
+    copy.checkpoint();
+    copy.close();
+    source.checkpoint();
+    source.close();
+    await rename(staging, path);
+    return { ok: true, runtime: legacy.records.length, fences: attempts.filter(a => summarise(a).leaseId && !legacy.records.some(r => r.binding.input.identity.leaseId === summarise(a).leaseId)).length, path };
+  } finally {
+    copy?.close(); source?.close();
+    for (const suffix of ["", "-wal", "-shm"]) await rm(`${staging}${suffix}`, { force: true });
+  }
+}

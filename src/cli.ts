@@ -20,7 +20,7 @@ import { requireRetainedStorage } from "./infra/storage.ts";
 const usage = `Usage:
   switchboard --version
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
-  switchboard import (--attempts | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
+  switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
   switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
