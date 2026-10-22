@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineDoc, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { fixtureDirectory } from "./host.ts";
+import { fixtureDirectory } from "./paths.ts";
 
 const [mode, path] = process.argv.slice(2);
 assert.ok(path && ["start", "resume", "inspect"].includes(mode!));

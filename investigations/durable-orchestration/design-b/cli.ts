@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeOwners } from "../scenario/owners.ts";
 import { HostClient } from "./client.ts";
-import { ExecutionHost, fixtureDirectory } from "./host.ts";
+import { fixtureDirectory } from "./paths.ts";
 
 const [command, directoryArgument, argument, waitArgument] = process.argv.slice(2);
 try {
@@ -10,6 +10,7 @@ try {
   const directory = await fixtureDirectory(directoryArgument);
   const client = new HostClient(directory);
   if (command === "init") {
+    const { ExecutionHost } = await import("./host.ts");
     const ids = (argument ?? "request-1,one,two,three").split(",");
     await writeFile(join(directory, "config.json"), JSON.stringify({ maxAttempts: 1 }), { flag: "wx", flush: true });
     const owners = new FakeOwners(join(directory, "owners"), join(directory, "host"));
@@ -18,6 +19,7 @@ try {
     await host.close();
     console.log(JSON.stringify({ status: "initialised", directory }));
   } else if (command === "host") {
+    const { ExecutionHost } = await import("./host.ts");
     const config = JSON.parse(await readFile(join(directory, "config.json"), "utf8"));
     const owners = new FakeOwners(join(directory, "owners"), join(directory, "host"));
     const host = await ExecutionHost.open(directory, owners, { maxAttempts: config.maxAttempts });

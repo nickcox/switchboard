@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertSuccessful, findAttempt } from "../scenario/assertions.ts";
+import { assertRefused, assertSuccessful, findAttempt } from "../scenario/assertions.ts";
 import { acceptReview, sampleRequest } from "../scenario/common-tests.ts";
 import { ProcessOwners } from "../design-a/process-owners.ts";
 import { ExecutionHost } from "./host.ts";
@@ -43,4 +43,27 @@ test("B: the host owns a real child; its result, positive exit and operator acce
   }] });
   await acceptReview(fixture, request);
   await assertSuccessful(driver, owners, request, await driver.advance(request.requestId));
+});
+
+test("B: shutdown joins the host's synthetic child without treating orchestration close as termination evidence", async t => {
+  await mkdir(root, { recursive: true });
+  const directory = await mkdtemp(join(root, "design-b-shutdown-"));
+  const request = sampleRequest();
+  const owners = new ProcessOwners(join(directory, "owners"), join(directory, "host"), request);
+  await owners.initialise();
+  const host = await ExecutionHost.open(directory, owners, { manualClock: true,
+    seedTaskIds: [request.taskId], closeWorkers: () => owners.close() });
+  let reopened: ExecutionHost | undefined;
+  t.after(async () => { await reopened?.close(); await host.close(); await rm(directory, { recursive: true, force: true }); });
+  const driver = new HostClient(directory);
+  await driver.submit(request);
+  const attempt = await findAttempt(driver, request.requestId);
+  await host.close();
+  const counts = await owners.counters(attempt.id);
+  assert.equal(counts.worker_exit, 0, "The fixture did not observe a successful worker exit");
+  assert.equal(counts.cancel, 0, "Closing orchestration is distinct from requesting worker cancellation");
+  assert.equal(counts.return, 0);
+  reopened = await ExecutionHost.open(directory, owners, { manualClock: true });
+  assertRefused(await driver.submit(request), "possibly_running");
+  assert.equal((await owners.counters(attempt.id)).launch, 1);
 });

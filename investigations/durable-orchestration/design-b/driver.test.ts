@@ -50,6 +50,54 @@ test("B: public diagnostics expose a persisted sleep, separate from domain capac
   await assertSuccessful(fixture.driver, fixture.owners, request, await fixture.driver.advance(request.requestId));
 });
 
+test("B: a disconnected submit client does not cancel execution or create a replacement attempt", async t => {
+  let reached!: () => void;
+  let release!: () => void;
+  const marker = new Promise<void>(resolve => { reached = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const fixture = await create({ interrupt: async point => {
+    if (point === "prompted:ack:after") { reached(); await gate; }
+  } });
+  t.after(async () => { release(); await fixture.close(); });
+  const request = sampleRequest();
+  const abort = new AbortController();
+  const response = fetch(`http://127.0.0.1:${fixture.host.endpoint.port}/`, {
+    method: "POST", headers: { Authorization: `Bearer ${fixture.host.endpoint.token}` },
+    body: JSON.stringify({ method: "submit", request }), signal: abort.signal,
+  }).then(value => value.json(), () => "disconnected");
+  await marker;
+  abort.abort();
+  release();
+  assert.equal(await response, "disconnected");
+  assert.equal((await fixture.driver.submit(request)).status, "waiting");
+  const snapshot = await fixture.driver.inspect();
+  assert.equal(snapshot.attempts.length, 1);
+  const counts = await fixture.owners.counters(snapshot.attempts[0]!.id);
+  assert.equal(counts.acquire, 1);
+  assert.equal(counts.launch, 1);
+  assert.equal(counts.prompt, 1);
+});
+
+test("B: a review checkpoint does not authorise finalisation after the owner rejects it", async t => {
+  let owners: FakeOwners;
+  const fixture = await create({ interrupt: async point => {
+    if (point === "review:ack:after") {
+      const attempt = fixture.host.engine.operations.store.list()[0]!;
+      await owners.review(attempt.id, attempt.result!.commit, "rejected");
+    }
+  } });
+  owners = fixture.owners;
+  t.after(() => fixture.close());
+  const request = sampleRequest();
+  await fixture.driver.submit(request);
+  await finishWorker(fixture, request);
+  await acceptReview(fixture, request);
+  assertRefused(await fixture.driver.advance(request.requestId), "review_rejected");
+  const attempt = await findAttempt(fixture.driver, request.requestId);
+  assert.equal(attempt.accepted, false);
+  assert.equal((await owners.counters(attempt.id)).return, 0);
+});
+
 test("B: exclusive host ownership refuses even a second open in the same process", async t => {
   const fixture = await create();
   t.after(() => fixture.close());

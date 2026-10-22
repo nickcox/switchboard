@@ -140,7 +140,7 @@ export class Operations {
       return { next: "accept" };
     }
     const refusal = await this.permission(attempt);
-    if (refusal) return { outcome: refusal, retry: true };
+    if (refusal) return { outcome: refusal, retry: refusal.status === "refused" && refusal.code !== "review_rejected" };
     const snapshot = await this.store.assessment(attempt, records);
     if (phase === "accept") {
       if (!attempt.accepted) {
@@ -186,6 +186,10 @@ export class Operations {
   private async permission(attempt: Attempt): Promise<Outcome | null> {
     const controls = await this.owners.controls();
     if (controls.unknown) return refuse("owner_unknown", attempt.id);
+    const signals = (await this.owners.forAttempt(attempt.id)).filter(record => record.commit === attempt.result!.commit &&
+      record.effect === (attempt.request.delivery.acceptance === "review" ? "review" : "merge"));
+    if (signals.some(record => record.decision === "rejected")) return refuse("review_rejected", attempt.id);
+    if (!signals.length) return refuse("owner_unknown", attempt.id);
     if (!controls.clean || controls.retainedCommit !== attempt.result!.commit) return refuse("not_retained", attempt.id);
     const approval = approvalFor(attempt, this.now(), controls);
     if (!approval) return refuse("approval_required", attempt.id);

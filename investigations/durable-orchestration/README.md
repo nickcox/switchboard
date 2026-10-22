@@ -361,3 +361,124 @@ Read the installed README, 1.4.0 changelog, [matching specification](https://git
 The baseline restart probe was rerun against the installed **1.4.0** package with `node --test investigations/durable-orchestration/smoke.test.ts`. It passed: task **7** reopened pending at `finish`, with request `baseline-1`, and became terminal with `checkpoint recovered`; the independent log contains `prepare` once and `finish` once. The only probe source adjustment is the now-required explicit `checkpointWhen` on its document. The deliberate exit remains status 75 without `Harness.close()`. This is still JSONL process-restart evidence, not a power-loss or SQLite upgrade claim.
 
 B uses SQLite's documented default **WAL / synchronous NORMAL** in its engine store, not the application's FULL settings. This deliberately exposes the release's default adoption constraint. The earlier JSONL fsync caveat still applies to the smoke probe. Domain exclusion facts remain in the FULL application database; if an engine checkpoint is lost after an external effect, those facts and independent receipts must cause inspection/refusal rather than a second effect. Neither backend is power-loss qualified by these tests.
+
+## Step 4 – Design B: Durable-owned execution
+
+Implemented from Switchboard **`7bff959a5749b0785601e872851123634af8a965`**, on macOS/Darwin arm64 and Node **v26.7.0**. This is B's common scenario and execution host, not a production integration or the complete step 5 failure matrix. The original A implementation is unchanged. There are no `src/` changes, production dependencies, real task mutations, real Treehouse operations, agent launches, model calls, publishing or merging. All task-store mutations here are disposable fixture work.
+
+### Execution and application boundary
+
+`design-b/engine.ts` installs one versioned deterministic Durable task definition with phases `reserve → acquire → start → launch → prompt → observe → review → accept → done → return`. Each admitted caller request has one task; task creation and its caller-ID index entry share a Durable commit. This is **not** `Conversation.submit()` deduplication. Request input is frozen, checked for conflicts and correlated with the application reservation by the original caller ID. Both review and simulated-forge-merge gates use the unmodified `defineCommonTests` suite, through actual HTTP clients.
+
+`design-b/operations.ts` supplies the domain operations and adapter calls, rather than inheriting from A's driver or running its step runner. It reuses `design-a/store.ts` as the **same application bridge**: production `SqliteTaskStore`, `AttemptStore`, `RuntimeStore`, `validateWorkerResult`, `assessAttempt` and operation-specific safety checks still own readiness, transactional capacity, task exclusion, start, result interpretation, review hold, exact confirmations and finalisation. Durable does not define those rules. The current production foreground `dispatchOnce` and `finish` are not called wholesale for the same reason as in A: their concrete adapters and composition do not expose the shared scenario's individual operations. Production integration still needs that extraction, not another copy of policy.
+
+Worker/review waits commit an observable response and a persisted `sleeping` checkpoint together in **Durable**, then release the invocation. The default polling interval is **250 ms**, deliberately short for a fixture, not a recommended forge API interval. Normal hosts use Durable's scheduler/timer; fixture clocks use `onWake` and explicit `advance` to move the engine clock to a stored deadline and call `resume()`. Approval expiry still uses the fixture-supplied domain clock; both clocks are `Date.now` in the ordinary host. `advance` waits for another committed response; it does not implement the workflow or own a worker. Normal execution continues when no client is connected. No model is asked what to do while waiting. Read/permission waits may run again; an external-effect error is terminal and is never automatically retried.
+
+Each acquisition and prompt has an application intent before its external call; launch has the existing immutable launch row; return has its application intent, fresh permission check and exact-owner read-back. Recovered pre-worker phases inspect independent receipts and refuse acquisition/worker uncertainty rather than automatically launch, adopt or reprompt. A recovered worker wait without positive exit evidence becomes `possibly_running`, including on a retried submit, and blocks new domain admission even with spare capacity. A positive identity-validated exit receipt may supply result recovery; it is not worker adoption. Review/finalisation recovery checks current controls, exact-commit review/merge evidence, retention, scope and expiry again. A newly rejected review blocks acceptance even after an accepted review checkpoint. A lost return acknowledgement remains uncertain, not permission to call return twice.
+
+`design-b/host.ts` is one foreground execution host for one disposable context root (the shared scenario's context ID is `scenario`). It alone opens both databases and holds worker handles through its owner adapter. `ProcessOwners` and its real synthetic child are imported from A, not copied. The child independently records its prompt and result outside host storage and deliberately remains alive after writing its result. B observes its positive exit before validating completion, then still requires review and scoped operator no-processes approval. Shutdown joins the host's known synthetic child without manufacturing a successful exit receipt or returning its lease. This is no containment or descendant-termination claim.
+
+### Persistent ownership in B
+
+The following is the complete record boundary for this prototype; unused production schema is identified rather than counted as another active execution journal.
+
+| Record/location | Authoritative owner and purpose |
+| --- | --- |
+| `config.json` | Fixture/operator: host capacity configuration. The public request API cannot set capacity, readiness or approval. Production would validate context identity and configuration compatibility across starts |
+| `host/owner/claim.json` and its exclusively created directory | Host: exclusive context ownership, random owner ID, PID and start time. Created **before either storage opens**. A claim surviving a crash blocks all replacement hosts; age or a dead-looking PID never permits takeover |
+| `host/owner/endpoint.json` | Host: routing to its loopback port and bearer token, correlated by owner ID. Published only after storage and transport are ready; removed only after transport, engine and known worker handles close. It is not an attempt or approval record |
+| `host/switchboard.db`: `tasks`, `dependencies` | Switchboard application: project-task readiness, dependencies, operator edits and final state, never inferred from a Durable outcome |
+| `attempt_numbers`, `attempts`, `attempt_entries`, `confirmations` in that database | Switchboard application: stable caller/attempt reservation, maximum and per-task exclusion, frozen contract, immutable start/outcome/acceptance/return facts and exact operator scopes. Changes that belong together use existing application transactions |
+| `launches`, `worker_claims`, `worker_observations` | Switchboard runtime boundary: immutable launch exclusion/binding, ownership of this invocation's channel, positive exit evidence. A restart does not adopt a previous claim. Heartbeat/activity/control-request loops are not simulated by this prototype |
+| `prototype_requests` | Shared application bridge: original shared input and scenario attempt UUID, written before reservation. It freezes additional fake-contract fields absent from the production entry schema; it is not another capacity counter |
+| `prototype_facts` | Shared application bridge: session correlation, acquisition/prompt/cancellation intents and acknowledgements, the abbreviated validated fake result, exact-commit review acknowledgement. These are domain/adaptation facts, **not a workflow cursor**. The result copy is an inherited fake-file shortcut; production should read retained worker-owned files rather than add this report ledger |
+| `prototype_responses` | Created by the reused bridge but **empty in B**. B never writes A's application response cache. A specific test verifies this; all execution response publication is engine-owned |
+| Other application schema (`worker_activity`, `control_requests`, archives, pending deletions and schema bookkeeping) | Existing Switchboard storage. No activity/control/archive/prune records are populated by B; schema/migration metadata still belongs to the application. No second dispatcher-control journal is added |
+| `host/durable.db`: `tasks` | Durable: task input, current phase/poll checkpoint, persisted sleep deadline, abort mark, restart count and terminal execution receipt. No whole `Attempt`, project-task state, approval or process-termination assertion is copied into the checkpoint |
+| `documents` / `document_revisions`: `investigation.b.requests` | Host integration through Durable: caller-ID-to-task correlation and latest response/revision. Mapping creation is atomic with task creation; response changes are atomic with the next engine checkpoint. A response is presentation/execution progress, not domain acceptance |
+| Built-in Durable root `conversations` and `pi.agent`, `pi.live`, `pi.inbox`, `pi.provider`, `pi.usage` documents | Durable: its required root and built-in metadata, created by `root()`. No agent model/provider is configured; no generation, tool task or user submission is admitted. `entries` and `submissions` remain empty |
+| `durable_schema`, `durable_metadata`, `record_ids` | Durable: backend schema version, ID/sequence allocation and immutable identity namespace; not Switchboard attempt numbering. Indexes are derived storage access paths, not another authority |
+| SQLite WAL/SHM files | Their respective backend: commit/recovery implementation, not an extra application record. Application FULL settings and engine NORMAL settings remain distinct |
+| `owners/effects/`, `owners/controls.json` | Independent fake workspace/worker/forge owners and test/operator authority, as in step 3. Receipts/counters survive host loss. Only these controls can supply scoped operator approvals; request arguments cannot |
+| `owners/workers/<attempt>/prompts.jsonl`, `result.json` in child tests | External synthetic worker: its independently recorded prompt and claimed report. Host checkpoints cannot create positive termination or acceptance evidence |
+| `*.json` request files in CLI tests | Caller: immutable retry inputs, not another reservation or execution journal |
+| Release probe `durable.db`, `invocations.jsonl`; baseline JSONL probe storage/log | Durable owns probe execution/checkpoints; the independent diagnostic files count invocations. Separate fixtures, not B's application/worker records |
+
+The input contract exists in both the Durable task input and `prototype_requests` so either side can detect an incompatible request after a lost cross-store response. The latest typed outcome exists in the engine response document and its terminal receipt for queryability. Neither is a second full application lifecycle. B does **not** write A's response cache or a second checkpoint-position table. The domain result and review facts remain application-owned even when a phase checkpoint advances past them.
+
+There are **three independent commit boundaries**: application transactions, Durable commits, and external owner effects. They are not atomic together. Sharing a SQLite file or process would not change the APIs' transaction boundaries. If task creation commits but reservation does not, its original input can safely ask the application to reserve by the same ID; if reservation/effect facts commit but the next checkpoint does not, B reads them and conservatively refuses an uncertain effect. A full application record plus an engine checkpoint is justified only where they record different facts. Losing either entire database is not automatically repaired. No power-loss, corruption-repair or cross-store exactly-once claim follows.
+
+### Host and CLI cost
+
+| Concern | Implemented cost and limitation |
+| --- | --- |
+| Transport | Loopback HTTP POST with bounded 64 KiB JSON commands, a private bearer endpoint, structured outcomes and 15-second transport deadlines. `submit`, `inspect`, `advance`, `wait`, `cancel`, `diagnostics`, `shutdown` are explicit commands. Clients load no Durable runtime and open no database. The runtime is dynamically imported only by host/init. Same-user files/token are hygiene, not a security sandbox or remotely authenticated service |
+| Admission and deduplication | One in-host command line serialises mutations; the existing application transaction independently enforces the maximum. Two actual CLI processes at maximum 2 admit two attempts and refuse a third. No custom queue of ready project tasks is added; requests refused at capacity retain a discoverable terminal engine result |
+| Lost clients | An actual aborted HTTP submit, paused after the prompt acknowledgement, leaves one admitted attempt and one prompt; retrying the same ID finds it. Client disconnect/time-limited wait does not cancel Durable work. A wait timeout returns the last waiting observation, not success; a transport timeout is uncertain and requires the original ID on retry |
+| Exclusivity | Atomic directory creation before open; canonical fixture-root check; immutable owner identity and private endpoint. Two host processes are refused. No heartbeat, stale takeover or service installation. After SIGKILL, the retained claim is the visible failure and an operator must confirm the old host/workers stopped before removing that **fixture** claim. Production needs an equivalent context claim protocol and diagnostics, not just SQLite file locking |
+| Startup | Explicit `host` command, open application storage, install definitions, open/reconcile Durable, resume its scheduler, bind transport and publish endpoint. There is no automatic host start/restart, daemon detachment or OS service. A persisted deadline cannot start Node; the operator supplies process availability |
+| Shutdown | Seal transport and join admitted requests; close Durable (signal/join invocations, preserve checkpoints), close application storage, then join handles through the host's adapter before releasing its own claim. Generic `shutdown` reports `workerTermination: unverified`, `leases: retained`. Closing Durable is not sending worker cancellation; `cancel` separately durably aborts the task and its handler records/delivers the once-only worker cancellation request. Neither action grants lease-return authority |
+| Failure reporting | Startup/ownership failures go to stderr with exit 2. CLI transport failures return `host_unavailable` plus an operator action; a refusal exits 2. Task adapter errors produce a persisted failed execution receipt and response; `onReport` is available in `diagnostics`. Parked/blocked tasks appear through public `Harness.inspect()`, not private-table queries. Reports are in-memory diagnostics, **not** a retained crash log; a process death may leave only its claim, domain facts, checkpoints and owner evidence. Production still needs a diagnostic sink and operator recovery/retry tooling |
+| Storage/event-loop cost | Two separately owned local SQLite files and extra checkpoint/response commits. Engine defaults use synchronous SQLite calls and a 5-second busy timeout; exclusivity avoids ordinary engine contention but production must consider blocked event-loop diagnostics. The application retains its existing async busy retries. Rewriting the small session request-index document is a fixture shortcut, not a scalable unbounded registry/pruning policy |
+
+One measured macOS run of `host.test.ts`, with other B tests running concurrently, reported **328 ms host startup**, **107 ms repeated-request CLI round trip** (includes a fresh Node client), and **136 ms CLI shutdown plus process join**. These are one fixture observation, not performance guarantees or an A/B benchmark. The tests print fresh JSON timings on every run. CLI failure codes, second-host refusal, optional waiting, hard host loss and post-shutdown unavailability are tested separately from workflow success.
+
+### What B removes, retains and duplicates
+
+No production code is deleted by this investigation. B actually omits **A's custom `steps.ts` runner** and A's foreground `submit/advance` workflow composition. Durable supplies phase position, persisted wait deadlines, scheduler wakeup, terminal receipts, abort coordination and restart-loop parking. HTTP clients do not hold a worker channel or create their own per-command execution owner. There is no application-owned workflow cursor, persistent interval scheduler or A-style response-cache record alongside the Durable task.
+
+This reduces the candidate Phase 3 step runner and orchestration-wait machinery, not readiness, capacity admission, domain attempt facts, request IDs, external-effect intents/read-back, launch exclusion, worker ownership, result validation, operator confirmations, retention or real adapters. The host still needs exclusive ownership, startup/shutdown, command transport, diagnostics and recovery policy. The prototype retains a small command serialiser and bounded response-publication wait loop; those are client transport coordination, not a second workflow journal. Production worker stop/steer claims and budget/heartbeat supervision have **not** been shown removable by B. There is no net code-saving or architecture-selection claim from this happy path.
+
+Physical counts include comments and blank lines and can be reproduced with `wc -l investigations/durable-orchestration/design-b/*.ts`:
+
+| New B code | Lines |
+| --- | ---: |
+| Durable engine/definition and caller-response correlation | 214 |
+| Application operations and owner interpretation | 216 |
+| Host, client, CLI and fixture-path guard | 235 |
+| B scenario/transport/lifecycle/release tests and crash-probe child | 531 |
+| Total | 1,196 |
+
+**Duplication count:** zero copied production adapter modules, zero new copies of the **195-line** application bridge or **107-line** synthetic process adapter/child – both are directly imported from A. The shared fake owners/counters and contract suite are unchanged and reused. Conservatively count **all 216 lines of `operations.ts`** as duplicated application/domain/adapter glue overlapping A's driver, rather than pretending it is free engine code; this is an upper bound for the copied/reshaped interpretation and guards, not a claim of 216 text-identical lines or removable policy. It includes worker-result/receipt interpretation, production schema calls and finalisation checks. No real Pi RPC, Git/retention, Treehouse or forge adapter implementation is reproduced. Integration would extract these operations once at the existing application boundary for both designs; that extraction is not a production refactor authorised by this task.
+
+### Reproduce and scope the evidence
+
+From the repository root:
+
+```sh
+npm install --ignore-scripts
+npm ci --prefix investigations/durable-orchestration --ignore-scripts
+npm run check --prefix investigations/durable-orchestration
+npm test --prefix investigations/durable-orchestration
+# B only (includes the unchanged shared suite through HTTP):
+node --test --test-timeout=30000 'investigations/durable-orchestration/design-b/*.test.ts'
+# Original restart probe, now on 1.4.0:
+node --test investigations/durable-orchestration/smoke.test.ts
+npm run check
+npm test
+```
+
+A manual fixture can be driven in separate terminals without starting any agent:
+
+```sh
+# Use a fresh name. init creates only fake owners and disposable project tasks.
+node investigations/durable-orchestration/design-b/cli.ts init .investigation/durable-orchestration/b-manual
+# Keep this foreground host in one terminal; do not run a second host for the same root.
+node investigations/durable-orchestration/design-b/cli.ts host .investigation/durable-orchestration/b-manual
+# In another terminal, supply a JSON file with the sampleRequest() contract under .investigation/:
+node investigations/durable-orchestration/design-b/cli.ts submit .investigation/durable-orchestration/b-manual .investigation/durable-orchestration/request.json
+node investigations/durable-orchestration/design-b/cli.ts inspect .investigation/durable-orchestration/b-manual
+node investigations/durable-orchestration/design-b/cli.ts diagnostics .investigation/durable-orchestration/b-manual
+node investigations/durable-orchestration/design-b/cli.ts wait .investigation/durable-orchestration/b-manual request-1 1000
+node investigations/durable-orchestration/design-b/cli.ts shutdown .investigation/durable-orchestration/b-manual
+```
+
+`submit <directory> <request-file> [wait-ms]` also optionally waits. No CLI command fabricates an external worker result, forge signal or operator approval; the shared test fixture drives those through `FakeOwners`. The automated tests are the fully reproducible six-step scenario, including both gates. Fixture databases, request files, owner controls and all generated evidence stay under ignored `.investigation/durable-orchestration/`; each test joins its subprocesses and closes its host before cleanup.
+
+B-specific evidence currently passes **44 tests**: the unchanged **28** shared cases through HTTP; domain/engine separation; actual disconnected submit; exclusive ownership; review reopen/current approval; review rejection after its checkpoint; four adapter lost-acknowledgement exceptions; conservative worker-wait reopen; two separate-process host/CLI cases; two real synthetic-child lifecycle cases; and two release-feature probes. The release sleep test calls `runtime.sleepUntil`, closes/reopens SQLite before the deadline, checks the unchanged deadline, advances a controlled clock beyond it and explicitly resumes under `onWake`. The crash-loop test exits without close in five separate task invocations, then a sixth process finds `restarts: 5`, `blocked/restart_limit`, `task_parked` and inactive wake state, with exactly five independent invocation lines. It does not test CPU/OOM exhaustion or automatically retry a parked task.
+
+The adapter lost-acknowledgement cases are exceptions after acquire/launch/prompt/return effects, followed by reopen and unchanged independent counters; they are **not** hard-kill coverage of every B boundary. The separate-process SIGKILL case covers host loss during a worker wait, stale claim refusal and explicit fixture-operator claim removal only. The earlier 38 SIGKILL boundary tests remain shared-owner/reference evidence, not B's complete recovery matrix. Every case is one run per invocation of the suite, not a repeated reliability study.
+
+Still required before an architecture decision: the full A/B failure matrix and repeat counts, unfinished-work 1.3-to-1.4 SQLite upgrade/reopen and rollback procedure, storage faults/power-loss qualification, missing/incompatible-definition recovery tooling, real forge timing/backpressure, platform qualification and one explicitly authorised real Pi/Treehouse integration per design (step 6). No real agent may be launched under this task's no-other-agents instruction. The conservative claim protocol is not production containment or automatic workspace return. These successful paths neither select B nor establish that its additional host/dependency cost is worthwhile.
+
+Final validation for this step passed on macOS/Node **v26.7.0**: clean isolated `npm ci --ignore-scripts`, isolated TypeScript check and all **151 investigation tests** (including **44 B tests** and the rerun baseline restart probe); repository `npm run check`; repository `npm test` – **419 tests, 417 passed, two platform-specific skips, zero failures**. The root scripts still exclude investigation tests, so both suites were run explicitly. No production source or authoritative task/lease records were changed.

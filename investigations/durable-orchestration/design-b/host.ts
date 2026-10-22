@@ -1,30 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { ApplicationStore } from "../design-a/store.ts";
 import type { FakeOwners } from "../scenario/owners.ts";
 import { refuse } from "../scenario/contract.ts";
 import { DurableScenario, type EngineOptions } from "./engine.ts";
 import { Operations, type Options } from "./operations.ts";
+import { fixtureDirectory } from "./paths.ts";
 
 export type Endpoint = { port: number; token: string; ownerId: string; pid: number };
 export type HostOptions = Options & EngineOptions & { seedTaskIds?: string[]; closeWorkers?: () => Promise<void> };
-const temporaryRoot = fileURLToPath(new URL("../../../.investigation/durable-orchestration/", import.meta.url));
-
-export async function fixtureDirectory(path: string): Promise<string> {
-  const directory = resolve(path);
-  const within = relative(temporaryRoot, directory);
-  if (!within || within.startsWith("..") || isAbsolute(within)) throw new Error("Use a disposable directory under .investigation/durable-orchestration");
-  await mkdir(directory, { recursive: true });
-  const canonical = await realpath(directory);
-  const root = await realpath(temporaryRoot);
-  const canonicalWithin = relative(root, canonical);
-  if (!canonicalWithin || canonicalWithin.startsWith("..") || isAbsolute(canonicalWithin)) throw new Error("Fixture directory escapes temporary storage");
-  return canonical;
-}
-
 // Exclusive creation is deliberately not a stale-lock takeover protocol. A crash leaves a claim
 // for an operator to inspect and remove only after confirming the old host and workers stopped.
 export class ExecutionHost {
@@ -48,7 +34,7 @@ export class ExecutionHost {
     const hostDirectory = join(directory, "host");
     await mkdir(hostDirectory, { recursive: true });
     const claimDirectory = join(hostDirectory, "owner");
-    try { await mkdir(claimDirectory); }
+    try { await mkdir(claimDirectory, { mode: 0o700 }); }
     catch (error) {
       throw new Error(`Host ownership unavailable at ${claimDirectory}; inspect the existing claim and confirm host/worker termination before removing it`, { cause: error });
     }
@@ -105,7 +91,7 @@ export class ExecutionHost {
       host = new ExecutionHost(engine, server, endpoint, claimDirectory, options);
       return host;
     } catch (error) {
-      server?.close();
+      if (server?.listening) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
       if (engine) await engine.close(); else store?.close();
       await rm(claimDirectory, { recursive: true, force: true });
       throw error;
