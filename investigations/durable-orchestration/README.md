@@ -785,3 +785,116 @@ Fresh validation on Darwin arm64, Node **v26.7.0**, Git **2.54.0 (Apple Git-157)
 Current physical line counts differ slightly from the earlier tables: A driver/runner **301**, shared bridge **195**, shared process adapter/child **108**; B engine **215**, operations **216**, host/client/CLI/path guard **235**. No production lines were deleted. B omits A's runner/composition but replaces work rather than removing all of its policy. A still lacks comparable production daemon machinery, so a raw line-count difference is not a net production saving. The report records zero demonstrated production deletions and identifies future mechanism reductions separately.
 
 No production source, authoritative task record, Treehouse lease, ADR or PRD was changed for step 7. No agent/model, background host, push, publication or merge was run. The automatic test subprocesses were joined by their suites.
+
+## Follow-up – classified recovery and caller-configured SQLite
+
+23 October 2026, from **`e771e5ceed53f98b8641b3f26a37ddff95bac14a`**, Darwin arm64, Node **v26.7.0**. These two experiments address prototype choices behind the comparison. The comparison report itself is unchanged. No real Pi, model or agent was launched. The tests use independent fake owners and foreground-owned test hosts; the existing repository/investigation suites additionally use their synthetic runtime fixtures and disposable Treehouse repositories. All generated state stays under `.investigation/durable-orchestration/` and every subprocess is joined.
+
+### Experiment 1 – application-classified recovery, in both designs
+
+`scenario/recovery.ts` is shared application/adaptation code, not an engine error policy. A and B explicitly wrap the owner's **read-only** `controls()` and `forAttempt()` calls for an existing attempt. In the real adapter these read Treehouse, retention and stored receipts; neither acquires, launches, prompts or returns anything. The fixture names this owner **Treehouse**. A failed application write, effect call, engine commit or arbitrary exception outside those read boundaries is **not** promoted to a retryable read. In particular, a read hidden inside `returnWorkspace()` is already behind the return intent and does not acquire read-retry permission.
+
+| Classification | Application decision | A | B |
+| --- | --- | --- | --- |
+| Failed owner read, with no pending return intent | Persist the failure and all error fields, including command output; permit another read up to the failure limit | Return a visible `owner_unknown`; the next explicit `advance` reads again | `Operations.run()` returns the refusal with `retry: true`; the existing engine commits the response and a persisted `sleeping` state together |
+| Missing/expired acceptance or no-processes approval | Do not treat an old successful approval check as current authority | Check again on the next `advance` | Keep the existing permission wait and check again at the next deadline |
+| Return intent exists, including an effect without its acknowledgement | A read failure is `effect_uncertain`, never the retryable kind; refuse `finalisation_uncertain` and require reconciliation | A later advance still finds the application intent and cannot call return again | Publish a terminal refusal; a host restart cannot convert it into permission to call return again |
+| Invalid request, invalid result or definite review rejection | Preserve the existing specific refusal; do not turn it into an error wait | Existing application checks | Existing application checks and terminal engine response |
+
+Unknown exceptions still stop rather than wait. The engine's catch-all remains a **terminal** `host_unavailable` fallback, not a classifier. Existing acquire/launch/prompt/return exception and crash tests still pass with no repeated effect. Admission before an attempt exists, storage repair and general-purpose recovery tooling are not added by this finalisation experiment. Approval loss after a return intent also cannot bypass that intent's reconciliation requirement.
+
+The limit is **three failed read calls per request**, cumulatively, not three polls or three new worker attempts. There are at most two retry waits in B; the third failed read produces a terminal `owner_unknown` naming Treehouse and the diagnostics. A likewise stops after three failed advances. Successful reads and approval waits do not erase the failure count. Each immutable `prototype_facts` entry `owner_read_failure:<n>` holds owner, classification, diagnostic fields and failure number. `owner_read_exhausted` fences later reads even if the fault disappears. This is failure accounting at the application boundary, not a saved workflow position. It survives a host restart and does not copy the whole attempt or add a schema/table. Clearing it is deliberately not exposed as an automatic recovery operation.
+
+A's step runner wraps exceptions with the stopped step's name; the shared classifier follows that cause to retain the original diagnostic object. B handles the classification inside `Operations`, before its engine sees the result. B needed **no engine or scheduler change**: its existing `retry` result already publishes a response and stored deadline atomically. The default wait remains **250 ms**. The optional 5 ms response-poll-to-document-watch refactor was not needed and was not done; reconnecting clients still read the stored response.
+
+#### Repeated fault results
+
+`failures/recovery-owners.ts` injects a Treehouse-style error containing `detail`, command, exit status, stdout (`partial listing`) and stderr (`injected read failure`). Host facts target the injection boundary only; independent owner receipts still count effects. `failures/recovery.test.ts` runs **five cases × two designs × three repeats = 30 cases**, each in a fresh fixture:
+
+| Case, three repeats per design | A and B results |
+| --- | --- |
+| Before return, after done but before return intent | First call records `owner_read`; retry completes with exactly **one return**. An approval valid at failure is expired before retry: both first give `approval_required` and zero returns, then complete only after fresh scoped approval |
+| Same failure, then SIGKILL/reopen during retry wait | Same result and one return. B's public inspection shows `sleeping`, phase `return`, deadline **1,000,500**, poll **2**; the replacement process reads the identical stored sleep before advancing the controlled clock. A has no stored wait and needs explicit advance. The old host is killed/joined before removing only the disposable fixture claim |
+| After return intent, before effect | `effect_uncertain`, explicit reconciliation action, **zero returns**, including three later advances |
+| After return effect, before return acknowledgement | `effect_uncertain`, explicit reconciliation action, exactly **one return**, including three later advances; the effect is never repeated |
+| Persistent read failure | Three diagnostic records, refusal naming Treehouse and the **three-attempt** limit, **zero returns**. Removing the injected fault does not silently clear exhaustion or grant another effect |
+
+Two additional `scenario/recovery.test.ts` checks revoke approval specifically after the return intent. Both designs keep checking rather than making missing approval terminal; restoring approval still cannot erase the intent, so they require reconciliation with zero returns. B remains publicly `sleeping` during the missing-approval checks.
+
+Every case independently asserts one acquire, launch and prompt. “Zero effects” in the persistent finalisation case means zero **return** effects; the already completed fixture worker and application done fact are retained, not undone. Every failed command's stdout/stderr remains in application facts, including after reopen and successful completion. The test also checks the first visible refusal carries those diagnostics. These are three repetitions of bounded fake-owner/process experiments, not a provider reliability statistic or an authorised rerun of real B. They do not explain the original Treehouse failure or prove power-loss safety.
+
+### Experiment 2 – the caller can configure the connection in released 1.4.0
+
+**No upstream change is needed.** The convenience `openNodeSqliteStorage(path)` still offers no FULL/fullfsync options and still uses NORMAL, but it is not the only public entry point. The published package exports `SqliteStorage.open(database)` and `NodeSqliteDatabase`, whose public constructor accepts an already opened Node `DatabaseSync`. Neither constructor/open path resets the caller's pragmas. The installed README's Storage section also explicitly describes the portable SQLite core accepting an asynchronous `SqliteDatabase` facade.
+
+Exact published code, from the same locked **1.4.0** tarballs/integrity and upstream revision recorded above:
+
+- Durable [`dist/storage/sqlite/index.js`](https://unpkg.com/@earendil-works/pi-durable@1.4.0/dist/storage/sqlite/index.js) exports `SqliteStorage` publicly. [`storage.js`](https://unpkg.com/@earendil-works/pi-durable@1.4.0/dist/storage/sqlite/storage.js), lines **82–100**, stores the supplied facade as `this.db`, applies migrations through it and returns storage over **that same facade**. Line **111** performs commits through `this.db.transaction(...)`; line **405** closes that owned database.
+- Chord [`dist/sqlite/node.js`](https://unpkg.com/@earendil-works/chord@1.4.0/dist/sqlite/node.js), lines **107–109**, implements `NodeSqliteDatabase(database)` as `super(database, new Map())`. It wraps the supplied connection; it does not reopen or configure it. Its transaction handle uses the same connection and prepared-statement map. The separate convenience opener, lines **149–163**, creates a connection and sets WAL/NORMAL, which is the default measured by the earlier experiment.
+- Durable [`dist/storage/sqlite/node.js`](https://unpkg.com/@earendil-works/pi-durable@1.4.0/dist/storage/sqlite/node.js), lines **6–10**, calls `SqliteStorage.open(await openNodeSqliteDatabase(path, databaseOptions), { prefix })`. This explains the default; it does **not** prevent callers using `SqliteStorage.open()` directly.
+
+`failures/configured-storage.ts` demonstrates the public path:
+
+```ts
+const connection = new DatabaseSync(path);
+const database = new NodeSqliteDatabase(connection);
+await database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA checkpoint_fullfsync = ON");
+const storage = await SqliteStorage.open(database);
+```
+
+The actual probe subclasses that facade only to measure/assert the settings **inside each transaction Durable uses**, including migration, checkpoint publication and document reads. It calls the real adapter's transaction implementation and runs `PRAGMA` through its transaction handle. No private field, monkey patch, second connection or copied backend is involved. Each process logs its PID and measured settings before executing the transaction callback:
+
+| Live setting on Durable's transaction connection | Observed in all three restart probes |
+| --- | --- |
+| `journal_mode` | `wal` |
+| `synchronous` | **2 (FULL)** |
+| `fullfsync` | **1 (ON)** |
+| `checkpoint_fullfsync` | **1 (ON)** |
+
+`smoke.ts` now accepts an optional `full-sqlite` backend argument. This runs the **existing task definition and assertions**, not a different toy workflow: prepare logs once, commits `finish` with `baseline-1`, then abruptly exits **75** without close; a new process reads pending `finish` for task **7** and completes it once; a third process reads the same terminal receipt. `failures/configured-storage.test.ts` repeats this sequence **three times**, verifies one prepare/finish, the original task ID/result and live FULL settings from all three process PIDs. The original JSONL smoke test remains unchanged and passes too.
+
+This probe does not silently change B's default engine storage: its ordinary host still uses the NORMAL convenience opener. Adoption can use the demonstrated configured facade without an upstream API change, but still needs platform/filesystem/device qualification, explicit host exclusivity and storage-error handling. Configured pragmas and process restart are **not** a power-loss test. They do not make application and Durable commits atomic or cure whole-store rollback hazards.
+
+### Commands, validation and code cost
+
+From the repository root:
+
+```sh
+npm install --ignore-scripts
+npm ci --prefix investigations/durable-orchestration --ignore-scripts
+npm run check --prefix investigations/durable-orchestration
+node --test --test-timeout=30000 \
+  investigations/durable-orchestration/failures/recovery.test.ts \
+  investigations/durable-orchestration/failures/configured-storage.test.ts \
+  investigations/durable-orchestration/scenario/recovery.test.ts
+npm test --prefix investigations/durable-orchestration
+npm run check
+npm test
+wc -l investigations/durable-orchestration/scenario/recovery.ts \
+  investigations/durable-orchestration/design-a/{driver,steps}.ts \
+  investigations/durable-orchestration/design-b/{operations,engine}.ts \
+  investigations/durable-orchestration/failures/{recovery*,configured-storage*}.ts
+```
+
+The targeted **35/35** cases pass. The full isolated suite passes **514/514**, including the existing three-repeat crash matrix and synthetic real-adapter suite; isolated TypeScript check passes. Required repository **`npm run check` passes** and **`npm test` passes: 428 tests, 426 passed, two platform skips, zero failures**. One development root test invocation was stopped by a 120-second command timeout; the complete rerun passed with a longer command timeout. Test subprocesses were joined and no host remains running.
+
+Physical counts include comments and blank lines. Relative to this follow-up's starting commit:
+
+| Recovery code | Before | After | Net addition |
+| --- | ---: | ---: | ---: |
+| Shared application classifier/diagnostic accounting (`scenario/recovery.ts`) | 0 | **62** | **62**, imported by both, counted once |
+| A driver | 279 | **293** | **14** (24 added, 10 replaced/removed) |
+| A position-free step runner | 22 | **22** | **0** |
+| B application operations | 216 | **234** | **18** (27 added, 9 replaced/removed) |
+| B engine/checkpoints/response publication | 215 | **215** | **0** |
+
+A therefore needs **76 net lines** including the shared classifier; B **80**, of which the same **62** lines are shared, not copied. Combined net recovery addition is **94** lines, not 156. A still has no cursor or timer; B reuses its existing persisted wait. Recovery fixture/adapter code is **37** lines, repeated process-recovery tests **128**, approval-after-intent tests **47**, plus **4** lines in the existing shared host child for injection/diagnostic inspection. The separate storage helper is **36** lines, its test **38**, and smoke backend selection adds **4 net** lines. None is a production deletion or a forecast of production savings.
+
+### Effect on the comparison
+
+These results **change two supporting findings**, not by themselves the proposed integration boundary:
+
+1. B's observed permanent stop after a transient owner read was a prototype classification choice, not an unavoidable Durable limitation. Application-classified reads can recover through its existing persisted waits, including after SIGKILL, without repeating return. A also needs explicit classification, retained diagnostics, a finite failure budget and its existing effect intents; simply retrying every advance is not a general recovery policy. The original real-run observation remains true; no real B finalisation was rerun here.
+2. The NORMAL default remains unsuitable as an equivalent to FULL, but **released 1.4.0 already accepts a caller-configured FULL/fullfsync connection**. An upstream configuration API change is not an adoption prerequisite. Power-loss/platform testing remains one.
+
+The narrower supervisor-first recommendation is still a defensible proposal on the remaining evidence: neither follow-up removes application authority, launch fences, intents, exclusive hosting, cross-store reconciliation or the need for supervisor/continuation trials. The specific read-recovery gap and inability-to-configure-storage objection must no longer carry the decision alone. Full B still needs supported operator reconciliation/recovery tooling and an authorised real completion run; a configured backend still needs durability qualification. The comparison report is intentionally not edited.

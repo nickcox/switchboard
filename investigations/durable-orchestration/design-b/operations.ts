@@ -189,7 +189,7 @@ export class Operations {
       { leaseId: attempt.identity.leaseId, by: "finish", returnId },
       { fact: "no_processes", scope: { leaseId: attempt.identity.leaseId, returnId } }, "operator", snapshot.record);
     const fresh = await this.permission(attempt);
-    if (fresh) return { outcome: fresh };
+    if (fresh) return { outcome: fresh, retry: fresh.status === "refused" && ["approval_required", "process_confirmation_required"].includes(fresh.code) };
     const current = await this.store.assessment(attempt, await this.readRecords(attempt));
     const blocked = this.domainRefusal(checkCanReturnLease(current.facts,
       { by: "finish", noProcesses: true, retained: true, confirmedDiscard: false }), attempt);
