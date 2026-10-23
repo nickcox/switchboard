@@ -766,3 +766,22 @@ Neither design reconciles a lease it did not record, as intended. After the oper
 - `shutdown` always reports `"leases": "retained"`, even when none remain.
 - The fixtures, including both output branches, receipts, reports, sessions and databases, are archived outside the repository at `~/.switchboard/switchboard/evidence/durable-real-runs-2026-10-23.tgz` (private, because a fixture's `real.json` can hold environment values). The archive is evidence, not a backup to resume from.
 - Not tested: whether processes started by a worker's tools outlive it, failures of the real provider, other platforms, and power loss.
+
+## Step 7 – comparison and decision proposal
+
+Recorded on 23 October 2026 against **`1c12403c3d7687cf5d657c7a986c751150081a52`**. The [comparison report](../../docs/phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-report.md) fills the plan's comparison table, consolidates the ownership/failure results, distinguishes safe refusal from continuation, estimates actual removal boundaries and proposes document changes. The ADRs and PRD remain unchanged pending design selection.
+
+The recommendation is **use a narrower integration**: Durable owns the reasoning supervisor's conversation, queued inputs and interrupted tool work; Switchboard retains deterministic attempt operations and position-free finalisation. It is a proposed boundary, not a third tested implementation or permission to adopt a production dependency. Supervisor continuity and storage qualification remain adoption gates. B's persisted waits and restart visibility are proven benefits, but it retains application fences and cross-store reconciliation, and the real B owner-read failure exposed a missing continuation path. A did not encounter that same real fault, so the report does not claim comparative reliability from one run each.
+
+The report also reads the supervision-first draft at **`phase3-supervision-first` / `047403c894d05fba942898a3bcf134f0aab5f045`**, where the PRD is **`docs/phases/03-supervisor/PRD.md`**. Neither prototype implements a supervisor or a new attempt from earlier kept output. Both need the same application operation for parent-attempt/exact-commit correlation, a written handover, new branch/lease/session identities, trusted permissions and aggregate budget checks. A workflow checkpoint is not that feature. The proposed host runs one supervisor conversation for one objective and calls shared operations in-process, with domain facts in the application database and reasoning continuity in a separately exclusively owned store.
+
+Fresh validation on Darwin arm64, Node **v26.7.0**, Git **2.54.0 (Apple Git-157)** and Treehouse **v3.1.4**:
+
+- `npm install --ignore-scripts` and isolated `npm ci --ignore-scripts` completed successfully.
+- Repository `npm run check` passed; `npm test` passed **428 tests: 426 passed, two platform skips, zero failures**.
+- Investigation check passed; `MATRIX_REPEATS=3 npm test --prefix investigations/durable-orchestration` passed **479/479 tests**, including six synthetic-Pi/real-Treehouse adapter tests and the repeated matrix. The fresh report contains **322 JSONL rows**, including the explicitly unsafe whole-store rollback experiment; passing that hazard assertion is not an at-most-once guarantee.
+- Logs and the JSONL report were generated under ignored `.investigation/durable-orchestration/report-validation/` and copied to the report task's retained artefacts. The real-agent findings above remain the operator's earlier evidence, not new model runs or independently audited acceptance results.
+
+Current physical line counts differ slightly from the earlier tables: A driver/runner **301**, shared bridge **195**, shared process adapter/child **108**; B engine **215**, operations **216**, host/client/CLI/path guard **235**. No production lines were deleted. B omits A's runner/composition but replaces work rather than removing all of its policy. A still lacks comparable production daemon machinery, so a raw line-count difference is not a net production saving. The report records zero demonstrated production deletions and identifies future mechanism reductions separately.
+
+No production source, authoritative task record, Treehouse lease, ADR or PRD was changed for step 7. No agent/model, background host, push, publication or merge was run. The automatic test subprocesses were joined by their suites.
