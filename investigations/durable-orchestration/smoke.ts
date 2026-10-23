@@ -6,8 +6,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineDoc, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
+import { openConfiguredStorage } from "./failures/configured-storage.ts";
 
-const [mode, directoryArgument] = process.argv.slice(2);
+const [mode, directoryArgument, backend] = process.argv.slice(2);
+assert.ok(backend === undefined || backend === "full-sqlite", "Expected full-sqlite or the default JSONL backend");
 assert.ok(mode === "start" || mode === "resume" || mode === "inspect", "Expected start, resume or inspect");
 assert.ok(directoryArgument, "Expected a directory under .investigation/durable-orchestration");
 const directory = resolve(directoryArgument);
@@ -43,7 +45,9 @@ const Probe = defineTask<{ requestId: string }, { phase: "prepare" } | { phase: 
 });
 const registry = createRegistry();
 registry.install(defineExtension({ name: "investigation", tasks: [Probe] }));
-const storage = await openNodeJsonlStorage(resolve(directory, "storage"), context, { fsync: true });
+const storage = backend === "full-sqlite"
+  ? await openConfiguredStorage(resolve(directory, "durable.db"), resolve(directory, "settings.jsonl"))
+  : await openNodeJsonlStorage(resolve(directory, "storage"), context, { fsync: true });
 const harness = await Harness.open(storage, { models: createModels(), registry }, context);
 try {
   if (mode === "start") {

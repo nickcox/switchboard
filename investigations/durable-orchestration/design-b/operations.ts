@@ -6,6 +6,7 @@ import { ApplicationStore } from "../design-a/store.ts";
 import { acknowledge, refuse, uninterrupted } from "../scenario/contract.ts";
 import type { Acknowledgement, Attempt, Interrupt, Outcome, Request } from "../scenario/contract.ts";
 import { approvalFor, FakeOwners } from "../scenario/owners.ts";
+import { readOwner, recovery } from "../scenario/recovery.ts";
 
 export const phases = ["reserve", "acquire", "start", "launch", "prompt", "observe", "review", "accept", "done", "return"] as const;
 export type Phase = typeof phases[number];
@@ -37,6 +38,23 @@ export class Operations {
   }
 
   async run(phase: Phase, request: Request): Promise<StepResult> {
+    try { return await this.runStep(phase, request); }
+    catch (error) {
+      const classified = recovery(error);
+      if (classified) return classified;
+      throw error;
+    }
+  }
+
+  private readControls(attempt: Attempt) {
+    return readOwner(this.store, attempt, "Treehouse", () => this.owners.controls());
+  }
+
+  private readRecords(attempt: Attempt) {
+    return readOwner(this.store, attempt, "Treehouse", () => this.owners.forAttempt(attempt.id));
+  }
+
+  private async runStep(phase: Phase, request: Request): Promise<StepResult> {
     if (phase === "reserve") {
       const previous = this.store.byRequest(request.requestId);
       if (previous) {
@@ -69,7 +87,7 @@ export class Operations {
     }
     if (!attempt.identity) return { outcome: refuse("acquisition_uncertain", attempt.id) };
     if (phase === "start") {
-      const controls = await this.owners.controls();
+      const controls = await this.readControls(attempt);
       if (controls.unknown) return { outcome: refuse("owner_unknown", attempt.id) };
       if (!controls.ready) return { outcome: refuse("not_ready", attempt.id) };
       if (!attempt.started) {
@@ -99,9 +117,9 @@ export class Operations {
       this.launchedHere.add(attempt.id);
       return { next: "observe" };
     }
-    const controls = await this.owners.controls();
+    const controls = await this.readControls(attempt);
     if (controls.unknown) return { outcome: refuse("owner_unknown", attempt.id) };
-    const records = await this.owners.forAttempt(attempt.id);
+    const records = await this.readRecords(attempt);
     if (phase === "observe") {
       if (attempt.result) return { next: "review" };
       if (!attempt.prompted) return { outcome: refuse("possibly_running", attempt.id) };
@@ -140,7 +158,7 @@ export class Operations {
       return { next: "accept" };
     }
     const refusal = await this.permission(attempt);
-    if (refusal) return { outcome: refusal, retry: refusal.status === "refused" && refusal.code !== "review_rejected" };
+    if (refusal) return { outcome: refusal, retry: refusal.status === "refused" && ["approval_required", "process_confirmation_required", "owner_unknown", "not_retained"].includes(refusal.code) };
     const snapshot = await this.store.assessment(attempt, records);
     if (phase === "accept") {
       if (!attempt.accepted) {
@@ -172,21 +190,21 @@ export class Operations {
       { fact: "no_processes", scope: { leaseId: attempt.identity.leaseId, returnId } }, "operator", snapshot.record);
     const fresh = await this.permission(attempt);
     if (fresh) return { outcome: fresh };
-    const current = await this.store.assessment(attempt, await this.owners.forAttempt(attempt.id));
+    const current = await this.store.assessment(attempt, await this.readRecords(attempt));
     const blocked = this.domainRefusal(checkCanReturnLease(current.facts,
       { by: "finish", noProcesses: true, retained: true, confirmedDiscard: false }), attempt);
     if (blocked) return { outcome: blocked };
     await this.owners.returnWorkspace(attempt.identity);
-    const returns = (await this.owners.forAttempt(attempt.id)).filter(record => record.effect === "return");
+    const returns = (await this.readRecords(attempt)).filter(record => record.effect === "return");
     if (returns.length !== 1 || !isDeepStrictEqual(returns[0]!.identity, attempt.identity)) return { outcome: refuse("finalisation_uncertain", attempt.id) };
     await this.ack("returned", () => this.store.attempts.append(this.store.ref(attempt), "lease_returned", { leaseId: attempt.identity!.leaseId, by: "finish", returnId }));
     return { outcome: { status: "completed", attemptId: attempt.id, waitingFor: null } };
   }
 
   private async permission(attempt: Attempt): Promise<Outcome | null> {
-    const controls = await this.owners.controls();
+    const controls = await this.readControls(attempt);
     if (controls.unknown) return refuse("owner_unknown", attempt.id);
-    const signals = (await this.owners.forAttempt(attempt.id)).filter(record => record.commit === attempt.result!.commit &&
+    const signals = (await this.readRecords(attempt)).filter(record => record.commit === attempt.result!.commit &&
       record.effect === (attempt.request.delivery.acceptance === "review" ? "review" : "merge"));
     if (signals.some(record => record.decision === "rejected")) return refuse("review_rejected", attempt.id);
     if (!signals.length) return refuse("owner_unknown", attempt.id);

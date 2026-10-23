@@ -7,6 +7,7 @@ import { ProcessOwners } from "../design-a/process-owners.ts";
 import { sampleRequest } from "../scenario/common-tests.ts";
 import { ExecutionHost } from "../design-b/host.ts";
 import { FakeOwners } from "../scenario/owners.ts";
+import { RecoveryOwners } from "./recovery-owners.ts";
 import type { Interrupt, Point, Request } from "../scenario/contract.ts";
 
 const [design, directory, target = "", worker = "fake"] = process.argv.slice(2) as [string, string, string, string];
@@ -17,6 +18,7 @@ const interrupt: Interrupt = async point => {
 };
 const owners = worker === "process"
   ? new ProcessOwners(join(directory, "owners"), join(directory, "host"), sampleRequest())
+  : worker === "recovery" ? new RecoveryOwners(join(directory, "owners"), join(directory, "host"), interrupt)
   : new FakeOwners(join(directory, "owners"), join(directory, "host"), interrupt);
 const closeWorkers = async () => { if (owners instanceof ProcessOwners) await owners.close(); };
 let close: () => Promise<void>;
@@ -38,6 +40,7 @@ try {
     driver = new SwitchboardScenario(store, owners, { interrupt, maxAttempts: 2, now: () => 1_000_000 });
     close = async () => { await driver.close(); await closeWorkers(); await rm(claim, { recursive: true }); };
   }
+  if (owners instanceof RecoveryOwners) owners.store = store;
   // Test transport is separate from B's real host transport. Both accept actual independent
   // CLI clients here; only commands below can alter fixture controls, never worker arguments.
   const server = createServer(async (request, response) => {
@@ -50,6 +53,7 @@ try {
       else if (command.method === "advance") value = await driver.advance(command.requestId);
       else if (command.method === "cancel") value = await driver.cancel(command.requestId);
       else if (command.method === "inspect") value = await driver.inspect();
+      else if (command.method === "readFailures") value = store.tasks.database.all("SELECT name, value FROM prototype_facts WHERE name LIKE 'owner_read_%' ORDER BY name").map(row => ({ name: row.name, value: JSON.parse(String(row.value)) }));
       else if (command.method === "observeExit" && owners instanceof ProcessOwners) { await owners.observeExit(); value = { status: "observed" }; }
       else if (command.method === "diagnostics" && "diagnostics" in driver) value = await driver.diagnostics();
       else if (command.method === "queryOnly") { await store.tasks.database.transaction(() => store.tasks.database.run("PRAGMA query_only = ON")); value = { status: "read_only" }; }

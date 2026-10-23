@@ -8,6 +8,7 @@ import type { Acknowledgement, Attempt, Interrupt, Outcome, Request, ScenarioDri
 import { approvalFor, FakeOwners } from "../scenario/owners.ts";
 import { ApplicationStore } from "./store.ts";
 import { runSteps } from "./steps.ts";
+import { readOwner, recovery } from "../scenario/recovery.ts";
 
 export type Options = { maxAttempts?: number; interrupt?: Interrupt; now?: () => number };
 
@@ -33,11 +34,16 @@ export class SwitchboardScenario implements ScenarioDriver {
     if (!Number.isInteger(this.maximum) || this.maximum < 1) throw new Error("maxAttempts must be a positive integer");
   }
 
-  private serial(action: () => Promise<Outcome>): Promise<Outcome> {
+  private serial(action: () => Promise<Outcome>, requestId?: string): Promise<Outcome> {
     const pending = this.queue.then(async () => {
       if (this.closed) return refuse("host_unavailable");
       try { return await action(); }
       catch (error) {
+        const classified = recovery(error);
+        if (classified && requestId) {
+          const attempt = this.store.byRequest(requestId);
+          if (attempt) return this.respond(attempt, classified.outcome);
+        }
         const refusal = refuse("host_unavailable");
         return { ...refusal, nextAction: `${refusal.nextAction}: ${error instanceof Error ? error.message : String(error)}` };
       }
@@ -124,9 +130,9 @@ export class SwitchboardScenario implements ScenarioDriver {
       if (!attempt) return refuse("invalid_request");
       if (attempt.returned) return this.existing(attempt);
       if (this.store.fact(requestId, "cancel_intent")) return refuse("cancelled", attempt.id);
-      const controls = await this.owners.controls();
+      const controls = await this.readControls(attempt);
       if (controls.unknown) return this.respond(attempt, refuse("owner_unknown", attempt.id));
-      const records = await this.owners.forAttempt(attempt.id);
+      const records = await this.readRecords(attempt);
       if (!attempt.identity) return this.respond(attempt, refuse("acquisition_uncertain", attempt.id));
       if (!attempt.prompted) return this.respond(attempt, refuse("possibly_running", attempt.id));
       if (!attempt.result) {
@@ -171,11 +177,19 @@ export class SwitchboardScenario implements ScenarioDriver {
         attempt = this.current(attempt);
       }
       return this.finalise(attempt);
-    });
+    }, requestId);
+  }
+
+  private readControls(attempt: Attempt) {
+    return readOwner(this.store, attempt, "Treehouse", () => this.owners.controls());
+  }
+
+  private readRecords(attempt: Attempt) {
+    return readOwner(this.store, attempt, "Treehouse", () => this.owners.forAttempt(attempt.id));
   }
 
   private async permission(attempt: Attempt): Promise<Outcome | null> {
-    const controls = await this.owners.controls();
+    const controls = await this.readControls(attempt);
     if (controls.unknown) return refuse("owner_unknown", attempt.id);
     if (!controls.clean || controls.retainedCommit !== attempt.result!.commit) return refuse("not_retained", attempt.id);
     const approval = approvalFor(attempt, this.now(), controls);
@@ -196,7 +210,7 @@ export class SwitchboardScenario implements ScenarioDriver {
       { description: "record accepted output", happened: () => this.current(attempt).accepted, run: async () => {
         const refusal = await this.permission(attempt);
         if (refusal) return refusal;
-        const snapshot = await this.store.assessment(attempt, await this.owners.forAttempt(attempt.id));
+        const snapshot = await this.store.assessment(attempt, await this.readRecords(attempt));
         const denied = this.domainRefusal(checkCanAcceptOutput(snapshot.facts, attempt.result!.commit !== "0".repeat(40)), attempt);
         if (denied) return denied;
         await this.ack("accepted", () => this.store.attempts.appendConfirmed(this.store.ref(attempt), "output_accepted",
@@ -207,7 +221,7 @@ export class SwitchboardScenario implements ScenarioDriver {
       { description: "record the task as done", happened: () => this.current(attempt).done, run: async () => {
         const refusal = await this.permission(attempt);
         if (refusal) return refusal;
-        const snapshot = await this.store.assessment(attempt, await this.owners.forAttempt(attempt.id));
+        const snapshot = await this.store.assessment(attempt, await this.readRecords(attempt));
         const denied = this.domainRefusal(checkCanFinish(snapshot.facts, false), attempt);
         if (denied) return denied;
         if (!snapshot.task) return refuse("owner_unknown", attempt.id);
@@ -219,7 +233,7 @@ export class SwitchboardScenario implements ScenarioDriver {
         if (refusal) return refusal;
         const record = this.store.record(attempt);
         // Inspect owner evidence on every run. A lost return receipt is not permission to call again.
-        const records = await this.owners.forAttempt(attempt.id);
+        const records = await this.readRecords(attempt);
         const intent = record.entries.find(entry => entry.kind === "lease_return_started");
         if (intent) return refuse("finalisation_uncertain", attempt.id);
         if (records.some(receipt => receipt.effect === "return")) return refuse("finalisation_uncertain", attempt.id);
@@ -233,13 +247,13 @@ export class SwitchboardScenario implements ScenarioDriver {
           { fact: "no_processes", scope: { leaseId: attempt.identity!.leaseId, returnId } }, "operator", snapshot.record);
         const fresh = await this.permission(attempt);
         if (fresh) return fresh;
-        const current = await this.store.assessment(attempt, await this.owners.forAttempt(attempt.id));
+        const current = await this.store.assessment(attempt, await this.readRecords(attempt));
         const blocked = this.domainRefusal(checkCanReturnLease(current.facts,
           { by: "finish", noProcesses: true, retained: true, confirmedDiscard: false }), attempt);
         if (blocked) return blocked;
         await this.respond(attempt, refuse("finalisation_uncertain", attempt.id));
         await this.owners.returnWorkspace(attempt.identity!);
-        const returns = (await this.owners.forAttempt(attempt.id)).filter(receipt => receipt.effect === "return");
+        const returns = (await this.readRecords(attempt)).filter(receipt => receipt.effect === "return");
         if (returns.length !== 1 || !isDeepStrictEqual(returns[0]!.identity, attempt.identity)) {
           return refuse("finalisation_uncertain", attempt.id);
         }
