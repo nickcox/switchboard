@@ -92,6 +92,24 @@ test("a code contract can also require a report, which must be retained in the a
   assert.equal(outcome.nextAction.code, "review_then_finish");
 });
 
+test("a code result referencing its assigned artefact directory and log files is retained for review", async () => {
+  const f = await fixture({ tasks: [["add", "directory-a1", "Code and logs", "--repo", "fixture"]], scenario: "commit-result" });
+  const launch = f.deps.launch;
+  f.deps.launch = async (...args) => {
+    const report = await launch(...args);
+    assert.ok(report.result);
+    const directory = report.binding.artefactDirectory!;
+    writeFileSync(join(directory, "check.log"), "Checks passed\n");
+    writeFileSync(join(directory, "tests.log"), "Tests passed\n");
+    report.result.workReferences.push({ kind: "artefact", name: "logs", path: directory, description: "Validation logs" });
+    return report;
+  };
+  const outcome = await dispatchOnce(f.deps);
+  assert.equal(outcome.reason, "held");
+  assert.equal(outcome.retention?.retained, true, JSON.stringify(outcome.retention));
+  assert.equal(outcome.nextAction.code, "review_then_finish");
+});
+
 test("a report outside the attempt's artefact directory is not retained, even outside every workspace", async () => {
   const f = await fixture({ tasks: [scoutTask("elsewhere-a1")], scenario: "artefact-result", byTaskKind: { scout } });
   const path = join(f.dir, "report-elsewhere.md");
