@@ -100,12 +100,33 @@ test("B: separate CLI clients share one host, transactional capacity and stable 
   const shutdownAt = performance.now();
   const shutdown = await run("shutdown", directory);
   assert.equal(JSON.parse(shutdown.stdout).workerTermination, "unverified");
+  assert.equal(JSON.parse(shutdown.stdout).leases, "retained");
   assert.equal(await host.exited, 0, host.output());
   const shutdownMs = performance.now() - shutdownAt;
   assert.equal((await client.submit(request)).status, "refused");
   await assert.rejects(readFile(join(directory, "host", "owner", "claim.json")), /ENOENT/);
   t.diagnostic(JSON.stringify({ platform: process.platform, node: process.version, startupMs, retryCliMs: retryMs, shutdownMs }));
 });
+
+for (const state of ["empty", "returned", "unknown"] as const) {
+  test(`B: shutdown reads the current ${state} owner lease listing`, async t => {
+    const directory = await initialise();
+    const owners = new FakeOwners(join(directory, "owners"), join(directory, "host"));
+    if (state === "returned") {
+      const identity = await owners.acquire("scenario", "task", "attempt");
+      await owners.returnWorkspace(identity);
+    }
+    if (state === "unknown") await owners.setControls({ ...await owners.controls(), unknown: true });
+    const host = await start(directory);
+    t.after(async () => { await stop(host); await rm(directory, { recursive: true, force: true }); });
+    const shutdown = await run("shutdown", directory);
+    assert.equal(shutdown.code, 0, shutdown.stderr);
+    assert.deepEqual(JSON.parse(shutdown.stdout), {
+      status: "stopping", workerTermination: "unverified", leases: state === "unknown" ? "not checked" : "none",
+    });
+    assert.equal(await host.exited, 0, host.output());
+  });
+}
 
 test("B: a killed host leaves exclusive ownership visible; confirmed fixture recovery never replaces its worker", async t => {
   const directory = await initialise(2);

@@ -67,7 +67,7 @@ Before integrating or changing the task, `finish` records `output_accepted` with
 - `manual`: Phase 1's behaviour. The operator integrates the output themselves before running `finish`, which records the task as done.
 - `local-merge`: `finish` fast-forwards a configured target branch, such as `main`, to the exact accepted output commit in the backing repository, refusing if that is not a fast-forward, then records the task as done.
 
-Both policies retain the lease unless `--no-processes` is supplied and every lease-return check passes.
+Both policies retain the lease unless `--no-processes` is supplied and every lease-return check passes. A successful `finish` keeps reason `finished` in both cases. Its text summary and JSON `summary` say whether the lease was retained or returned; JSON `lease` is respectively `preserved` or `none`.
 
 A `pull-request` kind follows in Phase 3. The layers and checks below are designed so it can be added without changing them.
 

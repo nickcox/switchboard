@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { checkRetention } from "../../src/workspaces/retention.ts";
+import { checkRetention, type RetentionRequest } from "../../src/workspaces/retention.ts";
 import { onPath } from "../../src/infra/executables.ts";
 
 // Uses plain Git worktrees in disposable repositories; retention does not depend on Treehouse.
@@ -34,8 +34,8 @@ function fixture() {
     run(["commit", "-q", "--no-gpg-sign", "-am", "Fixture result"], workspace);
     return run(["rev-parse", "HEAD"], workspace);
   };
-  const check = (request: { resultCommit?: string; artefacts?: string[]; outputBranch?: string; scratchWorkspace?: boolean }) =>
-    checkRetention(git, environment, { repository, workspace, outputBranch: request.outputBranch ?? "out/1", artefacts: request.artefacts ?? [], ...(request.resultCommit ? { resultCommit: request.resultCommit } : {}), ...(request.scratchWorkspace ? { scratchWorkspace: true } : {}) });
+  const check = (request: Partial<Omit<RetentionRequest, "repository" | "workspace">>) =>
+    checkRetention(git, environment, { repository, workspace, outputBranch: "out/1", artefacts: [], ...request });
   return { dir, repository, workspace, run, commitWork, check };
 }
 
@@ -127,6 +127,100 @@ test("an artefact link to an inaccessible target is not retained", { skip: proce
     assert.equal(result.retained, false);
     assert.match(result.findings.join(), /unreadable/);
   } finally { chmodSync(target, 0o600); }
+});
+
+for (const task of ["durable-real-adapter-p5a", "durable-report-p6", "durable-recovery-p7"]) {
+  test(`${task}: the assigned artefact directory with log files is retained`, async () => {
+    const f = fixture();
+    const directory = join(f.dir, task, "artefacts");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "check.log"), "Checks passed\n");
+    writeFileSync(join(directory, "tests.log"), "Tests passed\n");
+    assert.deepEqual(await f.check({ artefacts: [directory], artefactDirectory: directory }), {
+      retained: true, findings: [], notes: [],
+    });
+  });
+}
+
+test("nested artefact directories and internal links are retained", async () => {
+  const f = fixture();
+  const directory = join(f.dir, "artefacts");
+  const nested = join(directory, "logs");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, "tests.log"), "Passed\n");
+  symlinkSync(join(nested, "tests.log"), join(nested, "linked.log"));
+  symlinkSync(nested, join(directory, "linked-logs"), "junction");
+  for (const path of [directory, nested, join(directory, "linked-logs")]) {
+    assert.equal((await f.check({ artefacts: [path], artefactDirectory: directory })).retained, true);
+  }
+});
+
+test("directories outside the assigned directory, or without an assignment, are refused with a reason", async () => {
+  const f = fixture();
+  const directory = join(f.dir, "artefacts");
+  const outside = join(f.dir, "elsewhere");
+  mkdirSync(directory);
+  mkdirSync(outside);
+  writeFileSync(join(outside, "tests.log"), "Passed\n");
+  for (const artefactDirectory of [directory, undefined]) {
+    const result = await f.check({ artefacts: [outside], ...(artefactDirectory ? { artefactDirectory } : {}) });
+    assert.equal(result.retained, false);
+    assert.match(result.findings.join(), /is a directory outside the assigned artefact directory/);
+  }
+});
+
+test("empty directories, including directories containing only empty subdirectories, are refused", async () => {
+  const f = fixture();
+  const directory = join(f.dir, "artefacts");
+  mkdirSync(directory);
+  const check = () => f.check({ artefacts: [directory], artefactDirectory: directory });
+  assert.match((await check()).findings.join(), /is an empty directory/);
+  mkdirSync(join(directory, "empty"));
+  assert.match((await check()).findings.join(), /no readable regular files/);
+});
+
+test("assigned directories in the workspace or a recyclable root are still refused", async () => {
+  const f = fixture();
+  const pool = join(f.dir, "pool");
+  for (const directory of [join(f.workspace, "cache"), join(pool, "old-workspace", "artefacts")]) {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "tests.log"), "Passed\n");
+    const result = await f.check({ artefacts: [directory], artefactDirectory: directory, recyclableRoots: [pool], scratchWorkspace: true });
+    assert.equal(result.retained, false);
+    assert.match(result.findings.join(), /inside the workspace|inside a recyclable workspace/);
+  }
+});
+
+for (const linkKind of ["file", "directory", "dangling", "cycle"]) {
+  test(`a directory with a ${linkKind} link that cannot be retained is refused`, async () => {
+    const f = fixture();
+    const directory = join(f.dir, "artefacts");
+    mkdirSync(directory);
+    writeFileSync(join(directory, "tests.log"), "Passed\n");
+    const outside = join(f.dir, "outside");
+    if (linkKind === "file") writeFileSync(outside, "Outside\n");
+    if (linkKind === "directory") mkdirSync(outside);
+    symlinkSync(linkKind === "cycle" ? directory : outside, join(directory, "link"),
+      linkKind === "directory" || linkKind === "cycle" ? "junction" : "file");
+    const result = await f.check({ artefacts: [directory], artefactDirectory: directory });
+    assert.equal(result.retained, false);
+    assert.match(result.findings.join(), /outside the assigned artefact directory|cannot be resolved|link cycle/);
+  });
+}
+
+test("every file in a directory must be readable", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const f = fixture();
+  const directory = join(f.dir, "artefacts");
+  mkdirSync(directory);
+  writeFileSync(join(directory, "tests.log"), "Passed\n");
+  const unreadable = join(directory, "private.log");
+  writeFileSync(unreadable, "Private\n");
+  chmodSync(unreadable, 0o000);
+  try {
+    const result = await f.check({ artefacts: [directory], artefactDirectory: directory });
+    assert.equal(result.retained, false);
+    assert.match(result.findings.join(), /is unreadable: .*private.log/);
+  } finally { chmodSync(unreadable, 0o600); }
 });
 
 test("a check that cannot run counts as not retained", async () => {

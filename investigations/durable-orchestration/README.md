@@ -417,7 +417,7 @@ There are **three independent commit boundaries**: application transactions, Dur
 | Lost clients | An actual aborted HTTP submit, paused after the prompt acknowledgement, leaves one admitted attempt and one prompt; retrying the same ID finds it. Client disconnect/time-limited wait does not cancel Durable work. A wait timeout returns the last waiting observation, not success; a transport timeout is uncertain and requires the original ID on retry |
 | Exclusivity | Atomic directory creation before open; canonical fixture-root check; immutable owner identity and private endpoint. Two host processes are refused. No heartbeat, stale takeover or service installation. After SIGKILL, the retained claim is the visible failure and an operator must confirm the old host/workers stopped before removing that **fixture** claim. Production needs an equivalent context claim protocol and diagnostics, not just SQLite file locking |
 | Startup | Explicit `host` command, open application storage, install definitions, open/reconcile Durable, resume its scheduler, bind transport and publish endpoint. There is no automatic host start/restart, daemon detachment or OS service. A persisted deadline cannot start Node; the operator supplies process availability |
-| Shutdown | Seal transport and join admitted requests; close Durable (signal/join invocations, preserve checkpoints), close application storage, then join handles through the host's adapter before releasing its own claim. Generic `shutdown` reports `workerTermination: unverified`, `leases: retained`. Closing Durable is not sending worker cancellation; `cancel` separately durably aborts the task and its handler records/delivers the once-only worker cancellation request. Neither action grants lease-return authority |
+| Shutdown | Seal transport and join admitted requests; close Durable (signal/join invocations, preserve checkpoints), close application storage, then join handles through the host's adapter before releasing its own claim. Generic `shutdown` reports `workerTermination: unverified`. A fresh owner lease listing determines `leases`: `retained` when any remain, `none` when empty, or `not checked` if the listing could not be read. Closing Durable is not sending worker cancellation; `cancel` separately durably aborts the task and its handler records/delivers the once-only worker cancellation request. Neither action grants lease-return authority |
 | Failure reporting | Startup/ownership failures go to stderr with exit 2. CLI transport failures return `host_unavailable` plus an operator action; a refusal exits 2. Task adapter errors produce a persisted failed execution receipt and response; `onReport` is available in `diagnostics`. Parked/blocked tasks appear through public `Harness.inspect()`, not private-table queries. Reports are in-memory diagnostics, **not** a retained crash log; a process death may leave only its claim, domain facts, checkpoints and owner evidence. Production still needs a diagnostic sink and operator recovery/retry tooling |
 | Storage/event-loop cost | Two separately owned local SQLite files and extra checkpoint/response commits. Engine defaults use synchronous SQLite calls and a 5-second busy timeout; exclusivity avoids ordinary engine contention but production must consider blocked event-loop diagnostics. The application retains its existing async busy retries. Rewriting the small session request-index document is a fixture shortcut, not a scalable unbounded registry/pruning policy |
 
@@ -641,7 +641,7 @@ After observing `waitingFor: review`, stop the host and wait for terminal 1 to e
 node "$CLI" shutdown "$RUN"
 ```
 
-`shutdown` seals transport, closes execution storage and asks the adapter to stop/join its known Pi handle. It does not return any lease or claim descendant termination. Once terminal 1 has exited, restart it there with:
+`shutdown` seals transport, closes execution storage and asks the adapter to stop/join its known Pi handle. It does not return any lease or claim descendant termination. Its `leases` field reports `retained` or `none` from a fresh Treehouse listing, or `not checked` if that listing failed. `recover-claim` does not read leases and reports `not checked`. Once terminal 1 has exited, restart it there with:
 
 ```sh
 node "$CLI" host "$RUN"
@@ -763,7 +763,7 @@ Neither design reconciles a lease it did not record, as intended. After the oper
 ### Other observations
 
 - The adapter's ordering held with real Pi: the prompt receipt followed Pi's confirmed start, and the exit receipt followed the observed exit.
-- `shutdown` always reports `"leases": "retained"`, even when none remain.
+- At the time of these runs, `shutdown` always reported `"leases": "retained"`, even when none remained. This reporting bug is now fixed: shutdown reads the owner's current listing and reports `retained`, `none` or `not checked`.
 - The fixtures, including both output branches, receipts, reports, sessions and databases, are archived outside the repository at `~/.switchboard/switchboard/evidence/durable-real-runs-2026-10-23.tgz` (private, because a fixture's `real.json` can hold environment values). The archive is evidence, not a backup to resume from.
 - Not tested: whether processes started by a worker's tools outlive it, failures of the real provider, other platforms, and power loss.
 

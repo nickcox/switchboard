@@ -18,7 +18,7 @@ export const reasons = {
   resolved: "The operator's confirmation was recorded. The attempt no longer blocks dispatch.",
   delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",
   undelivered: "No running dispatcher took the request in time, so it was withdrawn. It will never be forwarded.",
-  finished: "The attempt was finished under the context's finalisation policy: its task is recorded as done and its lease returned.",
+  finished: "The attempt was finished under the context's finalisation policy: its task is recorded as done.",
   discarded: "The attempt's work was discarded and its lease returned. Its task stays done if already done; otherwise it is held.",
   planned: "Nothing was changed. The detail lists what the command would do.",
   pruned: "Eligible finished attempts were archived and their records removed.",
@@ -67,6 +67,7 @@ export type DispatchResult = {
   version: 1;
   ok: boolean;
   reason: Reason;
+  summary: string;
   stage?: Stage;
   attempt?: AttemptSummary;
   /** Read-only dispatch selection, before an attempt or workspace exists. */
@@ -74,7 +75,7 @@ export type DispatchResult = {
   worker?: { status: string; outcome?: string; summary?: string; reason?: string; nextAction?: string };
   task?: { id: string; state: string; held: boolean; holdReason: string | null };
   retention?: RetentionResult;
-  /** Phase 1 never returns a lease, so a lease is absent, preserved, or unknown when leases could not be listed. */
+  /** A lease is absent, preserved, or unknown when its current state could not be checked. */
   lease: "none" | "preserved" | "unknown";
   /** Owner state the decision was based on, including anything that was unknown. */
   observed: Record<string, unknown>;
@@ -82,12 +83,14 @@ export type DispatchResult = {
   nextAction: { code: NextAction; description: string };
 };
 
-export function result(fields: Omit<DispatchResult, "version" | "nextAction"> & { nextAction: NextAction }): DispatchResult {
-  return { ...fields, version: 1, nextAction: { code: fields.nextAction, description: nextActions[fields.nextAction] } };
+export function result(fields: Omit<DispatchResult, "version" | "summary" | "nextAction"> & { nextAction: NextAction }): DispatchResult {
+  const leaseSummary = { none: "Its lease was returned.", preserved: "Its lease is retained.", unknown: "Its lease state is unknown." };
+  const summary = reasons[fields.reason] + (fields.reason === "finished" ? ` ${leaseSummary[fields.lease]}` : "");
+  return { ...fields, version: 1, summary, nextAction: { code: fields.nextAction, description: nextActions[fields.nextAction] } };
 }
 
 export function describe(value: DispatchResult): string {
-  const lines = [`${value.ok ? "OK" : "NOT OK"}: ${value.reason}${value.stage ? ` at ${value.stage}` : ""} – ${reasons[value.reason]}`];
+  const lines = [`${value.ok ? "OK" : "NOT OK"}: ${value.reason}${value.stage ? ` at ${value.stage}` : ""} – ${value.summary}`];
   if (value.selection) lines.push(`Task ${value.selection.taskId}, delivery contract ${value.selection.contract.name}`);
   const a = value.attempt;
   if (a) {

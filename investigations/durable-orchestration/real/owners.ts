@@ -50,6 +50,10 @@ export class RealOwners extends FakeOwners {
     return new RealOwners(root, provider, settings, interrupt);
   }
 
+  override async leases(): Promise<string[]> {
+    return (await this.provider.leases()).map(lease => lease.leaseId);
+  }
+
   private workerDirectory(attemptId: string): string { return join(this.directory, "workers", attemptId); }
   async allocation(attemptId: string): Promise<Allocation> {
     return JSON.parse(await readFile(join(this.workerDirectory(attemptId), "allocation.json"), "utf8"));

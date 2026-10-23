@@ -18,7 +18,8 @@ review --attempt <id> --commit <sha> [--decision accepted|rejected]
 approve --attempt <id> --lease <id> --commit <sha> --accept [--no-processes] [--expires-ms 3600000]
 recover-claim --confirm-host-stopped --confirm-no-processes removes only a stale fixture host claim.
 wait [--wait-ms <milliseconds>] stops waiting at review or refusal; advance checks finalisation once.
-inspect reads real leases, receipts, independent counters and host state. shutdown retains leases.`;
+inspect reads real leases, receipts, independent counters and host state.
+shutdown does not return leases. It reports retained or none from a fresh owner listing, or not checked if the listing failed.`;
 
 try {
   const { positionals, values } = parseArgs({ allowPositionals: true, options: {
@@ -88,7 +89,7 @@ try {
       print({ status: "approval_recorded" });
     } else if (command === "recover-claim") {
       await recoverClaim(directory, values["confirm-host-stopped"] === true, values["confirm-no-processes"] === true);
-      print({ status: "fixture_claim_removed", leases: "retained" });
+      print({ status: "fixture_claim_removed", leases: "not checked" });
     } else {
       const client = new HostClient(directory);
       const settings = await settingsAt(directory);

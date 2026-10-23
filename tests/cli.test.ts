@@ -243,6 +243,8 @@ test("finish through the CLI: a dry run plans, work finishes with its lease reta
   const retained = switchboard(["finish", "--lease", lease, "--json"]);
   assert.equal(retained.status, 0, retained.stdout);
   assert.equal(JSON.parse(retained.stdout).reason, "finished");
+  assert.match(JSON.parse(retained.stdout).summary, /Its lease is retained\./);
+  assert.doesNotMatch(retained.stdout, /its lease returned/);
   assert.equal(JSON.parse(retained.stdout).lease, "preserved");
   assert.match(JSON.parse(retained.stdout).detail, new RegExp(`finish --lease ${lease} --no-processes`));
   const returning = switchboard(["finish", "--lease", lease, "--no-processes", "--dry-run", "--json"]);
@@ -251,6 +253,7 @@ test("finish through the CLI: a dry run plans, work finishes with its lease reta
   const finished = switchboard(["finish", "--lease", lease, "--no-processes", "--json"]);
   assert.equal(finished.status, 0, finished.stdout);
   assert.equal(JSON.parse(finished.stdout).reason, "finished");
+  assert.match(JSON.parse(finished.stdout).summary, /Its lease was returned\./);
   assert.equal(JSON.parse(finished.stdout).lease, "none");
   for (const args of [["finish", "--lease", lease, "--confirm"], ["discard", "--lease", lease, "--task", "cli-a1"]]) {
     assert.equal(switchboard(args).status, 2, args.join(" "));

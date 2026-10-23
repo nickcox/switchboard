@@ -50,7 +50,8 @@ export async function openHost(directory: string, interrupt?: Interrupt): Promis
         else if (command.method === "inspect") value = await driver.inspect();
         else if (command.method === "cancel") value = await driver.cancel(command.requestId);
         else if (command.method === "shutdown") {
-          response.end(JSON.stringify({ status: "stopping", workerTermination: "unverified", leases: "retained" }));
+          const leases = await owners.leases().then(list => list.length > 0 ? "retained" : "none", () => "not checked");
+          response.end(JSON.stringify({ status: "stopping", workerTermination: "unverified", leases }));
           void close().catch(error => { console.error(error); process.exitCode = 1; });
           return;
         } else throw new Error("Unknown host command");

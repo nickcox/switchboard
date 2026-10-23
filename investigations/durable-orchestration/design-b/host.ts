@@ -69,7 +69,8 @@ export class ExecutionHost {
           else if (command.method === "inspect") result = await engine!.inspect();
           else if (command.method === "diagnostics") result = await engine!.diagnostics();
           else if (command.method === "shutdown") {
-            response.end(JSON.stringify({ status: "stopping", workerTermination: "unverified", leases: "retained" }));
+            const leases = await owners.leases().then(list => list.length > 0 ? "retained" : "none", () => "not checked");
+            response.end(JSON.stringify({ status: "stopping", workerTermination: "unverified", leases }));
             void host.close().catch(error => { console.error(error); process.exitCode = 1; });
             return;
           } else throw new Error("Unknown host command");

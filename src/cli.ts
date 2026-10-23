@@ -35,6 +35,9 @@ const usage = `Usage:
 <attempt> is --lease <lease-id>, or --task <task-id> [--attempt <n>] for a task's attempt (default: its latest).
 
 dispatch --once --dry-run reports the selected task and delivery contract without changing anything or launching a worker.
+Worker artefact references may name readable files or directories within the assigned artefact directory, including
+that directory itself. Directories need at least one readable regular file; every file is checked. Empty directories,
+escaping or dangling links, link cycles, unreadable targets and paths inside any recyclable workspace are refused.
 
 watch prints an attempt's worker activity and follows it until the worker's exit is recorded. It reads the database
 and runtime files, so it works from any terminal and after the dispatcher has stopped. status shows each attempt's lease ID.
@@ -54,7 +57,8 @@ The output branch must advance the starting commit and the workspace must be cle
 finish completes an attempt awaiting review or awaiting finish under the context's finalisation policy (manual,
 or local-merge, which first fast-forwards the target branch to the exact accepted commit) and records the task as done.
 Without --no-processes it retains the lease, without blocking other tasks or the task's dependents. Run finish again
-with --no-processes to return the lease, skipping completed steps.
+with --no-processes to return the lease, skipping completed steps. The text and JSON summary say whether the lease
+was retained or returned; JSON lease is preserved or none respectively.
 discard returns the lease of an attempt whose work is not wanted, removing the workspace's contents, and holds its
 task. Both return a lease only with --no-processes, your confirmation that no worker process remains; discard
 also needs --confirm. --dry-run shows what would be done.

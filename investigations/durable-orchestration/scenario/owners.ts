@@ -69,6 +69,14 @@ export class FakeOwners {
     return Promise.all(names.map(async name => JSON.parse(await readFile(join(this.directory, "effects", name), "utf8"))));
   }
 
+  async leases(): Promise<string[]> {
+    if ((await this.controls()).unknown) throw new Error("Owner lease listing is unavailable");
+    const records = await this.records();
+    const returned = new Set(records.filter(record => record.effect === "return").map(record => record.identity?.leaseId));
+    return records.filter(record => record.effect === "acquire" && record.identity && !returned.has(record.identity.leaseId))
+      .map(record => record.identity!.leaseId);
+  }
+
   async forAttempt(attemptId: string): Promise<EffectRecord[]> {
     return (await this.records()).filter(record => record.attemptId === attemptId);
   }

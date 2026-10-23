@@ -1,5 +1,5 @@
-import { open, realpath, stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { open, readdir, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { describeCommand, runCommand } from "../infra/command.ts";
 import { inside, requireRetainedStorage } from "../infra/storage.ts";
 
@@ -97,25 +97,56 @@ export async function checkRetention(git: string, environment: Record<string, st
   try { workspace = await realpath(request.workspace); } catch { unable("the workspace path"); }
   for (const artefact of request.artefacts) {
     if (!isAbsolute(artefact)) { findings.push(`Artefact path is not absolute: ${artefact}`); continue; }
-    let resolved: string;
-    try {
-      resolved = await realpath(artefact);
-      if (!(await stat(resolved)).isFile()) throw new Error("Not a regular file");
-      const file = await open(resolved, "r");
-      try {
-        if (!(await file.stat()).isFile()) throw new Error("Not a regular file");
-        await file.read(Buffer.alloc(1), 0, 1, 0);
-      } finally { await file.close(); }
-    } catch { findings.push(`Required artefact is missing or unreadable: ${artefact}`); continue; }
-    if (workspace && inside(workspace, resolved)) findings.push(`Required artefact is inside the workspace: ${artefact}`);
-    try { await requireRetainedStorage(artefact, request.recyclableRoots ?? []); }
-    catch { findings.push(`Required artefact is inside a recyclable workspace or its location could not be checked: ${artefact}`); }
+    let directory: string | undefined;
     if (request.artefactDirectory !== undefined) {
-      try {
-        const directory = await realpath(request.artefactDirectory);
-        if (!inside(directory, resolved)) findings.push(`Required artefact is outside the assigned artefact directory: ${artefact}`);
-      } catch { unable("the assigned artefact directory"); }
+      try { directory = await realpath(request.artefactDirectory); }
+      catch { unable("the assigned artefact directory"); continue; }
     }
+    const checkPath = async (path: string, ancestors: Set<string>): Promise<number> => {
+      let resolved: string;
+      let target: Awaited<ReturnType<typeof stat>>;
+      try { resolved = await realpath(path); target = await stat(resolved); }
+      catch { findings.push(`Required artefact is missing or cannot be resolved: ${path}`); return 0; }
+      if (workspace && inside(workspace, resolved)) findings.push(`Required artefact is inside the workspace: ${path}`);
+      try { await requireRetainedStorage(path, request.recyclableRoots ?? []); }
+      catch { findings.push(`Required artefact is inside a recyclable workspace or its location could not be checked: ${path}`); }
+      if (target.isDirectory() && (!directory || !inside(directory, resolved))) {
+        findings.push(`Required artefact is a directory outside the assigned artefact directory: ${path}`);
+        return 0;
+      }
+      if (directory && !inside(directory, resolved)) {
+        findings.push(`Required artefact is outside the assigned artefact directory: ${path}`);
+        return 0;
+      }
+      if (target.isDirectory()) {
+        if (ancestors.has(resolved)) {
+          findings.push(`Required artefact contains a directory link cycle: ${path}`);
+          return 0;
+        }
+        let entries: string[];
+        try { entries = await readdir(resolved); }
+        catch { findings.push(`Required artefact is an unreadable directory: ${path}`); return 0; }
+        const parents = new Set([...ancestors, resolved]);
+        let files = 0;
+        for (const entry of entries) files += await checkPath(join(path, entry), parents);
+        if (path === artefact && entries.length === 0) findings.push(`Required artefact is an empty directory: ${path}`);
+        else if (path === artefact && files === 0) findings.push(`Required artefact is a directory with no readable regular files: ${path}`);
+        return files;
+      }
+      if (!target.isFile()) {
+        findings.push(`Required artefact is not a regular file or directory: ${path}`);
+        return 0;
+      }
+      try {
+        const file = await open(resolved, "r");
+        try {
+          if (!(await file.stat()).isFile()) throw new Error("Not a regular file");
+          await file.read(Buffer.alloc(1), 0, 1, 0);
+        } finally { await file.close(); }
+        return 1;
+      } catch { findings.push(`Required artefact is unreadable: ${path}`); return 0; }
+    };
+    await checkPath(artefact, new Set());
   }
 
   return { retained: findings.length === 0, findings, notes };

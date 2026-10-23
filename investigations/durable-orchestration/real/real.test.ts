@@ -13,6 +13,7 @@ import type { Outcome } from "../scenario/contract.ts";
 import { approve, recoverClaim, review, waitForWorker } from "./control.ts";
 import { initialise, settingsAt } from "./fixture.ts";
 import { RealOwners, environment } from "./owners.ts";
+import { openHost } from "./host.ts";
 
 const execute = promisify(execFile);
 async function command(directory: string, method: string, ...args: string[]): Promise<unknown> {
@@ -125,7 +126,9 @@ for (const design of ["A", "B"] as const) {
       assert.equal((await f.owners.controls()).retainedCommit, attempt.result.commit);
       assert.equal((await f.owners.counters(attempt.id)).return, 0);
       await assert.rejects(() => f.owners.returnWorkspace(attempt.identity!), /scoped/);
-      await f.client.call("shutdown");
+      assert.deepEqual(await command(f.directory, "shutdown"), {
+        status: "stopping", workerTermination: "unverified", leases: "retained",
+      });
       assert.deepEqual(await host.exit, { code: 0, signal: null }, host.output());
       // A genuinely new process reopens both application and (for B) execution stores.
       host = await f.start();
@@ -149,9 +152,22 @@ for (const design of ["A", "B"] as const) {
         acquire: 1, launch: 1, prompt: 1, worker_exit: 1, review: 2, merge: 0, return: 1, cancel: 0,
       });
       assert.equal((await f.client.inspect()).attempts[0]!.done, true);
-      await f.client.call("shutdown");
+      assert.deepEqual(await command(f.directory, "shutdown"), {
+        status: "stopping", workerTermination: "unverified", leases: "none",
+      });
       assert.deepEqual(await host.exit, { code: 0, signal: null }, host.output());
     } finally { await f.close(); }
+  });
+
+  test(`${design}: shutdown reports not checked when the real owner's listing is unavailable`, async t => {
+    const f = await fixture(design);
+    t.mock.method(RealOwners.prototype, "leases", async () => { throw new Error("Listing unavailable"); });
+    const host = await openHost(f.directory);
+    try {
+      assert.deepEqual(await command(f.directory, "shutdown"), {
+        status: "stopping", workerTermination: "unverified", leases: "not checked",
+      });
+    } finally { await host.close(); await f.close(); }
   });
 
   test(`${design}: lost real acquisition acknowledgement retains lease and refuses acquisition_uncertain on retry`, async () => {
