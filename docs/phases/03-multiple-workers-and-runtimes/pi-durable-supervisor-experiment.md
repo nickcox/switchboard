@@ -1,6 +1,6 @@
 # Narrow Durable supervisor experiment
 
-Status: dispatch/tool-result-loss and queued-input/event-delivery cases implemented and tested after operator approval; the remaining trial is proposed. The production boundary is not selected. This plan changes no ADR or PRD and authorises no chargeable model calls.
+Status: dispatch/tool-result-loss, queued-input/event-delivery and pending-decision/approval cases implemented and tested after operator approval; the remaining trial is proposed. The production boundary is not selected. This plan changes no ADR or PRD and authorises no chargeable model calls.
 
 ## Question and proposed boundary
 
@@ -52,7 +52,15 @@ The [input/event investigation record](../../../investigations/durable-orchestra
 
 With `afterFailedRun: "keep"`, an injected failed answer leaves later inputs queued. Tests retain visible unanswered records and use one explicit new operator input to continue the remaining queue, not retry the failed input. Acknowledged delivery is not an answered input. All 24 supervisor cases and 538 investigation tests pass, along with repository checks.
 
-This is a scripted, two-entry, single-attempt delivery fixture, not a production watcher or objective completion. Live appends/pruning, cross-attempt ordering, partial streamed answers, pending decisions, fresh permissions, storage faults/upgrades and the plain-notes comparison remain unqualified.
+This is a scripted, two-entry, single-attempt delivery fixture, not a production watcher or objective completion. Live appends/pruning, cross-attempt ordering and partial streamed answers remain unqualified; the subsequent decision/approval cases are recorded below. Storage faults/upgrades and the plain-notes comparison remain outstanding.
+
+## Pending-decision and approval results
+
+The [decision/approval investigation record](../../../investigations/durable-orchestration/README.md#narrow-supervisor-trial--pending-decisions-and-fresh-approval-checks) adds 24 tests, three repetitions each of eight cases. A pending reference and valid approval observation are committed before SIGKILL. After reopening, old conversation history cannot bypass current approval expiry/revocation, no-processes confirmation or exact-commit retention/review requirements. Model-supplied operator fields are rejected before application invocation, and a model-selected commit different from the result is refused.
+
+The pending reference survives each refusal. Fresh fixture/operator authority and an explicit new retry input permit one acceptance, one done transition and one return for the original result/lease, without another launch or prompt. All 48 supervisor cases and 562 investigation tests pass, along with repository checks. The scripted fake controls do not qualify real-model reasoning, Git retention or production objective permissions/budget.
+
+Review the accumulated three-stage evidence before expanding the prototype. The boundary remains proposed: partial streaming, storage/upgrade cases, real-model reasoning, production event/host lifecycle and the plain-notes comparison still need decisions or qualification. Continuation from retained output remains a separate application feature and trial.
 
 ## Comparison and decision
 

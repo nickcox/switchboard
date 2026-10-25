@@ -993,3 +993,46 @@ Fresh validation on **Darwin arm64, Node v26.7.0**: both TypeScript checks passe
 Physical code counts, including comments and blank lines: event adapter/types **63**, event host **112**, new tests **138**. A shared test-process helper is **32** lines; the original recovery test reduced from 160 to **132** lines after extraction. The net extension is **317** lines, all investigation code, with no production deletions or net simplification claim.
 
 The cursor deliberately covers **one fixed attempt and two retained entries**. It does not qualify cross-attempt event ordering, live source appends/pruning, multiple objectives, recipient selection, independent watcher ownership, disaster restore, storage-failure ambiguity, upgrades or power loss. No partial streamed answer was produced before the kill, so model-turn/partial-output and pending-decision recovery remain separate cases. Fresh permissions around review/approval, retained-output continuation and real-model reasoning also remain outstanding. The comparison with plain-note reconstruction has not been run, and the narrower production boundary is still a proposal.
+
+## Narrow supervisor trial – pending decisions and fresh approval checks
+
+Implemented from **`26c7654`**, after operator approval of this next scripted step. This extends the conversation trial, not the production implementation or the per-attempt Design B workflow. Released dependencies and the lockfile are unchanged. No real model, worker agent, Git/forge effect or Treehouse lease was used. Workspace/worker/review/return owners remain the independent file-backed fakes, including their test-owned retention and approval controls.
+
+### Stored reasoning and current application authority
+
+`supervisor/decision-child.ts` reuses the A scenario driver and its production-backed application transactions, safety checks and position-free finalisation. The fixture prepares one completed worker result for exact commit **A**, with positive fake exit evidence, but does not accept the output or return its lease. It supplies a valid exact-scope approval and, except in the review-wait case, a matching review receipt.
+
+The faux supervisor first calls `inspect_decision`. This commits a conversation document containing only `{ requestId, attemptId, commit }` under `pending`; it stores no approval, task lifecycle or workflow position. The tool's ordinary historical result includes the observed controls and evidence. A public `GenerationTask.beforeRequest` hook pauses after that result commits but before the next model request decides whether to finalise. SIGKILL therefore leaves a pending reasoning reference **and an old valid approval observation in the transcript**.
+
+A replacement host is refused by the surviving fixture claim. After joining the old host and explicitly recovering only that claim, the test changes clock/evidence/approvals and reopens the same conversation/input. It captures the recovered pending generation and document before enabling scheduling. The script deliberately uses its old inspection result to request finalisation; current application checks, not that history, decide the result.
+
+The finalise tool is replay-unsafe. It accepts only an attempt ID and commit with no additional fields, selects the application request from trusted fixture configuration, and refuses a scope that differs from the recorded result. It cannot write owner approvals or supply operator identity to the application. Matching calls use `advance`, whose existing checks reread current controls and exact-commit review evidence. This scope adapter and schema are prototype integration code, not a newly qualified production supervisor permission API.
+
+### Results
+
+`supervisor/decision.test.ts` adds **eight cases × three repetitions = 24 tests**:
+
+| Change while the host is stopped | Resumed result, with no acceptance, done or return effect |
+| --- | --- |
+| Approval expires on the controlled clock | `approval_required` |
+| Approval is revoked | `approval_required` |
+| No-processes confirmation is removed, acceptance approval retained | `process_confirmation_required` |
+| Retained commit changes from A to B | `not_retained` for recorded result A |
+| Approval now names B rather than result A | `approval_required` |
+| Model requests finalisation of B while the recorded result remains A | Scope adapter returns `request_conflict`, without advancing the application |
+| Model supplies `by: operator`, `accept` and `noProcesses` fields after real fixture authority is revoked | Durable returns `invalid_arguments`; the application adapter is not invoked |
+| Matching review has not arrived; only a review of B is delivered | Still `waiting/review` for A; a review of another commit is not authority |
+
+Every refusal leaves the pending decision reference visible, preserves the original result/binding and leaves zero output-acceptance or return-intent entries. The resumed conversation answers, but that is not application task completion. A third host receives an explicit, separately identified retry input only after the fixture restores retention and supplies fresh exact-scope acceptance/no-processes approval and, where needed, review of A. It performs a new inspection, completes finalisation, then clears the pending reference. The test checks one acceptance, one done entry, one return intent and one return, all for the original result and lease. Acquire/launch/prompt/exit remain exactly one; global owner receipts cannot hide another attempt's effects.
+
+All cases retain the original conversation/input across the crash and use one new input for the explicit retry. Each requires one fixture claim recovery and one explicit retry input, plus the case-specific evidence/approval repair. There is no zero-intervention or real-model reasoning claim. The fake retention controls stand in for Git checks; the fake no-processes approval is supplied by the test/operator, never inferred from a result file or conversation. This does not qualify tool-descendant termination or change production's separate acceptance/return policy.
+
+### Validation and next decision
+
+The existing `test:supervisor` command now covers **48 supervisor cases**. Both TypeScript checks passed; the full isolated suite passed **562/562 tests**, including the earlier repeated crash matrix; repository tests passed **426**, with **two platform skips** and zero failures (428 total), on Darwin arm64 / Node v26.7.0. The measured Durable transaction settings remain WAL/FULL/fullfsync ON/checkpoint_fullfsync ON in the initial, resumed and explicit-retry processes. No test host remains running.
+
+Final logs are ignored `.investigation/durable-orchestration/supervisor-decision-suite.log` and `supervisor-decision-root-suite.log`. The 24 new targeted cases are also recorded in `supervisor-decision-targeted.log`. Summaries append to `supervisor-decision-results.jsonl`, which can contain multiple runs; use the full-suite log for the final run's 24 results. The same reproduction commands as the earlier stages apply, with no manifest or migration change.
+
+Physical code added: document/types **18** lines, fixture host/tools **135**, tests **166**, including comments and blank lines. All **319** lines are investigation code; no production code was deleted. There is no per-attempt Durable workflow or new general recovery console.
+
+The three trial stages now demonstrate stable interrupted-tool identity, queued event delivery and current authority enforcement at these scripted boundaries. They support the proposed ownership separation, not a conclusion that it is simpler than full B or plain-note reconstruction. Before expanding the prototype, review these results and the remaining acceptance gates: partial streamed model turns, pending-call upgrades/storage faults, real-model reasoning, production event ordering/retention/host lifecycle and the plain-notes comparison remain unqualified. Starting a new attempt from retained output still needs its own application operation and trial. No ADR/PRD change, production adoption or chargeable run is authorised by these results.
