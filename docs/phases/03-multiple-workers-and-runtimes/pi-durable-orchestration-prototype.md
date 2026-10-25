@@ -1,6 +1,6 @@
 # Comparative prototype: Pi Durable for orchestration
 
-Status: planned; no prototype results yet. Reopens the Phase 3 execution and recovery design, not its domain rules or worker safety requirements.
+Status: comparison and follow-up results recorded; narrow supervisor continuity boundary provisionally selected in [ADR-0003](../../adr/0003-pi-durable-for-durable-orchestration.md). See the [comparison report](pi-durable-orchestration-report.md) and [scripted supervisor trial](pi-durable-supervisor-experiment.md). The plan below retains the original comparison scope. It does not authorise production adoption, chargeable trials or supervisor-first phase reordering; domain rules and worker safety are unchanged.
 
 ## Decision to make
 
@@ -10,7 +10,7 @@ The earlier comparisons asked whether Durable replaces individual components. It
 
 Inputs: [ADR-0003](../../adr/0003-pi-durable-for-durable-orchestration.md), [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md#continuing-comparison-with-pi-durable), [ADR-0007](../../adr/0007-one-sqlite-database.md), and the [Phase 3 PRD](PRD.md#shared-mechanisms).
 
-Complete this comparison before implementing the Phase 3 PRD's [implementation steps](PRD.md#implementation-order) 3 to 5: several attempts at once, the background dispatcher, and the step runner the pull-request policy needs. Design B would move the attempt maximum, background execution and the step runner into its execution host, so each depends on the outcome. Work both designs need can go ahead: step 2, separating reading, deciding and reporting an attempt's state, and step 6, the Claude Agent ACP runtime, whose adapter stays Switchboard's in either design. Existing domain operations, database work and runtime adapters are inputs, not implementations to discard in advance. The prototype does not authorise a production dependency, migration or change to automatic recovery policy.
+The comparison gate is complete, with the provisional ownership choice recorded in the report. The original requirement was to complete it before implementing the Phase 3 PRD's [implementation steps](PRD.md#implementation-order) 3 to 5: several attempts at once, the background dispatcher, and the step runner the pull-request policy needs. Design B would move the attempt maximum, background execution and the step runner into its execution host, so each depends on the outcome. Work both designs need can go ahead: step 2, separating reading, deciding and reporting an attempt's state, and step 6, the Claude Agent ACP runtime, whose adapter stays Switchboard's in either design. Existing domain operations, database work and runtime adapters are inputs, not implementations to discard in advance. The prototype does not authorise a production dependency, migration or change to automatic recovery policy.
 
 ## Designs
 

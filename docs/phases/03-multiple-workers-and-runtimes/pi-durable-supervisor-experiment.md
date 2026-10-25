@@ -1,12 +1,12 @@
 # Narrow Durable supervisor experiment
 
-Status: dispatch/tool-result-loss, queued-input/event-delivery and pending-decision/approval cases implemented and tested after operator approval; the remaining trial is proposed. The production boundary is not selected. This plan changes no ADR or PRD and authorises no chargeable model calls.
+Status: dispatch/tool-result-loss, queued-input/event-delivery and pending-decision/approval cases implemented and tested after operator approval; the remaining trial is proposed. The narrow ownership boundary is now provisionally selected in ADR-0003; production adoption remains conditional. This decision does not approve a chargeable model trial or the separate supervisor-first phase reordering.
 
-## Question and proposed boundary
+## Question and provisionally selected boundary
 
 Can a supervisor resume after interruption, inspect actual attempt state and continue without repeating an uncertain operation?
 
-The [comparison report](pi-durable-orchestration-report.md) recommends testing Durable for conversation, queued inputs and interrupted tool work only. Switchboard retains deterministic attempt operations, position-free finalisation, permissions, budgets and all task/attempt authority. There is no per-attempt Durable workflow or second dispatcher queue. The classified-read and configured-SQLite experiments through `1a9ee97` remove two earlier objections to full B; this trial must justify the narrower boundary on its own merits.
+The [comparison report](pi-durable-orchestration-report.md) provisionally selects Durable for conversation, queued inputs and interrupted tool work only, subject to the remaining adoption checks. Switchboard retains deterministic attempt operations, position-free finalisation, permissions, budgets and all task/attempt authority. There is no per-attempt Durable workflow or second dispatcher queue. The classified-read and configured-SQLite experiments through `1a9ee97` remove two earlier objections to full B; this trial must justify the narrower boundary on its own merits.
 
 Use one objective, one supervisor conversation and at most one external worker at a time. One exclusive host owns the separate Durable store. Tools call shared asynchronous application operations in-process, with caller identity supplied by trusted code. Conversation history and previous tool results never authorise an operation.
 
@@ -60,7 +60,7 @@ The [decision/approval investigation record](../../../investigations/durable-orc
 
 The pending reference survives each refusal. Fresh fixture/operator authority and an explicit new retry input permit one acceptance, one done transition and one return for the original result/lease, without another launch or prompt. All 48 supervisor cases and 562 investigation tests pass, along with repository checks. The scripted fake controls do not qualify real-model reasoning, Git retention or production objective permissions/budget.
 
-Review the accumulated three-stage evidence before expanding the prototype. The boundary remains proposed: partial streaming, storage/upgrade cases, real-model reasoning, production event/host lifecycle and the plain-notes comparison still need decisions or qualification. Continuation from retained output remains a separate application feature and trial.
+The accumulated three-stage evidence supports provisional selection of the narrow boundary, not production readiness. Partial streaming, storage/upgrade cases, real-model reasoning, production event/host lifecycle and the plain-notes comparison still need decisions or qualification. Continuation from retained output remains a separate application feature and trial.
 
 ## Comparison and decision
 
@@ -75,7 +75,15 @@ Deliver a short report with:
 
 A successful scripted trial justifies a separately authorised small real-model run to test whether the supervisor actually inspects current state and continues appropriately. It does not establish reasoning quality, power-loss safety or production readiness. A failure that needs substantial custom conversation/replay machinery should reopen the proposed boundary, not trigger an unbounded prototype expansion.
 
-After reviewing the evidence, explicitly select or reject the boundary before updating ADRs and the Phase 3 PRD. Keep pending-tool/deadline upgrade and platform/storage qualification as adoption gates even if the initial trial passes.
+The evidence has been reviewed and the boundary provisionally selected in the ADRs, architecture and current Phase 3 checkpoint. Keep pending-tool/deadline upgrade and platform/storage qualification as adoption gates. The current roadmap still places the supervisor in Phase 4; moving it into Phase 3 needs explicit acceptance of the separate scope revision.
+
+## Next real-model trial scope, not yet authorised
+
+The next useful trial should ask whether a real supervisor chooses to inspect current facts and respects application refusals, rather than repeat the scripted decisions. Keep it to one disposable objective and the existing inspection/stable-ID dispatch/finalisation tools. Reuse fake external owners initially; do not start real worker agents, publish, merge or return real leases. No new continuation-from-retained-output operation or production dependency is part of this trial.
+
+Before running, obtain explicit approval for provider/model, credentials, maximum duration, token/cost budget and exact scenarios. Retain those settings and model/tool transcripts without exposing secrets. Include an interrupted tool result and a stale approval observation, compare the chosen actions with the scripted baseline and independently count effects. Record whether current inspection occurs, refusals are respected, stable IDs survive and human intervention is required. A successful answer alone is not task completion. Do not expand authority or generate replacement operation IDs to make a run succeed.
+
+This scope is a proposal for separate authorisation, not permission to make chargeable calls. Passing it would not waive partial-turn, upgrade, storage/platform, production host/event or plain-note-comparison gates. Decide the supervisor-first phase scope separately before production implementation.
 
 ## Deferred
 

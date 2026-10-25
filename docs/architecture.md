@@ -1,6 +1,6 @@
 # Switchboard architecture
 
-Status: agreed architecture; implementation requirements, not a description of deployed software.
+Status: agreed architecture, with a provisionally selected narrow supervisor continuity boundary under ADR-0003. Production adoption remains conditional. These are implementation requirements, not a description of deployed software; phase scope and ordering are unchanged.
 
 ## Purpose
 
@@ -24,7 +24,7 @@ flowchart TD
     Switchboard --> Runtime[Runtime adapter: worker lifecycle]
     Runtime --> Pi[Pi worker in leased workspace]
     Supervisor[Later: agent supervisor] -.-> Switchboard
-    Switchboard -.-> Durable[Later: Pi Durable orchestration primitives]
+    Supervisor -.-> Durable[Later: Durable conversation continuity]
 ```
 
 | Concern | Authority | Switchboard responsibility |
@@ -33,7 +33,7 @@ flowchart TD
 | Workspace allocation, isolation and durable leases | Treehouse | Acquire, inspect, preserve or return leases |
 | Worker/session identity, liveness and termination | Runtime adapter | Request execution and interpret observations |
 | Dispatch, reconciliation and policy | Switchboard | Decide permitted actions across these owners |
-| Supervisor conversation and resumable orchestration execution, later | Pi Durable | Supply tools and application policy |
+| Supervisor conversation, queued inputs and pending reasoning/tool work, later | Pi Durable, provisionally selected | Supply restricted tools; keep deterministic attempt execution and current authority in application operations |
 | Mailbox and schedule meaning, later | Switchboard | Define addressing, delivery, acknowledgement and trigger rules |
 | Mailbox/schedule persistence and execution machinery, later | Pi Durable initially | Implement Switchboard rules through a contained integration |
 
@@ -75,7 +75,7 @@ Later reconciliation will classify combinations such as in-flight task with live
 
 ## Supervision
 
-Supervision is expected to be done by an agent from Phase 4. Phase 1 has only a human operator, but its operations are designed so that a supervisor can use them unchanged.
+Under the current roadmap, supervision is expected to be done by an agent from Phase 4. The narrow Durable ownership boundary is provisionally selected; the separate supervisor-first Phase 3 draft is not adopted by that decision. Phase 1 has only a human operator, but its operations are designed so that a supervisor can use them unchanged.
 
 **Mechanics and judgement are separate.** Switchboard owns the mechanics: identity checks, ordering, retention checks, refusals and the attempt log. The supervisor owns judgement: which task to run next, what a hold or failure means, whether a new attempt is worthwhile and when to involve the operator. A safety rule always lives in a Switchboard operation, never only in the supervisor's instructions.
 
@@ -93,9 +93,11 @@ An operation that starts work accepts a caller request ID, so a supervisor that 
 
 **Worker output is data.** The supervisor reads worker results, activity logs, transcripts and task text as data, never as instructions. Nothing a worker or a task says can grant authority, change policy or approve an operation.
 
-**Events wake the supervisor.** The attempt log is the event source. A deterministic watcher reads new entries and wakes the supervisor only when judgement is needed, such as an unresolved attempt, a recorded hold or failure, or a refused operation. The supervisor does not poll owners or read terminal output. Each event is delivered at least once and never given to the supervisor twice, as [ADR-0003](adr/0003-pi-durable-for-durable-orchestration.md#event-delivery-and-recovery) describes. A worker's mid-run request for a decision is a later addition; the versioned result contract must allow a status channel to be added without changing finalisation. The Agent Host Protocol's input requests (`chat/inputRequested`, then `chat/inputCompleted` once the host has checked the required answers) are a reference design for it (see [Notes for later phases](#notes-for-later-phases)).
+**Events wake the supervisor.** The attempt log is the event source. A deterministic watcher reads new entries and wakes the supervisor only when judgement is needed, such as an unresolved attempt, a recorded hold or failure, or a refused operation. The supervisor does not poll owners or read terminal output. Delivery attempts are at least once; stable submission IDs prevent duplicate logical conversation inputs, as [ADR-0003](adr/0003-pi-durable-for-durable-orchestration.md#event-delivery-and-recovery) describes. This is not exactly-once remote model execution. Admission is not answering: queued and failed/unanswered inputs must remain visible, with an explicit continuation policy after a failed run. A worker's mid-run request for a decision is a later addition; the versioned result contract must allow a status channel to be added without changing finalisation. The Agent Host Protocol's input requests (`chat/inputRequested`, then `chat/inputCompleted` once the host has checked the required answers) are a reference design for it (see [Notes for later phases](#notes-for-later-phases)).
 
-**The supervisor's own state is separate.** Its conversation, pending decisions and promises to the operator are supervisor state. Its conversation may mention tasks, leases and attempts, but those mentions are not authoritative: the facts stay with their owners and the attempt log. [ADR-0003](adr/0003-pi-durable-for-durable-orchestration.md) selects Pi Durable for the supervisor's continuity, if it passes the checks listed there. The supervisor's Durable storage belongs to one host process and is separate from Switchboard's database ([ADR-0007](adr/0007-one-sqlite-database.md)). Its durability must be specified and verified before adoption, because Durable's default SQLite setting can lose the newest changes on power failure. Durable is compared with keeping the same state in plain files, against the same recovery requirements; a saved conversation alone is not recovery. [firstmate](https://github.com/kunchenguid/firstmate) shows how file-based state can work, but is not evidence of the same guarantees.
+**The supervisor's own state is separate.** Its conversation, pending decisions and promises to the operator are supervisor state. Their references to tasks, leases, attempts and old approvals are historical observations, never present authority. [ADR-0003](adr/0003-pi-durable-for-durable-orchestration.md) provisionally selects one exclusive context host and a supervisor conversation for one objective, calling shared operations in-process. Its separate Durable store holds conversation/queued-input/pending-tool continuity, not per-attempt deterministic workflow checkpoints or a second dispatch queue. Switchboard retains position-free finalisation, application authority and external worker ownership. CLI operations do not open that continuity store.
+
+The application owns event-delivery positions, advanced only after Durable acknowledges storage. Neither in-process calls nor sharing a database file makes the two APIs' commits atomic. [ADR-0007](adr/0007-one-sqlite-database.md) keeps one authoritative application ledger and requires reconciliation after backup restore/domain-record loss. Released Durable 1.4.0 accepts the caller-configured FULL/fullfsync connection demonstrated in the investigation; its NORMAL default is not an equivalent guarantee. Storage/platform qualification, partial streamed turns, supervisor upgrades and real-model reasoning remain adoption gates. The same-requirements comparison with plain-note reconstruction is still outstanding; [firstmate](https://github.com/kunchenguid/firstmate) is a file-based example, not evidence of equivalent recovery.
 
 ## Extension boundaries
 
@@ -107,18 +109,18 @@ Keep task access, workspace operations and runtime operations separate. Phase 1 
 
 The preferred second runtime is a general adapter for the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP), the editor-to-agent protocol that Claude, Codex, opencode and other agents support. It is not a replacement for the Pi adapter. Pi has no built-in ACP support: the main adapter, `pi-acp`, starts Pi in its RPC mode and translates. Going through it would lose what Phase 1 relies on: steering mid-turn, which `pi-acp` does not expose (it queues follow-up prompts instead); control of Pi's startup flags and session identity; and isolation from the operator's own Pi configuration. ACP itself defines neither steering nor queued messages. The Claude and Codex adapters offer steering through a non-standard `_session/steering` extension, and the [ACP runtime survey](phases/03-multiple-workers-and-runtimes/acp-runtime-survey.md) recommends Claude's adapter as the first ACP runtime because it can also be told to ignore the user's own settings. To keep an ACP adapter straightforward, keep the runtime interface independent of Pi, and treat steering as a capability a runtime may lack, so that `steer` refuses clearly where it is unsupported.
 
-Pi Durable is the selected direction for the supervisor and later durable orchestration, if it passes ADR-0003's checks. Pi Durable 1.4.0, published on 21 October 2026, adds timed waits that survive a restart; evaluate them before Switchboard adds its own deferred checks or timing. Switchboard still defines schedules and starts the host, and resuming the supervisor never authorises restarting an external worker. A Pi Durable computational task is distinct from a Switchboard task, which is a project work item. Switchboard mailbox and schedule interfaces must remain independent of Pi Durable's internal types. Durable execution does not make external task, lease and runtime mutations atomic or exactly once.
+Pi Durable is provisionally selected for supervisor continuity, subject to ADR-0003's remaining checks; full per-attempt Durable workflows are not selected. Its released 1.4.0 persisted waits and restart visibility are demonstrated in controlled tests. Reconsider this ownership boundary before adding stored schedules or timing, rather than incrementally building another durable scheduler. Switchboard still defines schedules and starts the host; a stored deadline cannot start a stopped process, and supervisor recovery never authorises restarting an external worker. A Pi Durable computational task is distinct from a Switchboard project task. Future mailbox/schedule interfaces stay independent of Durable's types and need their own qualification. None of these local commits makes external effects atomic or exactly once.
 
 ## Roadmap
 
-**Phase 3 execution design is under review.** The [comparative prototype plan](phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-prototype.md) compares Switchboard running each operation's steps itself with Durable running them as checkpointed tasks, before the Phase 3 PRD's implementation steps 3 to 5 (several attempts at once, the background dispatcher and the step runner) are built. It may bring Durable forward from Phase 4 and change host and storage responsibilities. The roadmap's capabilities and existing safety rules are unchanged; no production integration is selected by the plan.
+**Orchestration ownership is provisionally selected; phase ordering is unchanged.** The [comparison report](phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-report.md) keeps deterministic execution and position-free finalisation in Switchboard, with Durable for supervisor continuity only. The [scripted supervisor trials](phases/03-multiple-workers-and-runtimes/pi-durable-supervisor-experiment.md) support the boundary, not production readiness or a claim of net simplification. The supervisor-first draft on another branch has not been adopted: the Phase 3 scope/order below remains current. Adopting that revision, running a chargeable real-model trial and adding a production dependency are separate decisions.
 
 | Phase | Useful capability |
 | --- | --- |
 | 1 – Basic dispatch | One ready task through Treehouse to Pi, with explicit finalisation and compensation |
 | 2 – Reconciliation and recovery | Classify each attempt's state across owners; finish, discard and prune attempts under a finalisation policy per context, with the operator confirming that no worker process remains ([PRD](phases/02-reconciliation-and-recovery/PRD.md); complete on macOS, see [verification](phases/02-reconciliation-and-recovery/verification.md)) |
 | 3 – Multiple workers and runtimes | Extend the initial adapter; add bounded concurrency and another runtime; a finalisation policy that opens and watches pull requests ([PRD](phases/03-multiple-workers-and-runtimes/PRD.md)) |
-| 4 – Agent supervisor | Introduce an agent supervisor using the operations, authority model and events in [Supervision](#supervision), including deciding when to start a new attempt after a temporary error; retain deterministic dispatch policy; Pi Durable for supervisor continuity, subject to ADR-0003 |
+| 4 – Agent supervisor | Introduce an agent supervisor using the operations, authority model and events in [Supervision](#supervision), including deciding when to start a new attempt after a temporary error; retain deterministic dispatch policy; narrow Pi Durable continuity boundary provisionally selected, production adoption subject to ADR-0003 |
 | 5 – Mailboxes | Define Switchboard message semantics and implement durable delivery through Pi Durable, generalising Phase 1's operator messages to running workers |
 | 6 – Scheduling | Add one-off and recurring triggers through existing dispatch and messaging paths |
 | 7 – External events | Translate external events into work or messages, initially through polling where suitable |

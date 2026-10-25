@@ -8,7 +8,7 @@ Switchboard needs a Pi worker outside its own process, structured outcomes, expl
 
 ## Decision
 
-Launch the standard Pi CLI in a separate Node.js process, in the exact Treehouse-leased directory, using Pi's built-in RPC protocol. The runtime adapter owns the child-process handle and verifies the reported session identity. Do not embed an agent in the Switchboard process. Use an explicit model, session ID and session directory; disable ambient extensions and MCP in the initial worker configuration.
+Launch the standard Pi CLI in a separate Node.js process, in the exact Treehouse-leased directory, using Pi's built-in RPC protocol. The runtime adapter owns the child-process handle and verifies the reported session identity. Do not embed a worker agent in the Switchboard process; the separately qualified reasoning supervisor may run in-process under ADR-0003. Use an explicit model, session ID and session directory; disable ambient extensions and MCP in the initial worker configuration.
 
 The worker uses Pi's standard write tool to produce one versioned `result.json` at a specified per-attempt location outside the recyclable workspace. Switchboard validates its schema, identity, required evidence entries and work references. A result remains a worker claim, not independent acceptance verification. Missing, malformed, stale or inconsistent results do not imply completion.
 
@@ -30,7 +30,7 @@ Neither Herdr nor a generic process supervisor is required for this first integr
 
 ## Continuing comparison with Pi Durable
 
-**Phase 3 orchestration decision under review.** The [comparative prototype plan](../phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-prototype.md) reopens the fourth comparison's conclusion below. Not managing external workers directly does not prevent Durable from coordinating Switchboard's adapters. The comparison will test whether Durable can replace the proposed step runner, waits and recovery machinery, and whether a single execution host reduces coordination costs. Existing domain and worker safety rules remain requirements. Complete the comparison before the Phase 3 PRD's implementation steps 3 to 5, as the plan explains.
+**Comparison complete; narrow supervisor boundary provisionally selected.** The [comparison report](../phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-report.md) and scripted supervisor trials support Durable for reasoning continuity, not per-attempt deterministic workflows. The fifth comparison below supersedes the fourth comparison's pending execution choice, not its worker safety requirements. Production adoption remains conditional on [ADR-0003](0003-pi-durable-for-durable-orchestration.md#integration-acceptance-checks). Phase 3/4 scope and ordering are unchanged.
 
 The comparisons below are findings about the package and scope inspected at the time, not about every upstream revision numbered 1.3.0. [ADR-0003's source refresh](0003-pi-durable-for-durable-orchestration.md#source-refresh) records timed waits that survive a restart, which 1.3.0 does not have and Pi Durable 1.4.0, published on 21 October 2026, does. Phase 3's scope is unchanged; compare again before Switchboard stores any timing, and qualify a released package before relying on those features.
 
@@ -65,6 +65,17 @@ The fourth comparison, on 21 October 2026, was made before writing the Phase 3 P
 So Phase 3, as scoped, gives no reason to adopt Pi Durable, provided its PRD keeps to the following: no queue of Switchboard's own, no automatic restart of workers or retry of attempts, a cross-process maximum held in files, and whether a pull request has merged read from GitHub each time an attempt's state is worked out, with no stored schedule of when to check it. If the PRD needs to break any of these limits, compare again before implementing that part. The Phase 4 supervisor remains where Pi Durable is expected to be adopted.
 
 [ADR-0007](0007-one-sqlite-database.md), accepted the same day, moves tasks and Switchboard's records into one SQLite database. The Phase 3 PRD restates the first and third limits for it: the ready order of project tasks in the database is the order of work, not a queue of dispatch requests, and the maximum is enforced by transactions in the database. Neither adds state of the kind Pi Durable supplies.
+
+### Fifth comparison: provisionally selected supervisor boundary
+
+The comparative A/B investigation qualified released Durable **1.4.0**, then added classified-read recovery, caller-configured SQLite and three scripted supervisor trial stages. The [investigation record](../../investigations/durable-orchestration/README.md) retains package provenance, process boundaries, real-run limitations and test results; the current supervisor evidence is committed through `8698084`.
+
+- **Select the narrow boundary provisionally.** Durable stores supervisor conversation, queued inputs and interrupted reasoning/tool work. Switchboard retains shared attempt operations, position-free finalisation, request reservations, launch fences, worker claims and current authority checks. No per-attempt Durable task or second dispatch queue is selected. Reconsider full B if future requirements demonstrate a material coordination reduction; raw prototype line counts do not establish that reduction.
+- **Do not reject B for limitations the follow-ups removed.** Its real-run terminal owner-read failure was a classification choice, not an inherent engine limit. Classified reads now recover through existing persisted waits. Released 1.4.0 accepts a caller-configured FULL/fullfsync connection. General operator reconciliation, a new real B completion run and storage/platform qualification remain unproven.
+- **Keep worker boundaries unchanged.** A restarted conversation is not worker adoption, permission to relaunch or evidence of termination. Model tool-call replay reuses a stable application request ID; unsafe interrupted calls require inspection. A separately authorised new attempt from retained output needs a new operation/identity and handover, not replay of the old worker. Neither prototype implements that production feature.
+- **Treat scripted evidence as bounded.** Sixteen supervisor scenarios repeated three times preserve stable dispatch/event identity and fresh approval checks with fake owners. They do not prove real-model reasoning, objective completion, pending-call upgrades, power-loss durability or superiority over plain-note reconstruction.
+
+This records an ownership decision only. The current roadmap still assigns the supervisor to Phase 4; adopting the separate supervisor-first Phase 3 draft requires another explicit scope decision. The next real-model trial needs separate approval of its scope and budget. No production dependency, automatic worker recovery or lease-return policy is authorised by this comparison.
 
 ## Alternatives considered
 

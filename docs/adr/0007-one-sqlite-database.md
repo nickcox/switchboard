@@ -1,6 +1,6 @@
 # ADR-0007: Switchboard keeps its tasks and records in one SQLite database
 
-Status: accepted on 21 October 2026, and revised the same day after review; not yet implemented. Supersedes [ADR-0001](0001-tasks-axi-is-task-source-of-truth.md) and [ADR-0006](0006-switchboard-attempt-log.md).
+Status: accepted on 21 October 2026 and revised after review; amended after the orchestration trials to distinguish the authoritative application database from a conditional supervisor continuity store. Supersedes [ADR-0001](0001-tasks-axi-is-task-source-of-truth.md) and [ADR-0006](0006-switchboard-attempt-log.md).
 
 ## Context
 
@@ -18,9 +18,13 @@ A [trial](../../investigations/sqlite-trial/README.md) with Node's built-in `nod
 
 ## Decision
 
-Switchboard keeps its tasks and its own records in one SQLite database, opened with `node:sqlite`. The database is under the configured runtime root, outside every workspace, on a local filesystem. Every use of `node:sqlite` is behind one controlled storage boundary, which may span several source files. The boundary offers the transactional operations Switchboard needs, such as reserving an attempt, starting a reserved task, recording an outcome, claiming a request and archiving an attempt, not generic save and load functions that callers would have to combine correctly. Database constraints enforce uniqueness and references: request IDs within a context, attempt numbers within a task, sequence numbers within an attempt, one launch row per attempt, and one winner for a request's claim or withdrawal. Readiness, acceptance, retention and whether a lease can be returned stay in domain code.
+Switchboard keeps its tasks and its own records in one SQLite database, opened with `node:sqlite`. The database is under the configured runtime root, outside every workspace, on a local filesystem. Every use of `node:sqlite` for the application database is behind one controlled storage boundary, which may span several source files. The boundary offers the transactional operations Switchboard needs, such as reserving an attempt, starting a reserved task, recording an outcome, claiming a request and archiving an attempt, not generic save and load functions that callers would have to combine correctly. Database constraints enforce uniqueness and references: request IDs within a context, attempt numbers within a task, sequence numbers within an attempt, one launch row per attempt, and one winner for a request's claim or withdrawal. Readiness, acceptance, retention and whether a lease can be returned stay in domain code.
 
-**What the database holds:**
+**Separate supervisor continuity store.** “One database” means one authoritative application ledger for tasks, attempts, runtime facts and confirmations, not a requirement to put a future supervisor's conversation into it. Under [ADR-0003](0003-pi-durable-for-durable-orchestration.md), a separate Durable store is provisionally selected for conversation, queued inputs and pending reasoning/tool work only, outside all workspaces and exclusively owned by one supervisor host. It must not copy the application lifecycle or replace capacity transactions, launch fences or current approval records. CLI processes continue to use application operations, not competing Durable opens. A supervisor restart grants no external-worker ownership.
+
+Application and Durable commits are independent even when called in-process; no shared transaction is implied. The application owns event-delivery positions, advanced only after durable submission acknowledgement, with stable event IDs on redelivery. Stored submissions and old tool results do not establish current permission or an answered input. This continuity store is conditional on qualification, not a production dependency or a change to phase ordering.
+
+**What the application database holds:**
 
 - **Tasks:** ID, title, body, repository, kind, state (`queued`, `in_flight` or `done`), hold reason, position in the order of work, and the tasks each one is blocked by. Switchboard now owns these rules, so they are specified, with what tasks-axi left implicit, in the [task-store contract](../task-store.md). Readiness is unchanged from tasks-axi: a task is ready when it is queued, not held, and every task it is blocked by is done, and ready tasks are taken in order of position.
 - **Attempts and their log entries,** with the same meaning as ADR-0006: an attempt's entries are inserted and never changed, and the log records which task, lease, session, commits and outcome belong together.
@@ -29,9 +33,13 @@ Switchboard keeps its tasks and its own records in one SQLite database, opened w
 - **The operator's confirmations,** each recorded in one form: the fact confirmed, the attempt, who confirmed it, when, and its scope, such as the commit for accepted output. A confirmation applies only to what it names.
 - **Launch rows and claims,** described below.
 
-**What stays a file:** only what the worker or Pi writes itself: the worker's result file, Pi's session logs and the worker's artefacts, in each attempt's runtime directory. The database records their paths.
+**What stays a file among attempt/runtime records:** only what the worker or Pi writes itself: the worker's result file, Pi's session logs and the worker's artefacts, in each attempt's runtime directory. The database records their paths.
 
-**Durability.** The database uses WAL with `synchronous = FULL`, so every commit is flushed to storage before it returns, and `fullfsync` on, so that on macOS the flush forces the drive's own cache, as Node's `FileHandle.sync()` already does for the current file-based records. Losing a recently committed attempt, reservation or task change while its external effect (a lease, a launched worker) survives would undermine deduplication and recovery, so nothing weaker is acceptable. A commit takes about 5.5 ms on the trial machine, which Switchboard's write rate can afford.
+**Durability.** The database uses WAL with `synchronous = FULL`, so every commit is flushed to storage before it returns, and `fullfsync` on, so that on macOS the flush forces the drive's own cache, as Node's `FileHandle.sync()` did for the earlier file-based records. `checkpoint_fullfsync` is also enabled on the application connection. Losing a recently committed attempt, reservation or task change while its external effect (a lease, a launched worker) survives would undermine deduplication and recovery, so nothing weaker is acceptable. A commit takes about 5.5 ms on the trial machine, which Switchboard's write rate can afford.
+
+**Supervisor-store durability.** Durable 1.4.0's convenience SQLite opener uses NORMAL, which is not an equivalent setting. Its public `SqliteStorage.open()` accepts the caller-configured connection facade demonstrated in the investigation: WAL/FULL/fullfsync ON/checkpoint_fullfsync ON on the actual transaction connection. No upstream API change is required. This is the candidate configuration for supervisor continuity, not evidence of power-loss survival; qualify the required guarantees for acknowledged inputs, deduplication and decisions on supported platforms before adoption. Neither the JSONL flush findings nor a passing SIGKILL test qualifies those guarantees.
+
+**Restore is not ordinary restart.** The investigation demonstrated duplicate launches/prompts when all host records were restored to a pre-request copy while external effects survived. After backup restore or loss of application identity/exclusion records, fence dispatch until application identities and external owners have been reconciled. Do not blindly resume old application or supervisor backups. A full operator disaster-recovery procedure is still required; sharing a file does not make the two APIs' commits atomic.
 
 **Dispatch keeps its order.** Moving to a database does not change when a task starts:
 
@@ -72,7 +80,7 @@ After the import, Switchboard no longer depends on tasks-axi or on `@toon-format
 
 ## Consequences
 
-- **Fewer moving parts.** The external programs are Treehouse, Git and Pi. Switchboard's state is one database plus the files workers write.
+- **Fewer application stores.** The external programs are Treehouse, Git and Pi. Authoritative application state is one database plus worker-owned files. A future separate, exclusively owned supervisor continuity store is the conditional exception above, not another task/attempt ledger.
 - **Code that goes:** the tasks-axi adapter and its output decoding; the file mechanics of the attempt log, reservations, prune and request files; the prune lock; and the handling of a task update that could not be confirmed, in `dispatch`, `finish`, `discard`, `status` and the state classification. The attempt summary no longer needs copying into the task body, because `status` reads it from the attempt.
 - **Code that is added:** the database module and schema, the `task` commands, and the import.
 - **Principles 1, 3, 5 and 8 are reworded.** Switchboard becomes the owner of work and readiness (1). Tasks are a fact Switchboard now holds, alongside attempts (3). Changes within the database are atomic, so compensation is needed only across Switchboard, Treehouse and the runtime (5). The task store remains an interface, and this database is its implementation (8).

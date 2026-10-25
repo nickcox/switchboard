@@ -1,6 +1,6 @@
 # Phase 3: Multiple workers and runtimes
 
-Status: agreed on 21 October 2026; not yet implemented. Requirements, not a description of existing behaviour.
+Status: agreed on 21 October 2026; amended to record the provisional orchestration ownership decision. These are requirements, not a description of existing behaviour. Feature scope and implementation order are unchanged; the separate supervisor-first revision has not been adopted.
 
 ## Objective and scope
 
@@ -29,13 +29,15 @@ Out of scope:
 - Rebasing output branches without the operator's approval, merging them, or resolving conflicts between them.
 - Real-dispatch qualification on Linux and Windows, which stays a Phase 1 platform item. The suite must still pass in CI on both.
 
-Inputs: the [architecture's notes for later phases](../../architecture.md#notes-for-later-phases), the [ACP runtime survey](acp-runtime-survey.md), the [process-ownership survey](../02-reconciliation-and-recovery/process-ownership-survey.md), [ADR-0007](../../adr/0007-one-sqlite-database.md), and the fourth comparison with Pi Durable in [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md#continuing-comparison-with-pi-durable).
+Inputs: the [architecture's notes for later phases](../../architecture.md#notes-for-later-phases), the [ACP runtime survey](acp-runtime-survey.md), the [process-ownership survey](../02-reconciliation-and-recovery/process-ownership-survey.md), [ADR-0007](../../adr/0007-one-sqlite-database.md), and the fifth comparison with Pi Durable in [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md#continuing-comparison-with-pi-durable).
 
 ## Pi Durable checkpoint
 
-**Execution and recovery design under review.** Complete the [comparative orchestration prototype](pi-durable-orchestration-prototype.md) before implementation steps 3 to 5 below; steps 2 and 6 can go ahead, as the plan explains. The comparison asks whether Durable should execute deterministic workflows through Switchboard's domain operations and external-worker adapters, including whether one execution host would simplify the current multi-process design. Domain rules and safety requirements remain unchanged; the mechanisms below are the current candidate, not a settled choice against Durable.
+**Ownership boundary provisionally selected.** The [comparison report](pi-durable-orchestration-report.md) and [scripted supervisor trials](pi-durable-supervisor-experiment.md) complete the comparison gate for the candidate execution mechanisms below. Switchboard retains deterministic attempt operations and the position-free finalisation runner. Durable is selected provisionally for supervisor conversation, queued inputs and interrupted reasoning/tool work only, not per-attempt deterministic workflows or a second queue of dispatch requests. This is an ownership choice, not implementation or release of the remaining Phase 3 features.
 
-The fourth comparison in ADR-0005 deferred Durable for Phase 3 under four limits. These still describe this candidate, but do not establish that it is simpler than Durable-owned execution:
+Under the current roadmap, the supervisor remains Phase 4. This update does not adopt the separate supervisor-first Phase 3 draft, move concurrency/PR/ACP features to another phase, or authorise a production Durable dependency or chargeable model trial. Production supervisor adoption still needs [ADR-0003's acceptance checks](../../adr/0003-pi-durable-for-durable-orchestration.md#integration-acceptance-checks), including real-model reasoning, partial streamed turns, upgrades, storage/platform qualification and comparison with plain-note reconstruction. The scripted tests preserve stable request/event identity and fresh authority at tested boundaries, not full objective completion or comparative reliability.
+
+The fifth comparison in ADR-0005 supersedes the earlier unfinished comparison. These four limits continue to constrain this PRD; they do not prove that Switchboard-owned execution is simpler than every Durable alternative:
 
 1. No queue of Switchboard's own. The ready order of tasks in Switchboard's database is the order of work. It orders project tasks, which Pi Durable does not model, and is not a queue of dispatch requests.
 2. No automatic restart of workers and no retry of attempts.
