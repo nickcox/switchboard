@@ -1,6 +1,6 @@
 # Narrow Durable supervisor experiment
 
-Status: proposed, pending approval of the boundary and experiment. This plan does not select the production architecture, change the ADRs or PRD, authorise model calls, or start implementation.
+Status: dispatch/tool-result-loss and queued-input/event-delivery cases implemented and tested after operator approval; the remaining trial is proposed. The production boundary is not selected. This plan changes no ADR or PRD and authorises no chargeable model calls.
 
 ## Question and proposed boundary
 
@@ -39,6 +39,20 @@ Use separate host processes and independently counted external effects. Repeat e
 | Competing host, storage failure or missing definition | Refuse competing ownership; retain diagnosable unfinished work. No stale-claim takeover, hidden retry or replacement worker. Stop and join fixture processes before explicit fixture claim recovery |
 
 All finalisation cases retain current retention checks and human-only no-processes authority. Cancellation or host shutdown is never evidence that descendants stopped. Do not weaken the existing uncertain-effect tests to obtain continuation.
+
+## First case results
+
+The [investigation record](../../../investigations/durable-orchestration/README.md#narrow-supervisor-trial--dispatch-succeeds-before-its-tool-result-is-stored) records three hard-kill/reopen repetitions for each dispatch replay policy. Safe replay reuses the persisted tool-task/request ID and finds the same possibly running attempt; unsafe replay reports interruption without another dispatch. Both then perform scripted fresh inspection. Independent fake-owner counts remain one acquisition, launch and prompt, with zero returns. Live and stale host claims refuse another opener, and the FULL/fullfsync transaction settings are measured in both processes.
+
+This uses a faux supervisor provider and file-backed fake worker owners, not a real worker or model. Each case needs one explicit fixture claim recovery. That first case demonstrates one interrupted-tool boundary, not permissions, objective completion, continuation from retained output or a comparison with plain notes. Its validation was 520 investigation tests; the extension below brings the suite to 538.
+
+## Queued-input and event-delivery results
+
+The [input/event investigation record](../../../investigations/durable-orchestration/README.md#narrow-supervisor-trial--queued-inputs-and-event-delivery-acknowledgement) adds 18 tests: three repetitions each of four hard-kill boundaries and two failure cases. One fixed attempt's immutable log supplies stable event IDs; an application-owned cursor advances only after Durable acknowledges submission. A kill before admission loses no source event, and a kill after admission but before cursor commit redelivers to the identical submission. Queued inputs and their order survive reopening without duplicate transcript inputs.
+
+With `afterFailedRun: "keep"`, an injected failed answer leaves later inputs queued. Tests retain visible unanswered records and use one explicit new operator input to continue the remaining queue, not retry the failed input. Acknowledged delivery is not an answered input. All 24 supervisor cases and 538 investigation tests pass, along with repository checks.
+
+This is a scripted, two-entry, single-attempt delivery fixture, not a production watcher or objective completion. Live appends/pruning, cross-attempt ordering, partial streamed answers, pending decisions, fresh permissions, storage faults/upgrades and the plain-notes comparison remain unqualified.
 
 ## Comparison and decision
 

@@ -897,4 +897,99 @@ These results **change two supporting findings**, not by themselves the proposed
 1. B's observed permanent stop after a transient owner read was a prototype classification choice, not an unavoidable Durable limitation. Application-classified reads can recover through its existing persisted waits, including after SIGKILL, without repeating return. A also needs explicit classification, retained diagnostics, a finite failure budget and its existing effect intents; simply retrying every advance is not a general recovery policy. The original real-run observation remains true; no real B finalisation was rerun here.
 2. The NORMAL default remains unsuitable as an equivalent to FULL, but **released 1.4.0 already accepts a caller-configured FULL/fullfsync connection**. An upstream configuration API change is not an adoption prerequisite. Power-loss/platform testing remains one.
 
-The narrower supervisor-first recommendation is still a defensible proposal on the remaining evidence: neither follow-up removes application authority, launch fences, intents, exclusive hosting, cross-store reconciliation or the need for supervisor/continuation trials. The specific read-recovery gap and inability-to-configure-storage objection must no longer carry the decision alone. Full B still needs supported operator reconciliation/recovery tooling and an authorised real completion run; a configured backend still needs durability qualification. The comparison report is intentionally not edited.
+The narrower supervisor-first recommendation is still a defensible proposal on the remaining evidence: neither follow-up removes application authority, launch fences, intents, exclusive hosting, cross-store reconciliation or the need for supervisor/continuation trials. The specific read-recovery gap and inability-to-configure-storage objection must no longer carry the decision alone. Full B still needs supported operator reconciliation/recovery tooling and an authorised real completion run; a configured backend still needs durability qualification. This follow-up did not edit the comparison report; the later documentation revision at `d3e684e` incorporates these findings.
+
+## Narrow supervisor trial – dispatch succeeds before its tool result is stored
+
+Implemented from **`d3e684eb057bde6b39486abc3a3d97bba481962c`**, using the [supervisor experiment plan](../../docs/phases/03-multiple-workers-and-runtimes/pi-durable-supervisor-experiment.md). This implements only its first tool-result-loss case, not the full supervisor trial or a selected production design. No production source/dependency, authoritative task or real lease was changed. No Pi agent, network model/provider or external worker process was launched. The child processes below are disposable test hosts; acquisition, launch and prompt effects are the existing independent file-backed fake owners.
+
+### Implementation and ownership
+
+`supervisor/host-child.ts` opens one Durable conversation with a scripted faux provider and two tools: `dispatch` and `inspect_attempt`. It registers no network provider, regardless of environment credentials. The script requests dispatch, then fresh inspection, then reports the unresolved worker. It does not make a model judgement or complete an objective.
+
+- The dispatch tool calls the existing A `SwitchboardScenario` and `ApplicationStore` in-process. These reuse the production task/attempt transactions and immutable launch binding/fence; this is not a call to the complete production `dispatchOnce` or a new dispatch implementation. The existing synthetic contract and prototype tables remain test-only shortcuts.
+- The host derives the operation ID from a fixture objective UUID and Durable's persisted **tool task ID**, not the provider's call ID or a new random value per execution. It uses fixed task/delivery inputs. A replay therefore supplies the identical application request ID and input. The fixture UUID is only a namespace, not an implementation of objective permissions or budget.
+- `host/switchboard.db` owns the attempt and runtime facts. `host/supervisor.db` owns conversation, input submission and built-in generation/tool progress. There is no custom per-attempt workflow task, checkpoint cursor, engine response cache or copied attempt document. Normal tool-result entries remain historical observations, not present permission.
+- The supervisor store uses the previously tested public caller-configured FULL/fullfsync connection. The reused measurement helper asserts the pragmas inside Durable's actual transactions in both host processes. Application and Durable commits remain separate.
+- An exclusively created `host/owner/` directory blocks a second host before either database opens. A hard kill leaves the claim. The test verifies both live-host and post-kill refusal, joins the old process, then explicitly removes only this disposable fixture claim. There is no stale takeover or production recovery command.
+- `owners/effects/` remains independent of both databases. Every fake call writes another receipt rather than deduplicating it, so a duplicate launch or a new unrecorded attempt cannot be hidden by an engine checkpoint. Fixture-only `calls.jsonl` records tool invocations and the faux provider's received tool results; it is diagnostics, not replay authority.
+
+The installed **1.4.0** README and normative specification were read, together with [`22-subagent-foreground.ts` at the locked upstream revision](https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/durable/test/examples/22-subagent-foreground.ts). That example derives retry identity from the tool task ID. The trial uses the same released dependencies and lockfile as the existing investigation; it does not substitute upstream `main` or start subagent conversations.
+
+### Crash boundary and results
+
+The public `ToolTask.afterTool` hook pauses **after dispatch has returned `waiting/worker`, before Durable commits its tool result**. The parent checks that the application has one started/prompted attempt, the tool's durable state is `running` at `execute` with its declared replay policy, and the transcript has no tool-result entry. It then sends SIGKILL and joins the host. A fresh process captures the recovered pending intent before enabling scheduling, and resubmits the same supervisor input ID to find the original admitted submission.
+
+`supervisor/recovery.test.ts` runs two policies, **three repetitions each**:
+
+| Policy | Tool recovery | Result |
+| --- | --- | --- |
+| `replay: "safe"` | The same tool task executes again in the new process, with the identical application request ID | The application finds the same attempt and returns `possibly_running`, because the reopened invocation does not own the worker. The scripted supervisor receives that result and performs fresh inspection; no acquire, launch or prompt repeats |
+| `replay: "unsafe"` | The dispatch tool does not execute again | Durable commits an error result with diagnostic `interrupted`. The scripted supervisor then inspects current application facts and owner receipts, without generating a replacement dispatch request |
+
+Each case asserts **one reservation/attempt, one acquire, one launch and one prompt**, and zero exit/review/merge/return/cancellation effects. Both the exact attempt/binding and active count remain unchanged. Counters also scan all independent receipts, not just the original attempt. The same conversation, original input submission and persisted tool intent survive. Exactly one input appears in the transcript, and the resumed provider receives the fresh inspection result. The conversation answers, but the worker remains unresolved with its lease retained; an answered submission is not a completed task or objective.
+
+Each case requires **one explicit fixture claim recovery** after host death. This is not zero-intervention recovery. No objective is completed, so interventions per completed objective cannot be measured by this trial. The scripted inspection decision is deliberate test behaviour, not evidence that a real model will make the same decision. Plain-notes reconstruction was not implemented or compared.
+
+### Validation and next boundary
+
+From the repository root, with the existing locked investigation dependencies installed:
+
+```powershell
+npm run check --prefix investigations/durable-orchestration
+npm run test:supervisor --prefix investigations/durable-orchestration
+npm test --prefix investigations/durable-orchestration
+npm run check
+npm test
+```
+
+The isolated test script and TypeScript include list now include `supervisor/`. No dependency or root test script changed. Test summaries append to ignored `.investigation/durable-orchestration/supervisor-results.jsonl`; this file can contain several runs. Each test kills/joins its children on cleanup and removes its unique fixture. The final full-suite log is `.investigation/durable-orchestration/supervisor-suite.log`, with the six summaries for that run. Repository results are in `supervisor-root-suite.log` in the same ignored directory.
+
+Validation on **Darwin arm64, Node v26.7.0**: both TypeScript checks passed; **520/520 investigation tests** passed, including the six supervisor cases and existing three-repeat crash matrix; repository **428 tests, 426 passed, two platform skips, zero failed**. One development full-suite command reached its 240-second timeout during the passing matrix; the complete rerun passed with a longer command timeout. No test hosts remain running.
+
+New physical code is **126 lines** for the fixture host/integration and **160 lines** for its tests, including comments and blank lines. No production lines were deleted. This is evidence that the narrow conversation/application boundary preserves stable-ID dispatch and explicit unsafe-call interruption at one tested boundary, not a net simplification claim or architecture selection.
+
+The next planned cases were queued-input/event-delivery recovery (recorded below), model-turn/pending-decision interruption and fresh permissions around review/approval. This case has no real worker, approval operation, follow-up attempt, objective budget or production host lifecycle. Continuation from retained output still needs its own application operation and trial. Platform/power-loss behaviour, pending-call upgrades, arbitrary storage faults and real-model reasoning remain unqualified; this trial does not authorise a chargeable run or automatic worker/lease recovery.
+
+## Narrow supervisor trial – queued inputs and event-delivery acknowledgement
+
+This extends the uncommitted first trial above, from repository baseline **`d3e684e`**. It uses the same released **1.4.0** dependencies and measured FULL/fullfsync transaction connection. The matching upstream [`20-inbox.ts`](https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/durable/test/examples/20-inbox.ts) was read before implementation. No production dependency, schema, source, authoritative task or real lease changed. The only new processes are disposable test hosts; the faux provider makes no network/model calls, and these event cases register no tools or launch a worker.
+
+### Delivery ownership and fixture
+
+`supervisor/event-delivery.ts` reads two actual immutable entries (`requested`, then `halted`) from one disposable attempt through the existing `AttemptStore`. The fixture reserves the attempt and records that no worker was launched. It does not invent a second event log. Its event ID encodes objective namespace, context, task, attempt and entry sequence. Both that ID and the original entry content are reused as the conversation submission request ID and input after uncertainty.
+
+One prototype-only `prototype_supervisor_delivery` table in `host/switchboard.db` holds a single delivery position for the fixture objective, initially **-1**, then source sequences **0** and **1**. This is an application delivery cursor, not a task queue, attempt checkpoint or answer acknowledgement. It advances in an application transaction only **after** `conversation.submit()` acknowledges storage. No model, tool or Durable call runs inside that transaction. The two store commits are not atomic: after a lost acknowledgement, the unchanged cursor causes resubmission with the original event ID, which finds the existing queued submission.
+
+`supervisor/events-child.ts` holds the initial faux generation before returning an answer, so event inputs remain queued at each instrumented boundary. On reopen it captures the inbox, pending generation, source cursor and public submission records before enabling scheduling. It then submits the original initial-input ID, delivers only entries after the cursor and releases the generation. Follow-ups are processed one at a time. The public `InboxDoc`, `Harness.inspect()` and `tx.submissionByRequest()` provide the observations; no private engine-table queries or new checkpoint tasks are used. Public submission lookup is needed for settled failures, which are no longer part of live inspection.
+
+The existing exclusive fixture claim protects both stores. Every case proves the stale claim refuses a replacement, joins the killed host and performs one explicit fixture-only claim recovery. It never infers worker termination or grants production takeover. The original tool-recovery suite still tests live competing ownership. Both suites now reuse `supervisor/process-fixture.ts` for child lifecycle and evidence reads.
+
+### Repeated results
+
+`supervisor/events.test.ts` runs **six cases × three repetitions = 18 new tests**, each in fresh storage:
+
+| Case | State at SIGKILL | Recovery result |
+| --- | --- | --- |
+| `before_submit` | Cursor -1; neither event admitted | Both source events admitted and answered once, in order |
+| `after_submit` | First event stored/queued; cursor still -1 | Redelivery returns the identical first submission ID; second event follows, with no duplicate input |
+| `after_cursor` | First event queued; cursor 0 | First event is not resubmitted; second event is delivered and both are answered once |
+| `queued` | Both events queued; cursor 1 | Same inbox/submission IDs survive. No event is resubmitted; both are answered in order |
+| `queued`, then initial answer fails | Both events queued at kill; reopened initial run reports an injected non-retryable error | Initial input remains `unanswered/model_error`, both events remain visibly queued and no work is running. One explicit new operator input continues both events without retrying the failed input |
+| `queued`, then first event answer fails | Both events queued at kill; initial answer succeeds after reopen, then first event fails | First event remains `unanswered/model_error`, second remains visibly queued. One explicit new operator input continues the second event, without retrying or hiding the failed first event |
+
+The failure cases select **`afterFailedRun: "keep"`**, Durable's documented default, and disable generation retries. They demonstrate the distinction between admission and answering: cursor 1 remains valid even while input is queued or unanswered. A delivery retry must not create a new event ID to try to obtain an answer. The operator wake input is a separately identified new input, not an automatic retry policy or permission to repeat any application effect. Production still needs an explicit policy and operator presentation for such stalled queues.
+
+Every test verifies unchanged source entries, exactly one source attempt, zero launch/worker-claim rows, stable event/submission identities, one transcript entry per logical input and an empty inbox after the explicit continuation where needed. The diagnostic faux-provider request log shows the interrupted initial generation runs again after reopen; each queued event reaches generation only once in these scenarios. This is not a guarantee of exactly-once remote model execution. There is no tool/worker effect to count in the new cases; the earlier six dispatch tests retain their independent fake-effect assertions.
+
+Each successful normal case requires one fixture claim recovery. Each injected-failure case additionally requires one new operator input. No objective is completed, and the script's fixed response is not evidence of real-model reasoning or operator intervention rates in production.
+
+### Validation, code cost and remaining scope
+
+Run the same commands as the preceding trial. `npm run test:supervisor --prefix investigations/durable-orchestration` now covers **24 cases** (six tool-result-loss plus 18 input/event cases). The full isolated suite includes them through the existing `supervisor/*.test.ts` glob. No manifest, dependency or production migration was needed for this extension.
+
+Fresh validation on **Darwin arm64, Node v26.7.0**: both TypeScript checks passed; **538/538 investigation tests** passed, including the existing three-repeat matrix; repository **428 tests, 426 passed, two platform skips, zero failed**. The final full-suite logs are ignored `.investigation/durable-orchestration/supervisor-events-suite.log` and `supervisor-events-root-suite.log`. New summaries append to `supervisor-events-results.jsonl` in the same directory; that append-only file can contain multiple runs, while the full-suite log identifies the final 18 results. All host processes were joined; no test hosts remain running.
+
+Physical code counts, including comments and blank lines: event adapter/types **63**, event host **112**, new tests **138**. A shared test-process helper is **32** lines; the original recovery test reduced from 160 to **132** lines after extraction. The net extension is **317** lines, all investigation code, with no production deletions or net simplification claim.
+
+The cursor deliberately covers **one fixed attempt and two retained entries**. It does not qualify cross-attempt event ordering, live source appends/pruning, multiple objectives, recipient selection, independent watcher ownership, disaster restore, storage-failure ambiguity, upgrades or power loss. No partial streamed answer was produced before the kill, so model-turn/partial-output and pending-decision recovery remain separate cases. Fresh permissions around review/approval, retained-output continuation and real-model reasoning also remain outstanding. The comparison with plain-note reconstruction has not been run, and the narrower production boundary is still a proposal.
