@@ -1,6 +1,6 @@
 # Narrow Durable supervisor experiment
 
-Status: dispatch/tool-result-loss, queued-input/event-delivery and pending-decision/approval cases implemented and tested after operator approval; the remaining trial is proposed. The narrow ownership boundary is now provisionally selected in ADR-0003; production adoption remains conditional. This decision does not approve a chargeable model trial or the separate supervisor-first phase reordering.
+Status: the three scripted stages and two separately authorised real-model runs are complete. The narrow ownership boundary remains provisionally selected in ADR-0003; production adoption and the separate supervisor-first phase reordering remain unapproved. Further model runs need their own authorisation. The [model-trial report](pi-durable-supervisor-model-trial-report.md) records the mixed model-behaviour results.
 
 ## Question and provisionally selected boundary
 
@@ -77,9 +77,13 @@ A successful scripted trial justifies a separately authorised small real-model r
 
 The evidence has been reviewed and the boundary provisionally selected in the ADRs, architecture and current Phase 3 checkpoint. Keep pending-tool/deadline upgrade and platform/storage qualification as adoption gates. The current roadmap still places the supervisor in Phase 4; moving it into Phase 3 needs explicit acceptance of the separate scope revision.
 
-## Next real-model trial scope, not yet authorised
+## Real-model trial scope and results
 
-The next useful trial should ask whether a real supervisor chooses to inspect current facts and respects application refusals, rather than repeat the scripted decisions. Keep it to one disposable objective and the existing inspection/stable-ID dispatch/finalisation tools. Reuse fake external owners initially; do not start real worker agents, publish, merge or return real leases. No new continuation-from-retained-output operation or production dependency is part of this trial.
+The [trial runner and operator instructions](../../../investigations/durable-orchestration/supervisor/README.md) were rehearsed offline, then used for one explicitly authorised run of each scenario on 25 October 2026. Pi's saved `openai-codex/gpt-6.1-sol` default and existing OAuth credentials supplied the model without replacing Durable's conversation ownership. The operator separately accepted that this subscription adapter cannot enforce the proposed per-request output-token cap. Each scenario retained the six-request/ten-minute limits and observed token/cost stop thresholds; those thresholds can overshoot by one request and are not billing caps.
+
+The [full model-trial report](pi-durable-supervisor-model-trial-report.md) records six settled requests and 5,414 reported tokens across both scenarios. Lost-result recovery chose fresh inspection without redispatch. Stale-approval recovery did not reinspect: the application refused finalisation, and the model reported the refusal without retrying. There were no duplicate launches, returns or merges, but this is not evidence of reliable fresh inspection for pending decisions or objective completion.
+
+The authorised scope asked whether a real supervisor chooses to inspect current facts and respects application refusals, rather than repeating scripted decisions. It used one disposable objective per scenario and the existing inspection/stable-ID dispatch/finalisation tools. External owners remained fake; no real worker agents, publications, merges or lease returns were permitted. No new continuation-from-retained-output operation or production dependency was part of this trial.
 
 Before running, obtain explicit approval for provider/model, credentials, maximum duration, token/cost budget and exact scenarios. Retain those settings and model/tool transcripts without exposing secrets. Include an interrupted tool result and a stale approval observation, compare the chosen actions with the scripted baseline and independently count effects. Record whether current inspection occurs, refusals are respected, stable IDs survive and human intervention is required. A successful answer alone is not task completion. Do not expand authority or generate replacement operation IDs to make a run succeed.
 
