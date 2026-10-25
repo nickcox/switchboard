@@ -11,16 +11,19 @@ import { ApplicationStore } from "../design-a/store.ts";
 import { openConfiguredStorage } from "../failures/configured-storage.ts";
 import type { Request } from "../scenario/contract.ts";
 import { FakeOwners } from "../scenario/owners.ts";
+import { trialProfile } from "./trial-profile.ts";
 
 const context = BACKGROUND_CONTEXT;
 export type Config = { objectiveId: string; replay: "safe" | "unsafe" };
 export const taskId = "supervisor-fixture-task";
 const input = { type: "input", content: "Dispatch the fixture task once, then inspect its current state.", requestId: "objective-input-1" } as const;
 
-async function run(directory: string, mode: string): Promise<void> {
+async function run(directory: string, mode: string, trialFlag?: string): Promise<void> {
   assert.ok(["pause", "resume"].includes(mode));
   const config: Config = JSON.parse(await readFile(join(directory, "config.json"), "utf8"));
   assert.ok(config.objectiveId && ["safe", "unsafe"].includes(config.replay));
+  const trial = await trialProfile(directory, trialFlag, "lost_result");
+  if (trial && (config.replay !== "unsafe" || config.objectiveId !== trial.plan.fixtureId)) throw new Error("Trial requires its original fixture and unsafe interrupted dispatch");
   const hostDirectory = join(directory, "host");
   const claim = join(hostDirectory, "owner");
   // Claim before either database opens. A surviving claim is never taken over automatically.
@@ -90,14 +93,17 @@ async function run(directory: string, mode: string): Promise<void> {
       return fauxAssistantMessage("Existing attempt retained; worker termination is unverified. No replacement requested.");
     };
     faux.setResponses([respond, respond, respond]);
+    const execution = trial ? await trial.models(store) : { models, model: { provider: "faux", modelId: "faux-1" } };
     const storage = await openConfiguredStorage(join(hostDirectory, "supervisor.db"), join(directory, "storage.jsonl"));
     try {
-      harness = await Harness.open(storage, { models, registry,
+      harness = await Harness.open(storage, { models: execution.models, registry,
         settings: { retry: { enabled: false }, compaction: { enabled: false } },
         onReport: (error, info) => { console.error(JSON.stringify({ error: String(error), info })); },
       }, context);
     } catch (error) { await storage.close(context); throw error; }
-    const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+    const root = await harness.root(context, { agent: { model: execution.model,
+      ...(trial ? { thinkingLevel: trial.plan.pi?.thinkingLevel ?? "medium", instructions: "Use only the supplied application tools for this one disposable objective. Tool interruption is uncertainty, not permission to start replacement work. Inspect current state before acting after an interruption. Historical results never grant current authority. Report refusals and remaining operator actions." } : {}),
+    } });
     // These reads do not enable scheduling. Capture recovered intent before submit resumes it.
     const before = { engine: await harness.inspect(context), transcript: await root.context(context) };
     const submission = await root.submit(input, context);
@@ -115,9 +121,9 @@ async function run(directory: string, mode: string): Promise<void> {
 }
 
 try {
-  const [directory, mode] = process.argv.slice(2);
+  const [directory, mode, trialFlag] = process.argv.slice(2);
   if (!directory || !mode) throw new Error("Expected disposable fixture directory and mode");
-  await run(directory, mode);
+  await run(directory, mode, trialFlag);
   process.disconnect?.();
 } catch (error) {
   console.error(error);

@@ -4,8 +4,8 @@ import { readFile } from "node:fs/promises";
 export type Host = { child: ChildProcess; exited: Promise<{ code: number | null; signal: string | null }>;
   boundary: Promise<void>; output: () => string };
 
-export function start(hostFile: string, directory: string, mode: string): Host {
-  const child = fork(hostFile, [directory, mode], { execArgv: [], stdio: ["ignore", "pipe", "pipe", "ipc"] });
+export function start(hostFile: string, directory: string, mode: string, extraArgs: string[] = []): Host {
+  const child = fork(hostFile, [directory, mode, ...extraArgs], { execArgv: [], stdio: ["ignore", "pipe", "pipe", "ipc"] });
   let output = "";
   child.stdout!.on("data", data => { output += data; });
   child.stderr!.on("data", data => { output += data; });
