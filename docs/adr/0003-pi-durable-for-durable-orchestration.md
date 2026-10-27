@@ -1,6 +1,6 @@
 # ADR-0003: Pi Durable for the supervisor and later durable orchestration
 
-Status: narrow supervisor continuity boundary provisionally selected after the comparative prototype and scripted supervisor trials. Production adoption remains conditional on the acceptance checks below. This does not approve a production dependency, a chargeable trial or a change to the current Phase 3/4 ordering. The original review used Pi Durable 1.3.0 on 18 October 2026; the investigation now tests released 1.4.0.
+Status: narrow supervisor continuity boundary provisionally selected after the comparative prototype and scripted supervisor trials. Production adoption remains conditional on the acceptance checks below. This does not approve a production dependency or a chargeable trial. Revised on 28 October 2026 (under review): the supervisor is Phase 3, with the revised Phase 3 PRD. The original review used Pi Durable 1.3.0 on 18 October 2026; the investigation now tests released 1.4.0.
 
 ## Context
 
@@ -12,11 +12,11 @@ Pi Durable is an agent harness: a library that runs agent conversations inside t
 
 ## Decision
 
-Provisionally select the narrower boundary in the [comparison report](../phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-report.md): Pi Durable owns supervisor conversation, queued inputs, interrupted tool work and pending reasoning references. Switchboard owns deterministic attempt execution and position-free finalisation through shared application operations. Do not add a Durable workflow for each attempt or a second persistent queue of dispatch requests. Full Design B supplies useful persisted waits and recovery visibility, but has not demonstrated enough removal of custom coordination to justify its additional per-attempt checkpoints and reconciliation. This is not a finding that Durable cannot support those workflows.
+Provisionally select the narrower boundary in the [comparison report](../phases/03-supervisor/pi-durable-orchestration-report.md): Pi Durable owns supervisor conversation, queued inputs, interrupted tool work and pending reasoning references. Switchboard owns deterministic attempt execution and position-free finalisation through shared application operations. Do not add a Durable workflow for each attempt or a second persistent queue of dispatch requests. Full Design B supplies useful persisted waits and recovery visibility, but has not demonstrated enough removal of custom coordination to justify its additional per-attempt checkpoints and reconciliation. This is not a finding that Durable cannot support those workflows.
 
 When adopted, one exclusive context host runs a supervisor conversation for one objective in a separate continuity store. Its tools call Switchboard's asynchronous application operations in-process. Application records, current approvals and external observations remain authoritative; conversation history and engine completion never grant permission. Host exclusivity and external worker ownership are separate responsibilities.
 
-This selects ownership, not phase scope or production readiness. Under the current roadmap, the supervisor remains Phase 4. The separate supervisor-first Phase 3 draft has not been adopted. Partial model-turn recovery, real-model reasoning and the other checks below still need qualification; a real-model trial requires its own explicit authorisation. Phase 1 used the append-only attempt log in ADR-0006; [ADR-0007](0007-one-sqlite-database.md) replaces that storage and tasks-axi with Switchboard's database.
+This selects ownership, not production readiness. The supervisor is the last step of the [revised Phase 3](../phases/03-supervisor/PRD.md). Partial model-turn recovery, real-model reasoning and the other checks below still need qualification; a real-model trial requires its own explicit authorisation. Phase 1 used the append-only attempt log in ADR-0006; [ADR-0007](0007-one-sqlite-database.md) replaces that storage and tasks-axi with Switchboard's database.
 
 Pi Durable may later persist and execute Switchboard mailbox and scheduling operations, subject to the verification below. Switchboard owns message addressing, delivery and acknowledgement rules, retries, schedule meaning and missed-trigger policy. Pi Durable is the intended implementation mechanism, not the definition of those concepts. Keep its types and API calls within a small integration boundary.
 
@@ -59,7 +59,7 @@ Compare the trial with plain files using the same requirements for conversations
 
 ### Current evidence and remaining gates
 
-The [investigation record](../../investigations/durable-orchestration/README.md) and [supervisor trial](../phases/03-multiple-workers-and-runtimes/pi-durable-supervisor-experiment.md) record **48 supervisor test runs: 16 cases repeated three times**, within 562 passing investigation tests. Repository tests report 426 passed and two platform skips. These are process-boundary checks, not reliability statistics.
+The [investigation record](../../investigations/durable-orchestration/README.md) and [supervisor trial](../phases/03-supervisor/pi-durable-supervisor-experiment.md) record **48 supervisor test runs: 16 cases repeated three times**, within 562 passing investigation tests. Repository tests report 426 passed and two platform skips. These are process-boundary checks, not reliability statistics.
 
 | Requirement | Evidence and remaining qualification |
 | --- | --- |

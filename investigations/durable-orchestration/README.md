@@ -2,7 +2,7 @@
 
 ## Scope and baseline
 
-Steps 1 and 2 of the [comparative prototype plan](../../docs/phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-prototype.md), recorded on 22 October 2026. This is dependency qualification and an implementation inventory, not the A/B comparison or an adoption recommendation. There were no earlier findings in this directory.
+Steps 1 and 2 of the [comparative prototype plan](../../docs/phases/03-supervisor/pi-durable-orchestration-prototype.md), recorded on 22 October 2026. This is dependency qualification and an implementation inventory, not the A/B comparison or an adoption recommendation. There were no earlier findings in this directory.
 
 The implementation inspected is Switchboard commit **`431cc85d672cabbf1107a66a01627e378b25fd53`**. Source at that commit takes precedence over the older status text in the Phase 3 PRD and ADR-0007: the database migration, shared worker supervisor, observation/assessment split and operation-specific safety checks already exist. Several-attempt dispatch semantics, the background dispatcher and the finalisation step runner do not.
 
@@ -769,7 +769,7 @@ Neither design reconciles a lease it did not record, as intended. After the oper
 
 ## Step 7 – comparison and decision proposal
 
-Recorded on 23 October 2026 against **`1c12403c3d7687cf5d657c7a986c751150081a52`**. The [comparison report](../../docs/phases/03-multiple-workers-and-runtimes/pi-durable-orchestration-report.md) fills the plan's comparison table, consolidates the ownership/failure results, distinguishes safe refusal from continuation, estimates actual removal boundaries and proposes document changes. The ADRs and PRD remain unchanged pending design selection.
+Recorded on 23 October 2026 against **`1c12403c3d7687cf5d657c7a986c751150081a52`**. The [comparison report](../../docs/phases/03-supervisor/pi-durable-orchestration-report.md) fills the plan's comparison table, consolidates the ownership/failure results, distinguishes safe refusal from continuation, estimates actual removal boundaries and proposes document changes. The ADRs and PRD remain unchanged pending design selection.
 
 The recommendation is **use a narrower integration**: Durable owns the reasoning supervisor's conversation, queued inputs and interrupted tool work; Switchboard retains deterministic attempt operations and position-free finalisation. It is a proposed boundary, not a third tested implementation or permission to adopt a production dependency. Supervisor continuity and storage qualification remain adoption gates. B's persisted waits and restart visibility are proven benefits, but it retains application fences and cross-store reconciliation, and the real B owner-read failure exposed a missing continuation path. A did not encounter that same real fault, so the report does not claim comparative reliability from one run each.
 
@@ -901,7 +901,7 @@ The narrower supervisor-first recommendation is still a defensible proposal on t
 
 ## Narrow supervisor trial – dispatch succeeds before its tool result is stored
 
-Implemented from **`d3e684eb057bde6b39486abc3a3d97bba481962c`**, using the [supervisor experiment plan](../../docs/phases/03-multiple-workers-and-runtimes/pi-durable-supervisor-experiment.md). This implements only its first tool-result-loss case, not the full supervisor trial or a selected production design. No production source/dependency, authoritative task or real lease was changed. No Pi agent, network model/provider or external worker process was launched. The child processes below are disposable test hosts; acquisition, launch and prompt effects are the existing independent file-backed fake owners.
+Implemented from **`d3e684eb057bde6b39486abc3a3d97bba481962c`**, using the [supervisor experiment plan](../../docs/phases/03-supervisor/pi-durable-supervisor-experiment.md). This implements only its first tool-result-loss case, not the full supervisor trial or a selected production design. No production source/dependency, authoritative task or real lease was changed. No Pi agent, network model/provider or external worker process was launched. The child processes below are disposable test hosts; acquisition, launch and prompt effects are the existing independent file-backed fake owners.
 
 ### Implementation and ownership
 
@@ -1041,7 +1041,7 @@ The three trial stages now demonstrate stable interrupted-tool identity, queued 
 
 After reviewing the A/B investigation and the three scripted supervisor stages through `8698084`, the operator agreed to **provisionally select the narrow supervisor continuity boundary**. [ADR-0003](../../docs/adr/0003-pi-durable-for-durable-orchestration.md), ADR-0005, ADR-0007, the architecture, comparison report and current Phase 3 checkpoint now record that conditional ownership decision and the remaining adoption gates. Historical task sections above describe what each investigation changed at the time, not the current decision status.
 
-This selects Durable for supervisor conversation/queued-input/interrupted reasoning continuity and retains deterministic attempt operations, current authority and position-free finalisation in Switchboard. It does not approve production integration, a chargeable trial or the separate supervisor-first Phase 3 reordering. The [next-trial scope](../../docs/phases/03-multiple-workers-and-runtimes/pi-durable-supervisor-experiment.md#real-model-trial-scope-and-results) still requires explicit approval of model/provider, scenarios and budget. No test or real-model run was repeated for this documentation update.
+This selects Durable for supervisor conversation/queued-input/interrupted reasoning continuity and retains deterministic attempt operations, current authority and position-free finalisation in Switchboard. It does not approve production integration, a chargeable trial or the separate supervisor-first Phase 3 reordering. The [next-trial scope](../../docs/phases/03-supervisor/pi-durable-supervisor-experiment.md#real-model-trial-scope-and-results) still requires explicit approval of model/provider, scenarios and budget. No test or real-model run was repeated for this documentation update.
 
 ## Real-model supervisor trial preparation, no real run
 
@@ -1063,7 +1063,7 @@ New physical code, including comments/blank lines: runner/report **163**, plan/p
 
 ## Authorised real-model supervisor trial
 
-After the preparation above, the operator authorised exactly one interrupted-result run and one stale-approval run using Pi's saved default and existing authentication. A separate explicit confirmation accepted the missing per-request output-token cap in the installed subscription adapter. The [model-trial report](../../docs/phases/03-multiple-workers-and-runtimes/pi-durable-supervisor-model-trial-report.md) records the exact plan digests, settings, transcripts, independent effect counts and limits on interpretation.
+After the preparation above, the operator authorised exactly one interrupted-result run and one stale-approval run using Pi's saved default and existing authentication. A separate explicit confirmation accepted the missing per-request output-token cap in the installed subscription adapter. The [model-trial report](../../docs/phases/03-supervisor/pi-durable-supervisor-model-trial-report.md) records the exact plan digests, settings, transcripts, independent effect counts and limits on interpretation.
 
 `supervisor/trial-pi.ts` uses the installed **1.4.0** coding-agent SDK Models API without a Pi AgentSession, resource loader, project tools/extensions, model-catalogue refresh or fallback. It resolves the explicit saved default once, records SDK/model-configuration/model-metadata hashes and thinking level, and requires the existing OAuth authentication type. Changed recorded SDK/configuration/metadata or authentication type refuses continuation. Pi owns credential resolution and any normal locked OAuth refresh; secrets are not copied into trial metadata. The SDK fingerprint is not a complete transitive dependency lock. The investigation manifest/lock and all production code/dependencies remain unchanged.
 
