@@ -1,4 +1,6 @@
 import { ObjectiveStore, type ObjectiveBrief } from "../objectives/store.ts";
+import { readQuestions, type Question, type InvalidQuestionFile } from "../runtime/questions-store.ts";
+import { describeQuestions } from "../runtime/questions.ts";
 import { describeObjectiveBudget } from "../objectives/budget.ts";
 import { describeChecks, type CheckResult } from "../attempts/checks.ts";
 import { describeReviews, type ReviewRecord } from "../attempts/reviews.ts";
@@ -20,6 +22,8 @@ import { describeAcceptanceEvidence, nextActions, type AttemptSummary, type Next
 import { checkAcceptanceEvidence, type AcceptanceEvidence } from "./safety.ts";
 
 export type AttemptStatus = {
+  questions?: Question[];
+  invalidQuestionFiles?: InvalidQuestionFile[];
   taskDisagreement?: boolean;
   latestReadFailure?: ReadFailure & { sequence: number };
   unsettledReadFailures?: (ReadFailure & { sequence: number })[];
@@ -116,6 +120,7 @@ export type StatusResult = {
   orphanedInFlight: string[];
   attempts: AttemptStatus[];
   objectives: ObjectiveBrief[];
+  openQuestions?: Question[];
   /** The context's resolved finalisation policy, or why it could not be resolved. Absent when none is configured. */
   policy?: { resolved: ResolvedPolicy } | { error: string };
   detail?: string;
@@ -146,6 +151,8 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const unsettled = record ? unsettledReads(record) : [];
     const reconcile = unsettled.length > 0;
     attempts.push({ ...assessment,
+      ...(record?.questions ? { questions: record.questions } : {}),
+      ...(record?.invalidQuestionFiles ? { invalidQuestionFiles: record.invalidQuestionFiles } : {}),
       acceptanceEvidence: { ...(assessment.outputCommit ? { commit: assessment.outputCommit } : {}),
         permission: checkAcceptanceEvidence(assessment.outputCommit, deps.checks ?? [], assessment.checks ?? [], assessment.reviews ?? []) },
       ...(latestReadFailure ? { latestReadFailure: { ...latestReadFailure.data as ReadFailure, sequence: latestReadFailure.sequence } } : {}),
@@ -168,9 +175,11 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   const policy = deps.policy === undefined ? undefined
     : await resolvePolicy(deps.policy).then(resolved => ({ resolved }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   // A policy that cannot be resolved needs fixing before any attempt can be finished.
-  const attention = attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
+  const openQuestions = readQuestions(deps.attempts.database, { contextId: deps.contextId }).questions.filter(question => !question.answer);
+  const attention = openQuestions.length > 0 || attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
   return {
     version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts, objectives,
+    ...(openQuestions.length ? { openQuestions } : {}),
     ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
     nextAction: action(errors.length ? "fix_configuration" : overall(attempts, unaccounted)),
   };
@@ -220,6 +229,8 @@ export function describeStatus(value: StatusResult): string {
     for (const line of describeReviews(a.reviews)) lines.push(`  ${line}`);
     for (const line of describeChecks(a.checks)) lines.push(`  ${line}`);
     for (const line of describeCriteriaReport(a.criteriaReport)) lines.push(`  ${line}`);
+    for (const line of describeQuestions(a.questions ?? [])) lines.push(`  ${line}`);
+    for (const file of a.invalidQuestionFiles ?? []) lines.push(`  Invalid question file ${file.filename}: ${file.diagnostic}`);
     if (a.resultDiscrepancy) lines.push(`  Result discrepancy: ${a.resultDiscrepancy}`);
     if (a.taskDisagreement) lines.push("  Task unchanged: a newer operator decision disagrees with the attempt outcome");
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;
@@ -237,6 +248,10 @@ export function describeStatus(value: StatusResult): string {
     if (a.transcript) lines.push(`  Transcript: ${a.transcript}`);
     if (a.takeover) lines.push(`  Take over by hand: ${a.takeover}`);
     if (a.nextAction.code !== "none") lines.push(`  Next: ${a.nextAction.description}`);
+  }
+  for (const question of value.openQuestions ?? []) {
+    lines.push(`Open question ${question.id}: task ${question.taskId}, attempt ${question.attempt} – ${question.text}`);
+    lines.push(`  Answer with switchboard answer --task ${question.taskId} --question ${question.id} "<answer>"`);
   }
   for (const l of value.unaccountedLeases) lines.push(`- Lease ${l.leaseId} for ${l.holder} at ${l.path} is not in the attempt log`);
   for (const id of value.orphanedInFlight) lines.push(`- Task ${id} is in flight, but no attempt, worker or lease accounts for it`);

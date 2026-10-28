@@ -1,4 +1,5 @@
 import { bounded, RuntimeFailure } from "./async.ts";
+import { pollQuestions } from "./questions.ts";
 import type { WorkerInput, WorkerResult } from "./contracts.ts";
 import { ActivityWriter, shorten, type ActivityEntry, type Payload } from "./activity.ts";
 import { startHeartbeat } from "./heartbeat.ts";
@@ -69,7 +70,7 @@ export interface RuntimeSession {
   confirmEnd(signal: AbortSignal): Promise<void>;
   usage(): Promise<{ tokens: number; cost: number }>;
   /** Passes an operator message to the running worker and returns the runtime's disposition for it. */
-  deliver(kind: "steer" | "follow_up", message: string): Promise<string>;
+  deliver(kind: "steer" | "follow_up", message: string, options?: { followUpWhenIdle: boolean }): Promise<string>;
   /** Asks the worker to stop if `abort` is set, then ends it and waits, within the runtime's own limits, for its exit. */
   shutdown(abort: boolean): Promise<void>;
   /** Resolves once the worker's output streams have closed. */
@@ -142,7 +143,11 @@ export class WorkerSupervisor {
       if (forwarding || closing || current.childExit) return;
       forwarding = forwardClaimed(current).finally(() => { forwarding = undefined; });
     };
+    const readQuestions = () => pollQuestions(reserved, text => activity.write({ kind: "note", text })).catch(error => {
+      activity.write({ kind: "note", text: `Question polling failed: ${asError(error).message}` });
+    });
     const forwardClaimed = async (current: RuntimeSession) => {
+      await readQuestions();
       for (const request of await unclaimedRequests(reserved).catch(() => [])) {
         if (closing || current.childExit) break;
         if (!(await claimRequest(reserved, request.id, "dispatcher").catch(() => false))) continue;
@@ -153,7 +158,7 @@ export class WorkerSupervisor {
           activity.write({ kind: "note", text: `Stop requested by ${request.sender}` });
           stopRequest.abort();
         } else {
-          try { result = { outcome: await current.deliver(request.kind, request.message ?? "") }; }
+          try { result = { outcome: await current.deliver(request.kind, request.message ?? "", request.questionId ? { followUpWhenIdle: true } : undefined) }; }
           catch (error) { result = { outcome: "failed", error: asError(error).message }; }
           activity.write({ kind: "note", text: `${request.kind === "steer" ? "Steering message" : "Follow-up"} from ${request.sender} (${result.outcome}): ${shorten(request.message ?? "")}` });
         }
@@ -240,6 +245,8 @@ export class WorkerSupervisor {
       // A synchronous spawn failure creates no child. Retain the unused allocation evidence.
       await this.records.recordChildExit(reserved, { started: false, code: null, signal: null });
     }
+    // A fast worker may finish between polls. Take one final reading after its output has closed.
+    await readQuestions();
     if (operator?.aborted) {
       result = undefined;
       failure = new RuntimeFailure("interrupted", "Operator interrupted the worker");

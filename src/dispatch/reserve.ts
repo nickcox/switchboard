@@ -8,6 +8,7 @@ import { result, type DispatchResult, type NextAction } from "./result.ts";
 import { checkCanDispatch, checkCanRedispatch, checkCanStartFrom, requireOperationAuthority } from "./safety.ts";
 import { specificationFactory } from "./specification.ts";
 import { handover } from "./handover.ts";
+import { readQuestions } from "../runtime/questions-store.ts";
 
 /** Reserve immutable starting inputs only. Acquisition and launch belong to dispatch. */
 export async function reserveFromAttempt(deps: Dependencies, options: {
@@ -62,7 +63,8 @@ export async function reserveFromAttempt(deps: Dependencies, options: {
     await deps.runtime.probeExclusiveCreation();
     const previousResult = observation.runtime.known ? observation.runtime.value.find(r =>
       r.binding.input.identity.leaseId === allocation.leaseId)?.validatedResult?.content : undefined;
-    const writtenHandover = await handover(deps.policy?.git ?? onPath("git"), deps.policy?.environment ?? {}, task, record, output, previousResult, options.note);
+    const writtenHandover = await handover(deps.policy?.git ?? onPath("git"), deps.policy?.environment ?? {}, task, record, output, previousResult, options.note,
+      readQuestions(deps.attempts.database, { contextId: deps.contextId, taskId: task.id }).questions);
     const specification = specificationFactory(deps, contract);
     const reservation = await deps.attempts.reserveAttempt({
       taskId: task.id, requestInputs: inputs, startingPoint: options.startingPoint, dryRun: options.dryRun === true,

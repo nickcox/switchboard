@@ -35,6 +35,7 @@ export const workerInputSchema = z.strictObject({
   acceptanceCriteria: z.array(nonempty),
   delivery: deliverySchema,
   reviewTarget: reviewTargetSchema.optional(),
+  questionsDirectory: nonempty.optional(),
 });
 export type WorkerInput = z.infer<typeof workerInputSchema>;
 

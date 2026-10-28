@@ -16,6 +16,7 @@ import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { taskCommand } from "./tasks/cli.ts";
 import { createReview } from "./dispatch/review.ts";
+import { answerQuestion } from "./dispatch/answer.ts";
 
 const usage = `Usage:
   switchboard --version
@@ -24,6 +25,7 @@ const usage = `Usage:
   switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
   switchboard dispatch --once [--dry-run] [--task <id> [--from-attempt <n> [--note <text> | --note-file <path>]]] [--request-id <id>] [--json] [--config <path>]
   switchboard review --task <id> [--attempt <n>] [--json] [--config <path>]
+  switchboard answer --task <id> --question <question-id> [--wait <seconds>] [--json] [--config <path>] "<answer>"
   switchboard status [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
@@ -44,6 +46,10 @@ escaping or dangling links, link cycles, unreadable targets and paths inside any
 
 watch prints an attempt's worker activity and follows it until the worker's exit is recorded. It reads the database
 and runtime files, so it works from any terminal and after the dispatcher has stopped. status shows each attempt's lease ID.
+
+answer records one answer to a worker's question, writes its answer file and asks the owning dispatcher to deliver it.
+It works after the worker finishes, without restarting it; the answer is kept for later handovers. status and watch
+show questions and their IDs. An answer is guidance, not authority. A second answer is refused.
 
 stop and steer ask the dispatcher that owns a running worker to stop it, or to pass it a message (with --after,
 once it finishes its current work). A request no dispatcher takes within --wait seconds (default 10) is withdrawn
@@ -93,7 +99,7 @@ async function main(argv: string[]): Promise<number> {
     args: argv, allowPositionals: true, strict: true,
     options: {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
-      "from-attempt": { type: "string" }, "note-file": { type: "string" },
+      "from-attempt": { type: "string" }, "note-file": { type: "string" }, question: { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
       lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, "read-failure": { type: "string" }, "effect-outcome": { type: "string" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" }, "older-than": { type: "string" },
@@ -105,15 +111,15 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const command = positionals[0];
-  const commands = ["dispatch", "review", "status", "resolve", "watch", "stop", "steer", "finish", "discard", "prune"];
-  if (values.help || !command || !commands.includes(command) || positionals.length !== (command === "steer" ? 2 : 1)) {
+  const commands = ["dispatch", "review", "answer", "status", "resolve", "watch", "stop", "steer", "finish", "discard", "prune"];
+  if (values.help || !command || !commands.includes(command) || positionals.length !== (["steer", "answer"].includes(command) ? 2 : 1)) {
     console.error(usage);
     return values.help ? 0 : 2;
   }
   // An option that a command does not use is refused, so that, for example, `stop --dry-run` cannot send a real stop.
   const selectors = ["lease", "task", "attempt"];
   const allowed: Record<string, string[]> = {
-    review: ["task", "attempt"],
+    review: ["task", "attempt"], answer: ["task", "question", "wait"],
     dispatch: ["once", "dry-run", "task", "request-id", "from-attempt", "note", "note-file"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
     watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
     prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
@@ -180,6 +186,10 @@ async function main(argv: string[]): Promise<number> {
     console.error("review requires --task <id>; --attempt must be a positive integer.");
     return 2;
   }
+  if (command === "answer" && (!values.task || !values.question || !positionals[1]?.trim())) {
+    console.error("answer requires --task <id>, --question <question-id> and a nonempty answer.");
+    return 2;
+  }
   const byAttempt = ["watch", "stop", "steer", "finish", "discard"].includes(command);
   if (byAttempt && (
     (values.lease !== undefined) === (values.task !== undefined)
@@ -211,6 +221,12 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       leaseId = selected.leaseId;
+    }
+
+    if (command === "answer") {
+      const value = await answerQuestion(deps, { taskId: values.task!, questionId: values.question!, answer: positionals[1]!, waitMs: wait * 1000 });
+      console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+      return value.ok ? 0 : 1;
     }
 
     if (command === "review") {

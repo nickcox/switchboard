@@ -8,16 +8,23 @@ import type { RuntimeBinding, ChildExit, ThinkingLevel } from "./records.ts";
 import type { ActivityEntry } from "./activity.ts";
 import type { ControlRequest, RequestResult } from "./requests.ts";
 import type { ValidatedResult } from "./validated-result.ts";
+import { QuestionStore, recordAnswerDelivery } from "./questions-store.ts";
 
 const ownerStartedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
 export type RuntimeAddress = { directory: string; storage: RuntimeStore; claimId: string };
 export type Launch = { context: string; task: string; attempt: number; leaseId: string; directory: string; createdAt: string };
 const exists = () => Object.assign(new Error("This attempt already has a launch row"), { code: "EEXIST" });
 
+export function enqueueRequest(database: Database, claimId: string, request: ControlRequest): void {
+  database.run("INSERT INTO control_requests(id,claim_id,request,created_at,sender_pid,sender_started_at) VALUES(?,?,?,?,?,?)",
+    request.id, claimId, JSON.stringify(request), request.createdAt, process.pid, ownerStartedAt);
+}
+
 /** Transactional worker records. No filesystem, provider or worker call happens inside a transaction. */
 export class RuntimeStore {
   private readonly source: Database | string;
-  constructor(source: Database | string) { this.source = source; }
+  readonly questions: QuestionStore;
+  constructor(source: Database | string) { this.source = source; this.questions = new QuestionStore(source); }
 
   private async use<T>(operation: (database: Database) => T | Promise<T>): Promise<T> {
     const database = typeof this.source === "string" ? await Database.open(this.source) : this.source;
@@ -176,8 +183,7 @@ export class RuntimeStore {
         String(launch.context), String(launch.task), Number(launch.attempt), String(launch.lease_id), request.identity.sessionId)) throw new Error("The worker is not running");
       if (request.sender !== callerName(caller)) throw new Error("The request sender differs from its host caller");
       requireAuthority(database, caller, request.kind === "stop" ? "stopWorkers" : "steerWorkers", { taskId: String(launch.task) });
-      database.run("INSERT INTO control_requests(id,claim_id,request,created_at,sender_pid,sender_started_at) VALUES(?,?,?,?,?,?)",
-        request.id, claimId, JSON.stringify(request), request.createdAt, process.pid, ownerStartedAt);
+      enqueueRequest(database, claimId, request);
     }));
   }
 
@@ -187,11 +193,18 @@ export class RuntimeStore {
   }
 
   async claimRequest(claimId: string, id: string, by: "dispatcher" | "withdrawn"): Promise<boolean> {
-    return this.use(database => database.transaction(() => Boolean(database.run(`UPDATE control_requests SET claimed_by = ?, claimed_at = ?
+    return this.use(database => database.transaction(() => {
+      const changed = Boolean(database.run(`UPDATE control_requests SET claimed_by = ?, claimed_at = ?
       WHERE id = ? AND claim_id = ? AND claimed_by IS NULL AND
         ((? = 'withdrawn' AND sender_pid = ? AND sender_started_at = ?) OR (? = 'dispatcher' AND EXISTS(
           SELECT 1 FROM worker_claims WHERE id = ? AND owner_pid = ? AND owner_started_at = ? AND released_at IS NULL)))`,
-    by, new Date().toISOString(), id, claimId, by, process.pid, ownerStartedAt, by, claimId, process.pid, ownerStartedAt).changes)));
+    by, new Date().toISOString(), id, claimId, by, process.pid, ownerStartedAt, by, claimId, process.pid, ownerStartedAt).changes);
+      if (changed && by === "withdrawn") {
+        const answer = database.get("SELECT question_id FROM question_answers WHERE request_id = ?", id);
+        if (answer) recordAnswerDelivery(database, String(answer.question_id), "message", "undelivered");
+      }
+      return changed;
+    }));
   }
 
   async recordResult(claimId: string, id: string, result: RequestResult): Promise<void> {
@@ -200,6 +213,8 @@ export class RuntimeStore {
         AND result IS NULL AND EXISTS(SELECT 1 FROM worker_claims WHERE id = ? AND owner_pid = ? AND owner_started_at = ?)`,
       JSON.stringify(result), id, claimId, claimId, process.pid, ownerStartedAt);
       if (!changed.changes) throw new Error("The request is not owned by this dispatcher or already has a result");
+      const answer = database.get("SELECT question_id FROM question_answers WHERE request_id = ?", id);
+      if (answer) recordAnswerDelivery(database, String(answer.question_id), "message", result.outcome, result.error);
     }));
   }
 

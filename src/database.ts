@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 12) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 13) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -302,6 +302,29 @@ export class Database {
             directory TEXT PRIMARY KEY REFERENCES launches(directory) ON DELETE CASCADE,
             observed_at TEXT NOT NULL, cost REAL NOT NULL CHECK(cost >= 0), tokens REAL NOT NULL CHECK(tokens >= 0));
           PRAGMA user_version = 12;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 13) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 13) return;
+        db.exec(`
+          CREATE TABLE question_files (
+            id TEXT PRIMARY KEY, context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL,
+            filename TEXT NOT NULL, asked_at TEXT NOT NULL, document TEXT CHECK(document IS NULL OR json_valid(document)), diagnostic TEXT,
+            UNIQUE(context, task, attempt, filename), CHECK((document IS NULL) <> (diagnostic IS NULL)),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempt_numbers(context, task, number));
+          CREATE TRIGGER question_files_immutable BEFORE UPDATE ON question_files BEGIN
+            SELECT RAISE(ABORT, 'Question files cannot be changed'); END;
+          CREATE TABLE question_answers (
+            question_id TEXT PRIMARY KEY REFERENCES question_files(id), text TEXT NOT NULL,
+            answered_by TEXT NOT NULL, answered_at TEXT NOT NULL, request_id TEXT UNIQUE);
+          CREATE TRIGGER question_answers_immutable BEFORE UPDATE ON question_answers BEGIN
+            SELECT RAISE(ABORT, 'Question answers cannot be changed'); END;
+          CREATE TABLE answer_deliveries (
+            sequence INTEGER PRIMARY KEY, question_id TEXT NOT NULL REFERENCES question_answers(question_id),
+            channel TEXT NOT NULL CHECK(channel IN ('file','message')), outcome TEXT NOT NULL, at TEXT NOT NULL, error TEXT);
+          CREATE TRIGGER answer_deliveries_immutable BEFORE UPDATE ON answer_deliveries BEGIN
+            SELECT RAISE(ABORT, 'Answer deliveries cannot be changed'); END;
+          PRAGMA user_version = 13;
         `);
       });
       return result;

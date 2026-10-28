@@ -9,6 +9,7 @@ import { inside, requireRetainedStorage } from "../infra/storage.ts";
 export { inside } from "../infra/storage.ts";
 import { workerInputSchema, type WorkerInput } from "./contracts.ts";
 import { RuntimeStore, type RuntimeAddress } from "./store.ts";
+import { questionsDirectory } from "./questions.ts";
 import { parseValidatedResult, recordValidatedResult, resultDiscrepancy, type ValidatedResult } from "./validated-result.ts";
 
 import { thinkingLevelSchema, type ThinkingLevel } from "./settings.ts";
@@ -117,7 +118,7 @@ export class RuntimeRecords {
     const existing = await lstat(context);
     if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error("Unsafe runtime context directory");
     const directory = join(context, key(input.identity.leaseId));
-    const binding = bindingSchema.parse({ version: 1, createdAt: new Date().toISOString(), input: { ...input, workspace },
+    const binding = bindingSchema.parse({ version: 1, createdAt: new Date().toISOString(), input: { ...input, workspace, questionsDirectory: questionsDirectory(directory) },
       sessionDirectory: join(directory, "sessions"), artefactDirectory: join(directory, "artefacts"), resultPath: join(directory, "result.json") });
     if (Buffer.byteLength(JSON.stringify(binding), "utf8") > maxRecordBytes) throw new Error("Runtime binding exceeds byte limit");
     const attempt = await this.storage.attempt(input.identity.contextId, input.identity.leaseId);
@@ -127,6 +128,7 @@ export class RuntimeRecords {
     await mkdir(directory, { mode: 0o700 });
     await mkdir(binding.sessionDirectory, { mode: 0o700 });
     await mkdir(binding.artefactDirectory, { mode: 0o700 });
+    await mkdir(binding.input.questionsDirectory!, { mode: 0o700 });
     const record: RuntimeRecord = { directory, binding, storage: this.storage, claimId, child: { status: "unknown" } };
     await beforeLaunch?.(record);
     return record;
@@ -158,7 +160,8 @@ export class RuntimeRecords {
       const directory = String(row.directory);
       if (binding.input.identity.contextId !== contextId || binding.input.identity.leaseId !== row.lease_id ||
         binding.resultPath !== join(directory, "result.json") || binding.sessionDirectory !== join(directory, "sessions") ||
-        binding.artefactDirectory !== join(directory, "artefacts")) throw new Error("Runtime binding does not match its storage identity");
+        binding.artefactDirectory !== join(directory, "artefacts") ||
+        (binding.input.questionsDirectory !== undefined && binding.input.questionsDirectory !== questionsDirectory(directory))) throw new Error("Runtime binding does not match its storage identity");
       const exit = await this.storage.observation(directory, "exit");
       const stop = await this.storage.stopConfirmation(directory);
       const thinking = await this.storage.observation(directory, "session_start");

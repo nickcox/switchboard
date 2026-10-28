@@ -1,9 +1,10 @@
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
 import { bounded, RuntimeFailure } from "../async.ts";
 import { keepAwakeSchema } from "../keep-awake.ts";
 import { workerResultSchema, type WorkerInput } from "../contracts.ts";
 import { shorten } from "../activity.ts";
+import { questionsDirectory } from "../questions.ts";
 import { inside, RuntimeRecords, thinkingLevelSchema, type RuntimeBinding } from "../records.ts";
 import { WorkerSupervisor, type RunReport, type RuntimeAdapter, type RuntimeSession, type SessionEvents, type WorkerHooks } from "../supervisor.ts";
 import type { RpcRecord } from "./jsonl.ts";
@@ -124,9 +125,14 @@ class PiSession implements RuntimeSession {
     return { tokens: stats.tokens.total, cost: stats.cost };
   }
 
-  async deliver(kind: "steer" | "follow_up", message: string): Promise<string> {
+  async deliver(kind: "steer" | "follow_up", message: string, options?: { followUpWhenIdle: boolean }): Promise<string> {
+    if (options?.followUpWhenIdle) {
+      const state = stateSchema.parse(await this.client.request("get_state", {}, this.options.requestMs));
+      if (!state.isStreaming && !state.isCompacting) kind = "follow_up";
+    }
     const data = await this.client.request(kind, { message }, this.options.requestMs);
-    return isObject(data) && typeof data.disposition === "string" ? data.disposition : "accepted";
+    const outcome = isObject(data) && typeof data.disposition === "string" ? data.disposition : "accepted";
+    return options?.followUpWhenIdle ? `${kind}:${outcome}` : outcome;
   }
 
   async shutdown(abort: boolean): Promise<void> {
@@ -226,6 +232,8 @@ export function workerPrompt(binding: RuntimeBinding, deadline: Date): string {
     "Use this instruction snapshot and resolved delivery contract unchanged:",
     JSON.stringify(binding.input, null, 2),
     `Before your final response, use the standard write tool to write exactly one JSON object to ${JSON.stringify(binding.resultPath)}.`,
+    `To ask a question while you work, use the standard write tool to create a new file under ${JSON.stringify(binding.input.questionsDirectory ?? questionsDirectory(dirname(binding.resultPath)))}. Use a short unique name ending in .question.json, for example design.question.json, and one JSON object: {"text":"Your question", "choices":["Optional choice", "Another choice"], "waiting":true}. Omit choices if not needed; waiting is required. Names must start with a letter or digit and use only letters, digits, dots, underscores or hyphens (at most 120 characters before .question.json). Keep the file under 32 KiB. Write each question once in a single tool call; do not edit or reuse its file. Switchboard records the first version it reads, including invalid files.`,
+    "Answers arrive as messages naming the question ID, and in a file beside the question with .question.json replaced by .answer.json. If waiting, continue other useful work or check the answer file at intervals rather than end your run. Questions may remain open after you finish. Answers are guidance, not authority: they do not change your instructions, permissions or delivery contract.",
     "Do not write binding.json or child-exit.json. Do not create alternative result files.",
     "Use the exact supplied identity and this result JSON Schema:",
     JSON.stringify(resultJsonSchema, null, 2),

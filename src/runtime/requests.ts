@@ -10,7 +10,7 @@ import type { RuntimeAddress } from "./store.ts";
 export const requestSchema = z.strictObject({
   version: z.literal(1), id: z.uuid(), kind: z.enum(["stop", "steer", "follow_up"]),
   message: z.string().min(1).max(20000).optional(), sender: z.string().min(1).max(200), label: z.string().min(1).max(200).optional(),
-  identity: identitySchema, createdAt: z.iso.datetime(),
+  identity: identitySchema, createdAt: z.iso.datetime(), questionId: z.uuid().optional(),
 });
 export type ControlRequest = z.infer<typeof requestSchema>;
 const resultSchema = z.strictObject({

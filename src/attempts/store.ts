@@ -14,6 +14,7 @@ import { TaskStoreError, type Task, type TaskState } from "../tasks/store.ts";
 import { attemptSpecificationSchema, startingPointSchema, storedSpecificationSchema, type AttemptSpecification, type StartingPoint } from "./specification.ts";
 import { requestFingerprint, type RequestInputs } from "./requests.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
+import { readQuestions } from "../runtime/questions-store.ts";
 
 const nonempty = z.string().trim().min(1);
 const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
@@ -338,7 +339,10 @@ export class AttemptStore {
       (sequence > 0 && entry.kind === "requested") || entry.contextId !== ref.contextId || entry.taskId !== ref.taskId || entry.attempt !== ref.attempt)) throw new Error("Inconsistent attempt entries");
     const row = this.database.get("SELECT specification FROM attempt_specifications WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
     const allocation = entries.find(e => e.kind === "leased");
+    const files = readQuestions(this.database, ref);
     return { ...identity(ref), entries, confirmations: this.confirmations(ref),
+      ...(files.questions.length ? { questions: files.questions } : {}),
+      ...(files.invalid.length ? { invalidQuestionFiles: files.invalid } : {}),
       ...(row ? { specification: storedSpecificationSchema.parse(JSON.parse(String(row.specification))) } : {}),
       ...(allocation ? { allocation: allocation.data as EntryData<"leased"> } : {}),
     };

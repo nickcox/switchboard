@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describeCriteriaReport } from "../runtime/criteria-report.ts";
+import { describeQuestions } from "../runtime/questions.ts";
 import { readActivity, type ActivityEntry } from "../runtime/activity.ts";
 import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
@@ -51,7 +52,21 @@ export async function watch(
   const attempt = (await deps.attempts.forTask(record.binding.input.identity.taskId)).find(a => a.allocation?.leaseId === options.leaseId);
   if (attempt?.specification?.handover) options.print({ v: 1, ts: attempt.entries[0]!.recordedAt, kind: "note", text: attempt.specification.handover });
   let printed = 0;
+  const questionVersions = new Map<string, string>();
+  const printQuestions = async () => {
+    const identity = record!.binding.input.identity;
+    const ref = await record!.storage.attempt(identity.contextId, identity.leaseId);
+    const files = await record!.storage.questions.list({ contextId: identity.contextId, taskId: identity.taskId, attempt: ref.attempt });
+    for (const file of [...files.questions, ...files.invalid]) {
+      const version = JSON.stringify(file);
+      if (questionVersions.get(file.id) === version) continue;
+      questionVersions.set(file.id, version);
+      const lines = "diagnostic" in file ? [`Invalid question file ${file.filename}: ${file.diagnostic}`] : describeQuestions([file]);
+      for (const text of lines) options.print({ v: 1, ts: file.askedAt, kind: "note", text });
+    }
+  };
   for (;;) {
+    await printQuestions();
     const entries = await readActivity(record);
     for (const entry of entries.slice(printed)) options.print(entry);
     printed = Math.max(printed, entries.length);
@@ -64,6 +79,7 @@ export async function watch(
     if (!options.follow || settled || options.signal?.aborted) {
       // Print anything written between the last read and the decision to stop.
       if (options.follow && settled) for (const entry of (await readActivity(record)).slice(printed)) options.print(entry);
+      await printQuestions();
       const validated = (await find())?.validatedResult;
       if (validated) for (const text of describeCriteriaReport(validated.content.criteriaReport)) {
         options.print({ v: 1, ts: validated.validatedAt, kind: "note", text });

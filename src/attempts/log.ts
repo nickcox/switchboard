@@ -126,6 +126,8 @@ export function parseAttemptEntry(value: unknown): AttemptEntry {
 export type AttemptRef = { contextId: string; taskId: string; attempt: number };
 export type AttemptRecord = AttemptRef & {
   entries: AttemptEntry[]; confirmations?: import("./store.ts").ConfirmationRecord[];
+  questions?: import("../runtime/questions-store.ts").Question[];
+  invalidQuestionFiles?: import("../runtime/questions-store.ts").InvalidQuestionFile[];
   specification?: import("./specification.ts").StoredSpecification;
   allocation?: import("./specification.ts").AttemptAllocation;
 };

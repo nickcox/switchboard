@@ -15,6 +15,7 @@ const scenario = process.env.FAKE_PI_SCENARIO;
 const sessionId = flag("--session-id");
 const sessions = flag("--session-dir");
 let binding: RuntimeBinding;
+let questionDelivered = false;
 writeFileSync(join(dirname(sessions), "fixture-launch.json"), JSON.stringify({ argv: process.argv, cwd: process.cwd() }));
 const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
 function respond(request: Record<string, unknown>, data?: unknown) {
@@ -65,7 +66,7 @@ function reportResult() {
     }));
     return;
   }
-  if (scenario === "commit-result") {
+  if (scenario === "commit-result" || scenario === "questions-finish") {
     // Makes a real commit on the output branch in the workspace, so retention checks can pass.
     writeFileSync(join(process.cwd(), "worker-output.txt"), `synthetic worker output on ${binding.input.delivery.outputBranch}\n`);
     const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8" }).trim();
@@ -102,7 +103,8 @@ function handle(request: Record<string, unknown>) {
       thinkingLevel: scenario === "wrong-thinking" ? "low" : process.argv.includes("--thinking") ? flag("--thinking") : "medium",
       sessionId: scenario === "wrong-session" ? "wrong-session" : sessionId,
       sessionFile: join(sessions, `fixture_${sessionId}.jsonl`),
-      isStreaming: false, isCompacting: false, pendingMessageCount: 0,
+      isStreaming: scenario === "await-question" && binding !== undefined && !questionDelivered,
+      isCompacting: false, pendingMessageCount: 0,
     });
   } else if (request.type === "prompt") {
     const input = JSON.parse(String(request.message).split("Use this instruction snapshot and resolved delivery contract unchanged:\n\n")[1]!.split("\n\nBefore your final response")[0]!);
@@ -114,13 +116,21 @@ function handle(request: Record<string, unknown>) {
     }
     if (scenario === "handled") { respond(request, { disposition: "handled" }); return; }
     reportResult();
+    if (scenario?.startsWith("await-question") || scenario === "questions-finish") {
+      writeFileSync(join(binding.input.questionsDirectory!, "design.question.json"), JSON.stringify({
+        text: "Which design should I use?", choices: ["Small", "Large"], waiting: true,
+      }));
+      if (scenario === "questions-finish") writeFileSync(join(binding.input.questionsDirectory!, "later.question.json"), JSON.stringify({
+        text: "Should the next attempt update the guide?", waiting: false,
+      }));
+    }
     if (scenario === "idle-only") {
       respond(request, { disposition: "started" });
       send({ type: "agent_settled", aborted: false }); return;
     }
     send({ type: "agent_start" });
     if (scenario !== "no-ack" && scenario !== "fast-events") respond(request, { disposition: "started" });
-    if (scenario === "ignore-stop" || scenario?.startsWith("await-steer")) return;
+    if (scenario === "ignore-stop" || scenario?.startsWith("await-steer") || scenario?.startsWith("await-question")) return;
     send({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "echo synthetic" } });
     send({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: {}, isError: false, durationMs: 12 });
     send({ type: "message_end", message: {
@@ -133,6 +143,11 @@ function handle(request: Record<string, unknown>) {
     if (scenario === "fast-events") respond(request, { disposition: "started" });
     if (scenario === "trailing-json") process.stdout.write('{"type":');
     if (scenario === "nonzero-exit") process.exit(9);
+  } else if ((request.type === "steer" || request.type === "follow_up") && scenario?.startsWith("await-question")) {
+    questionDelivered = true;
+    respond(request, { disposition: "queued" });
+    send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Received: ${String(request.message)}` }], stopReason: "stop" } });
+    send({ type: "agent_settled", aborted: false });
   } else if (request.type === "follow_up" && scenario === "await-steer-slow") {
     // Answer a follow-up only after a delay, so it is still being forwarded while the worker finishes.
     setTimeout(() => respond(request, { disposition: "queued" }), 300);
