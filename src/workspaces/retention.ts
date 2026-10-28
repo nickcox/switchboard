@@ -8,6 +8,8 @@ export type RetentionRequest = {
   repository: string;
   workspace: string;
   outputBranch: string;
+  /** Integrated commits remain retained after their output branches are deleted. */
+  targetBranch?: string | undefined;
   /** The exact result commit for code deliverables; omitted when the deliverable is not code. */
   resultCommit?: string;
   /** A code attempt must add commits beyond its own allocation, not just inherit earlier output. */
@@ -73,8 +75,20 @@ export async function checkRetention(git: string, environment: Record<string, st
   for (const reference of references) {
     const ref = `refs/heads/${reference.branch}`;
     const exists = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    let targetFailure: Awaited<ReturnType<typeof run>> | undefined;
+    if (request.targetBranch) {
+      const target = await run(request.repository, ["rev-parse", "--verify", "--quiet", `refs/heads/${request.targetBranch}^{commit}`]);
+      if (target.exitCode === 0 && !target.timedOut && !target.truncated) {
+        const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, target.stdout.trim()]);
+        if (contained.exitCode === 0 && !contained.timedOut && !contained.truncated) continue;
+        if (contained.timedOut || contained.truncated || contained.exitCode !== 1) targetFailure = contained;
+      } else if (target.timedOut || target.truncated || target.exitCode !== 1) targetFailure = target;
+    }
     if (exists.timedOut || exists.truncated) unable("the output branch", exists);
-    else if (exists.exitCode === 1) reject(`Output branch ${reference.branch} does not exist (${reference.name})`);
+    else if (exists.exitCode === 1) {
+      if (targetFailure) unable("whether the target branch contains the result commit", targetFailure);
+      else reject(`Output branch ${reference.branch} does not exist (${reference.name})${request.targetBranch ? ` and result commit is not retained by target branch ${request.targetBranch}` : ""}`);
+    }
     else if (exists.exitCode !== 0) unable("the output branch", exists);
     else {
       const commit = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${reference.commit}^{commit}`]);
@@ -82,7 +96,10 @@ export async function checkRetention(git: string, environment: Record<string, st
       if (commit.exitCode === 1) { reject(`Result commit ${reference.commit} does not exist (${reference.name})`); continue; }
       const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, ref]);
       if (contained.timedOut || contained.truncated) unable("whether the output branch contains the result commit", contained);
-      else if (contained.exitCode === 1) reject(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
+      else if (contained.exitCode === 1) {
+        if (targetFailure) unable("whether the target branch contains the result commit", targetFailure);
+        else reject(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
+      }
       else if (contained.exitCode !== 0) unable("whether the output branch contains the result commit", contained);
     }
   }

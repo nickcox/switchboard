@@ -83,6 +83,7 @@ const entrySchemas = {
   output_accepted: z.strictObject({ commit, acceptedBy: z.literal("operator").optional() }),
   /** `finish` under the local-merge policy fast-forwarded the target branch to the output branch. */
   integrated: z.strictObject({ policy: z.literal("local-merge"), targetBranch: nonempty, commit }),
+  output_branch_cleanup: z.strictObject({ branch: nonempty, status: z.enum(["deleted", "kept", "planned"]), detail: nonempty.optional() }),
   /** `discard`: the operator chose to discard the attempt's work. */
   discarded: z.strictObject({ note: nonempty.optional() }),
   /**

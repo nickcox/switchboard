@@ -1,3 +1,5 @@
+import type { OutputBranchCleanup } from "../workspaces/output-branch.ts";
+import { describeOutputBranch } from "./output-branch.ts";
 import { ObjectiveStore, type ObjectiveBrief } from "../objectives/store.ts";
 import { readQuestions, type Question, type InvalidQuestionFile } from "../runtime/questions-store.ts";
 import { describeQuestions } from "../runtime/questions.ts";
@@ -33,6 +35,7 @@ export type AttemptStatus = {
   checks?: CheckResult[];
   reviews?: ReviewRecord[];
   outputCommit?: string;
+  outputBranchCleanup?: OutputBranchCleanup;
   acceptanceEvidence: AcceptanceEvidence;
   specification?: StoredSpecification;
   specificationComplete: boolean;
@@ -150,7 +153,9 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const latestReadFailure = [...(record?.entries ?? [])].reverse().find(e => e.kind === "owner_read_failed");
     const unsettled = record ? unsettledReads(record) : [];
     const reconcile = unsettled.length > 0;
+    const cleanup = [...(record?.entries ?? [])].reverse().find(e => e.kind === "output_branch_cleanup");
     attempts.push({ ...assessment,
+      ...(assessment.attempt.outputBranch ? { outputBranchCleanup: cleanup ? cleanup.data as OutputBranchCleanup : { branch: assessment.attempt.outputBranch, status: "kept" as const } } : {}),
       ...(record?.questions ? { questions: record.questions } : {}),
       ...(record?.invalidQuestionFiles ? { invalidQuestionFiles: record.invalidQuestionFiles } : {}),
       acceptanceEvidence: { ...(assessment.outputCommit ? { commit: assessment.outputCommit } : {}),
@@ -227,6 +232,7 @@ export function describeStatus(value: StatusResult): string {
     }
     lines.push(`  ${describeAcceptanceEvidence(a.acceptanceEvidence)}`);
     for (const line of describeReviews(a.reviews)) lines.push(`  ${line}`);
+    if (a.outputBranchCleanup) lines.push(`  ${describeOutputBranch(a.outputBranchCleanup)}`);
     for (const line of describeChecks(a.checks)) lines.push(`  ${line}`);
     for (const line of describeCriteriaReport(a.criteriaReport)) lines.push(`  ${line}`);
     for (const line of describeQuestions(a.questions ?? [])) lines.push(`  ${line}`);

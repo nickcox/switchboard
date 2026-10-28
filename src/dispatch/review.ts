@@ -1,3 +1,4 @@
+import { outputTarget } from "./output-branch.ts";
 import { randomUUID } from "node:crypto";
 import { AttemptStoreError, type StartingPointEvidence } from "../attempts/store.ts";
 import type { ReviewTarget } from "../runtime/contracts.ts";
@@ -24,7 +25,7 @@ export async function reviewSource(deps: Dependencies, taskId: string, attempt?:
   if (!allocation) throw new AttemptStoreError("starting_point_unknown", "The reviewed attempt has no recorded allocation");
   if (allocation.backingRepository !== deps.repository) throw new AttemptStoreError("starting_point_unknown", "The reviewed attempt belongs to a different backing repository");
   const retention = await deps.retention({
-    repository: allocation.backingRepository, workspace: allocation.workspace, outputBranch: allocation.outputBranch, commitsOnly: true,
+    repository: allocation.backingRepository, workspace: allocation.workspace, outputBranch: allocation.outputBranch, targetBranch: outputTarget(record), commitsOnly: true,
     gitReferences: [{ name: "reviewed-output", branch: allocation.outputBranch, commit }], artefacts: [],
     recyclableRoots: await deps.workspaces.recyclableRoots(),
   });

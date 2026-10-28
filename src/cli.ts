@@ -10,6 +10,7 @@ import { requestControl } from "./dispatch/control.ts";
 import { resolveLeaseReturned, resolveReadFailure, resolveStopped } from "./dispatch/resolve.ts";
 import { discard, finish } from "./dispatch/finish.ts";
 import { leaseOfTask } from "./dispatch/select.ts";
+import { cleanupOutputBranches } from "./dispatch/cleanup-output-branches.ts";
 import { prune } from "./dispatch/prune.ts";
 import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
@@ -27,6 +28,7 @@ const usage = `Usage:
   switchboard review --task <id> [--attempt <n>] [--json] [--config <path>]
   switchboard answer --task <id> --question <question-id> [--wait <seconds>] [--json] [--config <path>] "<answer>"
   switchboard status [--json] [--config <path>]
+  switchboard cleanup-output-branches [--dry-run] [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
@@ -112,7 +114,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const command = positionals[0];
-  const commands = ["dispatch", "review", "answer", "status", "resolve", "watch", "stop", "steer", "finish", "discard", "prune"];
+  const commands = ["dispatch", "review", "answer", "status", "resolve", "watch", "stop", "steer", "finish", "discard", "prune", "cleanup-output-branches"];
   if (values.help || !command || !commands.includes(command) || positionals.length !== (["steer", "answer"].includes(command) ? 2 : 1)) {
     console.error(usage);
     return values.help ? 0 : 2;
@@ -123,7 +125,7 @@ async function main(argv: string[]): Promise<number> {
     review: ["task", "attempt"], answer: ["task", "question", "wait"],
     dispatch: ["once", "dry-run", "task", "request-id", "from-attempt", "note", "note-file"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
     watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
-    prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
+    "cleanup-output-branches": ["dry-run"], prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
   };
   const misplaced = Object.keys(values).filter(name => !["json", "config", ...allowed[command]!].includes(name));
   if (misplaced.length > 0) {
@@ -236,6 +238,11 @@ async function main(argv: string[]): Promise<number> {
       return value.ok ? 0 : 1;
     }
 
+    if (command === "cleanup-output-branches") {
+      const value = await cleanupOutputBranches(deps, { dryRun: values["dry-run"] === true });
+      console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+      return value.ok ? 0 : 1;
+    }
     if (command === "prune") {
       const value = await prune(deps, { olderThan, dryRun: values["dry-run"] === true });
       console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));

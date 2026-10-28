@@ -370,7 +370,7 @@ async function finalise(
   const stored = await reads.read("Attempt records", "read retention inputs", () => deps.attempts.read(ref));
   const roots = await reads.read("Treehouse workspace roots", "check retention", () => deps.workspaces.recyclableRoots());
   const retention = await reads.read("Git retention", "check retention", () => deps.retention({
-    repository: stored.allocation!.backingRepository!, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
+    repository: stored.allocation!.backingRepository!, workspace: summary.workspace!, outputBranch: delivery.outputBranch, targetBranch: delivery.baseRef,
     startingCommit: stored.allocation!.startingCommit,
     ...(summary.resultCommit ? { resultCommit: summary.resultCommit } : {}),
     gitReferences: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : [])),

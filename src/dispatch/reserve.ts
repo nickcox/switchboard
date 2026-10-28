@@ -1,3 +1,4 @@
+import { outputTarget } from "./output-branch.ts";
 import type { StartingPoint } from "../attempts/specification.ts";
 import { AttemptStoreError } from "../attempts/store.ts";
 import { onPath } from "../infra/executables.ts";
@@ -51,7 +52,7 @@ export async function reserveFromAttempt(deps: Dependencies, options: {
     const allocation = record.allocation;
     if (!allocation) return refuse("starting_point_unknown", "The starting attempt has no recorded allocation");
     const retention = await deps.retention({
-      repository: allocation.backingRepository ?? deps.repository, workspace: allocation.workspace, outputBranch: allocation.outputBranch, commitsOnly: true,
+      repository: allocation.backingRepository ?? deps.repository, workspace: allocation.workspace, outputBranch: allocation.outputBranch, targetBranch: outputTarget(record), commitsOnly: true,
       gitReferences: [{ name: "starting point", branch: allocation.outputBranch, commit: output }], artefacts: [],
       recyclableRoots: await deps.workspaces.recyclableRoots(),
     });

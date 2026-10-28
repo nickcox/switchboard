@@ -1,3 +1,4 @@
+import { cleanupOutputBranch, describeOutputBranch, outputTarget } from "./output-branch.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 import { callerName } from "../caller.ts";
 import { randomUUID } from "node:crypto";
@@ -136,7 +137,7 @@ async function recheck(deps: OperationDependencies, attempt: AttemptAssessment, 
   if (report.outcome !== "completed") return `The worker reported ${report.outcome}, not completed work; use --accept-output to accept its committed output instead`;
   const delivery = runtime.binding.input.delivery;
   const retention = await readRetention(deps, {
-    repository: deps.repository, workspace: runtime.binding.input.workspace, outputBranch: delivery.outputBranch, startingCommit: delivery.startingCommit,
+    repository: deps.repository, workspace: runtime.binding.input.workspace, outputBranch: delivery.outputBranch, targetBranch: outputTarget(deps.attempts.read(attempt.attempt)), startingCommit: delivery.startingCommit,
     gitReferences: report.workReferences.flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: report.workReferences.flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
     recyclableRoots: await deps.reads.read("Treehouse workspace roots", "check retention", () => deps.workspaces.recyclableRoots()),
@@ -198,10 +199,11 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   const evidence = (record: AttemptRecord, commit: string | undefined): AcceptanceEvidence => ({ ...(commit ? { commit } : {}),
     permission: checkAcceptanceEvidence(commit, deps.checks ?? [], latestChecks(record, commit), recordedReviews(record, commit)) });
   const base = { attempt: attempt.attempt, acceptanceEvidence: evidence(record, attempt.outputCommit), checks: attempt.checks ?? [], ...(attempt.criteriaReport ? { criteriaReport: attempt.criteriaReport } : {}), ...(attempt.resultDiscrepancy ? { resultDiscrepancy: attempt.resultDiscrepancy } : {}) };
-  if (await completeReturn(deps, record, attempt, "finish", options.dryRun)) return result({
-    ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: {}, ...base,
-    ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
-  });
+  if (await completeReturn(deps, record, attempt, "finish", options.dryRun)) {
+    const outputBranchCleanup = await cleanupOutputBranch(deps, record, options.dryRun);
+    return result({ ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: { outputBranchCleanup }, ...base,
+      detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
+  }
   if (record.entries.some(e => e.kind === "integration_started")) requireOperationAuthority(deps, ["integrate"], options);
   await reconcileIntegration(deps, record, options.dryRun);
   record.entries = (await deps.reads.read("Attempt records", "read integration reconciliation", () => deps.reads.current()))!.entries;
@@ -230,7 +232,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     } catch (error) { return readRefusal(error) ?? refused("inspect_attempt", `The output branch cannot be checked: ${String(error)}`, base); }
   }
   const check = (): Promise<(RetentionResult & { outputCommit?: string; criteriaReport?: CriteriaReport }) | string> => acceptedCommit ? readRetention(deps, {
-    repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch: attempt.attempt.outputBranch!,
+    repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch: attempt.attempt.outputBranch!, targetBranch: outputTarget(deps.attempts.read(record)),
     resultCommit: acceptedCommit, artefacts: [],
   }) : recheck(deps, attempt, options.dryRun);
   const retention = await check();
@@ -370,7 +372,8 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   }
   try { await returnLease(deps, record, attempt, "finish", async () => { const retained = await check(); return typeof retained !== "string" && retained.retained; }); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
-  return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: { policy }, ...base, retention, nextAction: "none" });
+  const outputBranchCleanup = await cleanupOutputBranch(deps, record);
+  return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: { policy, outputBranchCleanup }, ...base, retention, detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
 }
 
 async function discardAttempt(deps: OperationDependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {
@@ -380,7 +383,10 @@ async function discardAttempt(deps: OperationDependencies, options: { leaseId: s
   if (!("record" in located)) return located;
   const { attempt, record } = located;
   const base = { attempt: attempt.attempt };
-  if (!options.dryRun && await completeReturn(deps, record, attempt, "discard")) return result({ ok: true, reason: "discarded", stage: "finish", lease: "none", observed: {}, ...base, nextAction: "none" });
+  if (!options.dryRun && await completeReturn(deps, record, attempt, "discard")) {
+    const outputBranchCleanup = await cleanupOutputBranch(deps, record);
+    return result({ ok: true, reason: "discarded", stage: "finish", lease: "none", observed: { outputBranchCleanup }, ...base, detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
+  }
   await deps.reads.checkEffects();
   const permission = checkCanDiscard(attempt.facts, options.confirm || !!options.dryRun);
   if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, lease: attempt.leaseHeld ? "preserved" : "none", observed: { refusal: permission } });
@@ -407,5 +413,6 @@ async function discardAttempt(deps: OperationDependencies, options: { leaseId: s
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard", async () => false); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
-  return result({ ok: true, reason: "discarded", stage: "finish", lease: "none", observed: {}, ...base, nextAction: "none" });
+  const outputBranchCleanup = await cleanupOutputBranch(deps, record);
+  return result({ ok: true, reason: "discarded", stage: "finish", lease: "none", observed: { outputBranchCleanup }, ...base, detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
 }
