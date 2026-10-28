@@ -179,8 +179,10 @@ for (const evidence of ["unknown", "unknown_with_finish", "exited", "confirmed",
     assert.ok(!("failed" in inspection));
     assert.deepEqual(inspection.possiblyRunning, view.attempts.filter(a => a.possiblyRunning).map(a => a.attempt));
     const dispatched = await dispatchOnce(deps, { taskId: "observe-b1", dryRun: true });
-    assert.equal(dispatched.reason, running ? "refused" : "dry_run", dispatched.detail ?? "");
-    if (running) assert.equal(dispatched.nextAction.code, "stop_worker");
+    const blocksContext = running && evidence !== "log_only";
+    assert.deepEqual(view.blockingDispatch, blocksContext ? inspection.possiblyRunning : []);
+    assert.equal(dispatched.reason, blocksContext ? "refused" : "dry_run", dispatched.detail ?? "");
+    if (blocksContext) assert.equal(dispatched.nextAction.code, "stop_worker");
   });
 }
 

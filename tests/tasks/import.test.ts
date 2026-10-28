@@ -174,6 +174,9 @@ test("an unobserved worker or a fresh dispatcher heartbeat refuses import even w
   };
   const record = await runtime.reserve(input);
   await assert.rejects(importTasks(f.config, f.backlog), /may still be running/);
+  await writeFile(join(record.directory, "heartbeat.json"), JSON.stringify({ version: 1, pid: process.pid, at: new Date().toISOString() }));
+  await assert.rejects(importTasks(f.config, f.backlog), /heartbeat is fresh/);
+  await writeFile(join(record.directory, "heartbeat.json"), JSON.stringify({ version: 1, pid: process.pid, at: new Date(Date.now() - 60_000).toISOString() }));
   await runtime.recordOperatorStop(record);
   await requireSettled(f.config);
   // A fresh dispatcher heartbeat refuses the import; a stale one does not.

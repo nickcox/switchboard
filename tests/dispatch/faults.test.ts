@@ -94,6 +94,8 @@ for (const c of cases) {
 test("an attempt whose worker exit was never observed blocks the next dispatch", async () => {
   const f = await fixture({ tasks: [task("block-a1"), task("block-b1")] });
   await dispatchOnce(cases.find(c => c.name === "worker exit never observed")!.inject(f));
+  const record = (await f.runtime.discover(f.deps.contextId))[0]!;
+  await record.storage.releaseClaim(record.claimId);
   const next = await dispatchOnce(f.deps);
   assert.equal(next.reason, "refused");
   assert.equal(next.nextAction.code, "stop_worker");

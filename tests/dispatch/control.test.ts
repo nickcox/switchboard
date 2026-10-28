@@ -110,7 +110,7 @@ test("a stop request stops the running worker and the task is held as interrupte
   assert.match(refused.detail!, /owning dispatcher appears to be running/);
   assert.deepEqual((await f.deps.attempts.forTask("stop-a1"))[0]!.entries, before);
   assert.equal((await f.runtime.discover("fixture-context"))[0]?.child.status, "unknown");
-  assert.equal((await dispatchOnce(f.deps)).nextAction.code, "stop_worker");
+  assert.equal((await dispatchOnce(f.deps)).reason, "no_ready_work");
   const sent = await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "stop", label: "operator:test", waitMs: 5000 });
   assert.equal(sent.reason, "delivered");
   const outcome = await dispatching;

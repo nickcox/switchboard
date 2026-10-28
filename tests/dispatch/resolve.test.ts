@@ -72,7 +72,7 @@ test("an attempt logged as launched but never finished is resolved through the a
   await deps.attempts.append(ref, "leased", { leaseId: "lease-logged", workspace: "/nowhere", baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
   await deps.attempts.startReservedTask(ref);
   await deps.attempts.append(ref, "launched", { sessionId: randomUUID() });
-  assert.equal((await dispatchOnce(deps)).nextAction.code, "stop_worker");
+  assert.equal((await dispatchOnce(deps)).observed.reason, "capacity");
 
   assert.equal((await resolveStopped(deps, { leaseId: "lease-logged", confirmed: true })).reason, "resolved");
   assert.equal((await deps.attempts.read(ref)).entries.at(-1)?.kind, "operator_resolved");

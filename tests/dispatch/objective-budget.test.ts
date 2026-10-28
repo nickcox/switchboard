@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { ObjectiveStore } from "../../src/objectives/store.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
@@ -66,6 +69,37 @@ test("an objective cost overrun stops the worker and records its reason as an ov
     assert.equal((await f.tasks.read("first"))!.held, true);
     assert.equal(f.objectives.show("goal").spending.cost, 0.01);
   } finally { f.tasks.close(); }
+});
+
+test("an objective budget stops only its own attempt while another task keeps running", async () => {
+  const f = await objectiveFixture({ scenario: "await-release", maxAttempts: 2, runMs: 25_000, worker: { statsMs: 10, requestPollMs: 10 } });
+  const first = dispatchOnce(f.deps, { taskId: "first" });
+  const independent = dispatchOnce(f.deps, { taskId: "independent" });
+  try {
+    const log = join(f.dir, "requests.jsonl");
+    let running = false;
+    for (let i = 0; i < 400; i += 1) {
+      if (existsSync(log) && readFileSync(log, "utf8").split("\n").filter(line => line.includes('"type":"prompt"')).length === 2) { running = true; break; }
+      await sleep(25);
+    }
+    assert.equal(running, true, "both synthetic workers must be running before lowering the budget");
+    await f.objectives.update("goal", { budget: { maxCost: 0.005, maxWorkerTimeMs: null } });
+    assert.equal((await first).reason, "held");
+    const record = f.deps.attempts.findForTask("first")!;
+    assert.equal(record.entries.find(entry => entry.kind === "task_recorded")!.data.category, "over_budget");
+    assert.match(String(record.entries.find(entry => entry.kind === "worker_finished")!.data.detail), /objective_cost_limit/);
+    const view = await status(f.deps);
+    assert.deepEqual(view.capacity, { maximum: 2, active: 1 });
+    const other = view.attempts.find(attempt => attempt.attempt.taskId === "independent")!;
+    assert.equal(other.worker!.exit, "not_observed");
+    assert.equal(other.worker!.dispatcherHeartbeat, "fresh");
+    assert.deepEqual(view.blockingDispatch, []);
+  } finally {
+    writeFileSync(join(f.dir, "release"), "");
+    await Promise.all([first, independent]);
+    f.tasks.close();
+  }
+  assert.equal((await independent).reason, "held");
 });
 
 test("status identifies unknown finished usage without presenting its cost as zero", async () => {

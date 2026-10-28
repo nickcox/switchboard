@@ -28,7 +28,7 @@ const entrypoint = resolve(import.meta.dirname, "../../src/cli.ts");
 const evidence = resolve(import.meta.dirname, "../../.investigation/dispatch-unit");
 mkdirSync(evidence, { recursive: true });
 
-export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string; byTaskKind?: Record<string, ContractSpec>; worker?: Partial<PiWorkerOptions> } = {}) {
+export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string; byTaskKind?: Record<string, ContractSpec>; worker?: Partial<PiWorkerOptions>; maxAttempts?: number; runMs?: number } = {}) {
   const dir = realpathSync(mkdtempSync(join(evidence, "case-")));
   const home = join(dir, "home");
   mkdirSync(home);
@@ -53,7 +53,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   const log = join(dir, "requests.jsonl");
   const worker = new PiWorker(runtime, {
     executable: process.execPath, entrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"),
-    provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: 5000, stopMs: 600,
+    provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: options.runMs ?? 5000, stopMs: 600,
     environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
     ...options.worker,
   });
@@ -61,6 +61,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     caller: testCaller, contextId: "fixture-context", tasks, runtimeSettings: structuredClone(runtimeSettings), configurationProvenance: { configuration: "fixture" },
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
     attempts: new FixtureAttemptStore(tasks.database, "fixture-context", testCaller), runtime,
+    ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
     launch: (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {}),
     retention: request => checkRetention(git, environment, request),
     repository,
@@ -73,10 +74,11 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   const config = join(dir, "switchboard.json");
   writeFileSync(config, JSON.stringify({
     contextId: "fixture-context", runtimeRoot, databasePath: join(dir, "tasks.db"), tasks: { repo: "fixture" },
+    ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
     workspaces: { repository, poolRoot: join(dir, "pool") },
     delivery: { baseRef: deps.delivery.baseRef, branchPrefix: deps.delivery.branchPrefix, ...deps.delivery.default, byTaskKind: deps.delivery.byTaskKind },
     worker: {
-      piEntrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", runMs: 5000,
+      piEntrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", runMs: options.runMs ?? 5000,
       environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
     },
   }));

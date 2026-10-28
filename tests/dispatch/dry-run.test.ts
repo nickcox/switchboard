@@ -49,8 +49,7 @@ test("dry run shares preflight failures and existing request handling", async ()
   );
   await deps.attempts.append(ref, "launched", { sessionId: "00000000-0000-0000-0000-000000000000" });
   const real = await dispatchOnce(deps);
-  assert.equal(real.reason, "refused");
-  assert.equal(real.nextAction.code, "stop_worker");
+  assert.equal(real.reason, "no_ready_work");
   assert.deepEqual(await dispatchOnce(deps, { dryRun: true }), real);
   deps.workspaces.leases = async () => { throw new Error("Unavailable"); };
   const dryFailure = await dispatchOnce(deps, { dryRun: true });

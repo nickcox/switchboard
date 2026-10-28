@@ -1,6 +1,6 @@
 // Synthetic RPC peer only. No Pi agent or model is created.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { RuntimeBinding } from "../../src/runtime/records.ts";
@@ -66,7 +66,7 @@ function reportResult() {
     }));
     return;
   }
-  if (scenario === "commit-result" || scenario === "questions-finish") {
+  if (scenario === "commit-result" || scenario === "questions-finish" || scenario === "await-release") {
     // Makes a real commit on the output branch in the workspace, so retention checks can pass.
     writeFileSync(join(process.cwd(), "worker-output.txt"), `synthetic worker output on ${binding.input.delivery.outputBranch}\n`);
     const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8" }).trim();
@@ -115,6 +115,19 @@ function handle(request: Record<string, unknown>) {
       send({ type: "response", id: request.id, command: "other", success: true }); return;
     }
     if (scenario === "handled") { respond(request, { disposition: "handled" }); return; }
+    if (scenario === "await-release") {
+      send({ type: "agent_start" });
+      respond(request, { disposition: "started" });
+      // Keep several synthetic workers running until the test releases them.
+      hold = setInterval(() => {
+        if (!existsSync(join(dirname(process.env.FAKE_PI_LOG!), "release"))) return;
+        clearInterval(hold);
+        reportResult();
+        send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Synthetic worker released" }], stopReason: "stop" } });
+        send({ type: "agent_settled", aborted: false });
+      }, 20);
+      return;
+    }
     reportResult();
     if (scenario?.startsWith("await-question") || scenario === "questions-finish") {
       writeFileSync(join(binding.input.questionsDirectory!, "design.question.json"), JSON.stringify({

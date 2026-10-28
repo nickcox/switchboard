@@ -6,7 +6,7 @@ import type { AttemptFacts } from "../../src/dispatch/assess.ts";
 import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanConfirmLeaseReturned, checkCanConfirmStopped, checkCanControl, checkCanDiscard, checkCanDispatch, checkCanFinish, checkCanIntegrate, checkCanPrune, checkCanRedispatch, checkCanReturnLease, checkCanRebase, type Permission } from "../../src/dispatch/safety.ts";
 
 const facts = (overrides: Partial<AttemptFacts> = {}): AttemptFacts => ({
-  unknown: [], hasRecord: true, possiblyRunning: false, dispatcherRunning: false, leaseHeld: true, leaseInOtherPool: false,
+  unknown: [], hasRecord: true, possiblyRunning: false, dispatcherRunning: false, blocksDispatch: false, leaseHeld: true, leaseInOtherPool: false,
   open: false, unfinished: false, task: { state: "queued", held: true, holdReason: "review" }, recordedOutcome: true,
   matchingHold: true, outcomeCategory: "review_required", completedOutcomePending: false, acceptedOutput: false, discarded: false,
   lastRecordedAt: "2026-01-01T00:00:00.000Z", taskLeaseHeld: false, taskWorkerMayBeRunning: false, leaseReturnedConfirmed: false, ...overrides,
@@ -66,13 +66,16 @@ for (const check of checks) {
   });
 }
 
-test("dispatch blocks possibly running workers across the context regardless of their dispatcher heartbeat", () => {
+test("dispatch blocks the whole context only for unsupervised workers; redispatch still blocks the task", () => {
+  const unsupervised = facts({ possiblyRunning: true, blocksDispatch: true });
+  refusal(checkCanDispatch(unsupervised), "possibly_running");
   for (const dispatcherRunning of [false, true]) {
-    const input = facts({ possiblyRunning: true, dispatcherRunning });
-    for (const check of [checkCanDispatch(input), checkCanRedispatch(input, "task-a1")]) {
-      refusal(check, "possibly_running");
-      if (!check.allowed) assert.equal(check.nextAction, "stop_worker");
-    }
+    // A pending launch without a runtime row also blocks only its task, despite having no heartbeat.
+    const input = facts({ possiblyRunning: true, dispatcherRunning, blocksDispatch: false });
+    assert.deepEqual(checkCanDispatch(input), { allowed: true });
+    const check = checkCanRedispatch(input, "task-a1");
+    refusal(check, "possibly_running");
+    if (!check.allowed) assert.equal(check.nextAction, "choose_another_task");
   }
   assert.deepEqual(checkCanDispatch(facts({ hasRecord: false, task: "missing" })), { allowed: true });
 });

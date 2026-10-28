@@ -1,6 +1,6 @@
 # Phase 3: A supervisor that completes one objective
 
-Status: agreed on 21 October 2026 as "Multiple workers and runtimes"; implementation steps 1 to 10 are complete. **Revised on 28 October 2026, under review:** an agent supervisor that completes one objective comes before concurrency, a second runtime and the pull-request policy, which move to Phase 4, and correctness fixes from a whole-project review come first. Requirements, not a description of existing behaviour.
+Status: agreed on 21 October 2026 as "Multiple workers and runtimes"; implementation steps 1 to 11 are complete. **Revised on 29 October 2026, under review:** several attempts at once are now part of Phase 3. An agent supervisor that completes one objective comes before the background dispatcher, a second runtime and the pull-request policy, which move to Phase 4, and correctness fixes from a whole-project review come first. Requirements, not a description of existing behaviour.
 
 ## Objective and scope
 
@@ -19,12 +19,13 @@ In scope:
 - Objectives: what a person asked for, above individual tasks.
 - Caller identity supplied by trusted code, permissions for each objective, and a budget across all of an objective's attempts.
 - Questions from a worker to the supervisor, and answers back.
+- Several foreground attempts at once, bounded by the context's maximum.
 - One supervisor agent, working on one objective at a time, with one worker at a time.
 - `finish --rebase` under `local-merge`, as under [When the target branch has moved](#when-the-target-branch-has-moved).
 
 Out of scope:
 
-- Several attempts at once, the background dispatcher, the `pull-request` finalisation policy and the Claude Agent ACP runtime. These move to Phase 4. Their requirements are kept unchanged below under [Deferred to Phase 4](#deferred-to-phase-4), as an input to Phase 4's PRD.
+- The background dispatcher, the `pull-request` finalisation policy and the Claude Agent ACP runtime. These move to Phase 4. Their requirements are kept unchanged below under [Deferred to Phase 4](#deferred-to-phase-4), as an input to Phase 4's PRD.
 - Proving that every process a worker started has stopped, and so automatic lease return. This stays deferred, as in Phase 2; a person still confirms `--no-processes`.
 - Workers starting other agents. The supervisor starts every worker, including reviewers.
 - Messages between workers, and messages from the supervisor to a person through anything other than Switchboard's own records and commands.
@@ -216,7 +217,7 @@ Each time a person intervenes in an objective is recorded, so the verification r
 
 ## When the target branch has moved
 
-Under `local-merge`, `finish` fast-forwards the target branch to the output branch, which is impossible once the target branch has commits the output branch lacks. It happens whenever someone commits to the target branch while a worker runs, and with several attempts at once (Phase 4) it is the normal case. Rebasing the output branch by hand does not help either, because the rebased branch no longer contains the result commit the worker recorded, so the attempt stops being retained. So:
+Under `local-merge`, `finish` fast-forwards the target branch to the output branch, which is impossible once the target branch has commits the output branch lacks. It happens whenever someone commits to the target branch while a worker runs, and with several attempts at once it is the normal case. Rebasing the output branch by hand does not help either, because the rebased branch no longer contains the result commit the worker recorded, so the attempt stops being retained. So:
 
 - `finish` refuses with a specific reason and next action when the target branch has moved, and changes nothing.
 - `finish --rebase` rebases the output branch onto the target branch in the attempt's workspace, then finishes as usual. It refuses, leaving the branch as it was, if the workspace has uncommitted or untracked files, if the commits to rebase are not exactly those between the attempt's starting commit and its result commit (or its accepted commit), or if the rebase stops on any conflict. Switchboard never resolves a conflict.
@@ -241,11 +242,9 @@ The whole-project review also proposed the following. Each is reasonable, but no
 | An attempt revision for concurrency checks, instead of comparing whole histories | Measurements show the comparison is slow |
 | Moving Switchboard to another machine, once or back and forth: a hand-over with no open attempts or leases, kept output branches pushed, the database copied with its writers stopped, and a recorded map from the old storage and repository roots to the new ones, applied when stored paths are read, then reconciliation before dispatch | The operator wants to move Switchboard, or work from two machines at different times |
 
-## Deferred to Phase 4
+## Several attempts at once
 
-The following requirements were agreed on 21 October 2026. They are kept unchanged as an input to Phase 4's PRD, and are not part of Phase 3.
-
-### Several attempts at once
+These requirements were agreed on 21 October 2026 and are now part of Phase 3.
 
 Each context has a maximum number of active attempts, `maxAttempts` in the context configuration, defaulting to 1. An attempt is active from its first log entry until it records a task outcome, halts or is resolved by the operator: Phase 2's open attempts. An attempt that is awaiting review, awaiting finish or held for another reason has no worker and does not count.
 
@@ -261,6 +260,10 @@ The heartbeat is only ever a reason to block. A missing or unreadable observatio
 The rebase requirements apply with one attempt at a time too, so they are in Phase 3, under [When the target branch has moved](#when-the-target-branch-has-moved).
 
 `status` shows the maximum, the number of active attempts and, when dispatch is blocked for the whole context, the attempt that blocks it.
+
+## Deferred to Phase 4
+
+The following requirements were agreed on 21 October 2026. They are kept unchanged as an input to Phase 4's PRD, and are not part of Phase 3.
 
 ### Background dispatcher
 
@@ -343,7 +346,8 @@ Each step is implemented, tested and recorded in the verification record before 
 8. **Checks, review and repair.** Complete. Checks are advisory for a person's `finish`; the supervisor's acceptance requires passing checks and a passing review of the exact commit.
 9. **Objectives**, and **caller identity, permissions and budget.** Complete.
 10. **Questions from workers.** Complete.
-11. **The supervisor.** First the Pi test under [The supervisor](#the-supervisor); then the supervisor operations, briefing, notes, `wait`, detached dispatch and questions to the person; then the Pi extension and skills; then Claude Code as a second host.
+11. **Several attempts at once.** Complete.
+12. **The supervisor.** First the Pi test under [The supervisor](#the-supervisor); then the supervisor operations, briefing, notes, `wait`, detached dispatch and questions to the person; then the Pi extension and skills; then Claude Code as a second host.
 
 **`finish --rebase`. Complete.** Under `local-merge`, a moved target refuses ordinary `finish` with a next action naming `--rebase`. Rebasing uses only the attempt's exact output, records a candidate for fresh checks and review, and records scoped acceptance before integration. Tests cover refusal without moving the branch, dry-run/run step agreement, classified owner-read failures, repeated rebases when the target moves again, and the supervisor's permissions and exact-commit evidence. See `tests/dispatch/rebase.test.ts`.
 
@@ -360,4 +364,5 @@ Each step is implemented, tested and recorded in the verification record before 
 9. A worker's question reaches the supervisor, and the answer reaches the worker. An open question survives its worker finishing and appears in the next attempt's handover.
 10. A real run in Pi: a person gives the supervisor one objective with at least two dependent tasks. The supervisor dispatches them one at a time, answers a worker's question, has a result checked and reviewed, starts a repair after a failed review, accepts the result, starts the dependent task and completes the objective with its statement. The test ends the Pi session while a worker runs and starts a new one, which continues from the briefing without starting that worker again. The supervisor session has no shell, editing or file-writing tools. The verification record reports the number of times a person intervened.
 11. Under `local-merge`, `finish` on an attempt whose target branch has moved refuses with its specific reason and changes nothing. `finish --rebase` integrates a cleanly rebased output branch and records the original, rebased and target commits; it refuses without changing the branch on a conflict, on a dirty workspace, or when the branch has commits other than the attempt's own; and it is refused without the operator's approval.
-12. The suite passes on macOS, and in CI on Linux and Windows.
+12. With `maxAttempts` 2, two foreground dispatch processes start different tasks together and a third refuses at capacity; the default maximum remains 1. Racing dispatches never reserve the same task twice: automatic selection moves on to the next ready task, while a named dispatch refuses. A possibly running worker with a fresh dispatcher heartbeat blocks only its task; a missing, unreadable, stale or future heartbeat blocks the whole context until `resolve --worker-stopped`, including when another worker has a fresh heartbeat. A launch logged before its launch row exists blocks only its task. Missing or unreadable observations never permit dispatch. Text and JSON status show capacity, active attempts and any context-wide blocking attempts. Tests also preserve the task-scoped stopped-worker requirements for continuations and reviews, the import refusal and per-attempt objective-budget stops.
+13. The suite passes on macOS, and in CI on Linux and Windows.

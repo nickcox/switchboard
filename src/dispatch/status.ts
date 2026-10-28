@@ -122,6 +122,10 @@ export type StatusResult = {
   /** Imported tasks can be in flight with no attempt, runtime record or lease accounting for them. */
   orphanedInFlight: string[];
   attempts: AttemptStatus[];
+  /** Active attempts count towards the context maximum; null means the count could not be read. */
+  capacity: { maximum: number; active: number | null };
+  /** Attempts whose possibly running worker has no fresh dispatcher heartbeat. */
+  blockingDispatch: AttemptSummary[];
   objectives: ObjectiveBrief[];
   openQuestions?: Question[];
   /** The context's resolved finalisation policy, or why it could not be resolved. Absent when none is configured. */
@@ -172,6 +176,10 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
       ...(facts.unknown.length ? { unknownOwners: facts.unknown } : {}),
       ...await workerView(worker, assessment.possiblyRunning, facts.dispatcherRunning, deps.staleMs ?? defaultStaleMs, leases, options).catch(() => ({})) });
   }
+  let active: number | null = null;
+  try { active = deps.attempts.activeCount(); }
+  catch (error) { errors.push(`Active attempts could not be counted: ${error instanceof Error ? error.message : String(error)}`); }
+  const blockingDispatch = assessed.filter(a => a.facts.blocksDispatch).map(a => a.attempt);
   const known = new Set(attempts.map(a => a.attempt.leaseId).filter(Boolean));
   const unaccountedLeases = leases.filter(l => !known.has(l.leaseId)).map(({ leaseId, holder, path }) => ({ leaseId, holder, path }));
   const orphanedInFlight = inFlight.filter(id => !records.some(a => a.taskId === id) &&
@@ -184,6 +192,7 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   const attention = openQuestions.length > 0 || attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
   return {
     version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts, objectives,
+    capacity: { maximum: deps.maxAttempts ?? 1, active }, blockingDispatch,
     ...(openQuestions.length ? { openQuestions } : {}),
     ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
     nextAction: action(errors.length ? "fix_configuration" : overall(attempts, unaccounted)),
@@ -210,7 +219,11 @@ function describePolicy(policy: NonNullable<StatusResult["policy"]>): string {
 export function describeStatus(value: StatusResult): string {
   const lines = [`${value.reason === "clear" ? "Clear" : value.reason === "attention" ? "Needs attention" : "Unknown: owner state could not be read"}`];
   if (value.detail) lines.push(`Detail: ${value.detail}`);
-  lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`);
+  lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`,
+    `Active attempts: ${value.capacity.active ?? "unknown"} of at most ${value.capacity.maximum}`);
+  if (value.blockingDispatch.length) {
+    lines.push(`Dispatch is blocked for the whole context by: ${value.blockingDispatch.map(a => `${a.taskId} attempt ${a.attempt}${a.leaseId ? ` (lease ${a.leaseId})` : ""}`).join(", ")}`);
+  }
   for (const objective of value.objectives) lines.push(`Objective ${objective.id}: ${objective.request.replace(/\s+/g, " ").slice(0, 120)}; ${objective.doneTaskCount}/${objective.taskCount} tasks done; ${describeObjectiveBudget(objective)}`);
   for (const a of value.attempts) {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;

@@ -33,6 +33,8 @@ export type Inspection = {
   ready: string[];
   /** Attempts whose worker may still be running: no observed child exit, or launched without a recorded finish. */
   possiblyRunning: AttemptSummary[];
+  /** Possibly running workers without a fresh dispatcher heartbeat, blocking dispatch for every task. */
+  blockingDispatch: AttemptSummary[];
   /** The workspace pool the provider currently lists. */
   pool: string;
   /**
@@ -76,11 +78,12 @@ export async function inspect(deps: Dependencies, reads = new OwnerReads(deps, "
   const ready = await read("The task store", () => deps.tasks.ready());
   if (isFailure(ready)) return ready;
 
-  const possiblyRunning = assessments.filter(a => !checkCanDispatch(a.facts).allowed).map(a => a.attempt);
+  const possiblyRunning = assessments.filter(a => a.facts.possiblyRunning).map(a => a.attempt);
+  const blockingDispatch = assessments.filter(a => a.facts.blocksDispatch).map(a => a.attempt);
   const leasesInOtherPools = assessments.flatMap(a => a.leaseInOtherPool === undefined ? [] : [{ ...a.attempt, pool: a.leaseInOtherPool }]);
   const openTasks = assessments.filter(a => a.facts.unfinished).map(a => a.attempt.taskId);
   return { attempts: attempts.value, runtime: runtime.value, leases: leases.value, pool: pool.value,
-    inFlight, ready, possiblyRunning, leasesInOtherPools, openTasks, assessments };
+    inFlight, ready, possiblyRunning, blockingDispatch, leasesInOtherPools, openTasks, assessments };
 }
 
 type DispatchOptions = { taskId?: string; requestId?: string; startingPoint?: StartingPoint; note?: string; signal?: AbortSignal; dryRun?: boolean };
@@ -136,7 +139,7 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
   const observed: Record<string, unknown> = { ready: state.ready, inFlight: state.inFlight, leases: state.leases.length };
   for (const assessment of state.assessments) {
     const check = checkCanDispatch(assessment.facts);
-    if (!check.allowed) return refusal("preflight", check.nextAction, check.detail, { ...observed, possiblyRunning: state.possiblyRunning });
+    if (!check.allowed) return refusal("preflight", check.nextAction, check.detail, { ...observed, possiblyRunning: state.blockingDispatch });
   }
 
   try { await deps.runtime.probeExclusiveCreation(); }
@@ -147,8 +150,10 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
   // Step 2: select one ready task with no lease and no in-flight state.
   const attemptChecks = (id: string) => state.assessments.filter(a => a.attempt.taskId === id).map(a => checkCanRedispatch(a.facts, id));
   const blocked = (id: string) => state.leases.some(l => l.holder === id) || state.inFlight.includes(id) || attemptChecks(id).some(check => !check.allowed);
-  let taskId = options.taskId;
-  if (taskId !== undefined) {
+  const namedTask = options.taskId;
+  let candidates: string[];
+  if (namedTask !== undefined) {
+    const taskId = namedTask;
     if (state.leases.some(l => l.holder === taskId)) return refusal("select", "choose_another_task", `Task ${taskId} already has a workspace lease from an earlier attempt`, observed);
     const checks = attemptChecks(taskId);
     const unknownLease = checks.find(check => !check.allowed && check.reason === "lease_in_other_pool");
@@ -157,61 +162,69 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
     if (!state.ready.includes(taskId)) return refusal("select", "choose_another_task", `Task ${taskId} is not ready`, observed);
     const unfinished = checks.find(check => !check.allowed);
     if (unfinished && !unfinished.allowed) return refusal("select", unfinished.nextAction, unfinished.detail, observed);
+    candidates = [taskId];
   } else {
-    taskId = state.ready.find(id => !blocked(id) && (deps.caller.kind === "person" || deps.attempts.database.get("SELECT objective_id FROM tasks WHERE id = ?", id)?.objective_id === deps.caller.objectiveId));
-    if (taskId === undefined) return result({ ok: true, reason: "no_ready_work", stage: "select", lease: "none", observed, nextAction: "dispatch_again" });
+    candidates = state.ready.filter(id => !blocked(id) && (deps.caller.kind === "person" || deps.attempts.database.get("SELECT objective_id FROM tasks WHERE id = ?", id)?.objective_id === deps.caller.objectiveId));
   }
-  // Resolve the delivery contract before any change; a task whose contract cannot be resolved is refused.
-  let selected: Task | undefined;
-  try { selected = await deps.tasks.read(taskId); }
-  catch (error) { return { ...readRefusal(await reads.failure("Task store", "read selected task", error), "select")!, lease: "none" }; }
-  if (!selected) return refusal("select", "choose_another_task", `Task ${taskId} no longer exists`, observed);
-  const review = deps.attempts.reviewTask(taskId);
-  let reviewEvidence;
-  if (review) {
-    try {
-      const checked = await reviewSource(deps, review.target.taskId, review.target.attempt);
-      if (JSON.stringify(checked.target) !== JSON.stringify(review.target) || selected.kind !== "review" ||
-        JSON.stringify(selected.acceptanceCriteria) !== JSON.stringify(review.acceptanceCriteria)) {
-        return refusal("select", "inspect_attempt", "The review task no longer matches its exact recorded target", observed);
+  // A concurrent reservation can take a candidate after inspection. Automatic selection tries the next ready task.
+  for (const taskId of candidates) {
+    // Resolve the delivery contract before any change; a task whose contract cannot be resolved is refused.
+    let selected: Task | undefined;
+    try { selected = await deps.tasks.read(taskId); }
+    catch (error) { return { ...readRefusal(await reads.failure("Task store", "read selected task", error), "select")!, lease: "none" }; }
+    if (!selected) {
+      if (namedTask === undefined) continue;
+      return refusal("select", "choose_another_task", `Task ${taskId} no longer exists`, observed);
+    }
+    const review = deps.attempts.reviewTask(taskId);
+    let reviewEvidence;
+    if (review) {
+      try {
+        const checked = await reviewSource(deps, review.target.taskId, review.target.attempt);
+        if (JSON.stringify(checked.target) !== JSON.stringify(review.target) || selected.kind !== "review" ||
+          JSON.stringify(selected.acceptanceCriteria) !== JSON.stringify(review.acceptanceCriteria)) {
+          return refusal("select", "inspect_attempt", "The review task no longer matches its exact recorded target", observed);
+        }
+        reviewEvidence = checked.evidence;
+      } catch (error) {
+        return refusal("select", "inspect_attempt", message(error), { ...observed, reason: error instanceof AttemptStoreError ? error.reason : "review_unavailable" });
       }
-      reviewEvidence = checked.evidence;
-    } catch (error) {
-      return refusal("select", "inspect_attempt", message(error), { ...observed, reason: error instanceof AttemptStoreError ? error.reason : "review_unavailable" });
     }
-  }
-  const contractName = selected.kind ?? "default";
-  const contract = selected.kind === null ? deps.delivery.default : deps.delivery.byTaskKind[selected.kind];
-  if (!contract) {
-    return refusal("select", "fix_configuration", `Task ${taskId} has kind "${selected.kind}", which has no delivery contract in the configuration`, observed);
-  }
+    const contractName = selected.kind ?? "default";
+    const contract = selected.kind === null ? deps.delivery.default : deps.delivery.byTaskKind[selected.kind];
+    if (!contract) {
+      return refusal("select", "fix_configuration", `Task ${taskId} has kind "${selected.kind}", which has no delivery contract in the configuration`, observed);
+    }
 
-  // Copy configuration before reservation; neither later edits nor acquisition may change this attempt's inputs.
-  const specification = specificationFactory(deps, contract);
-  let ref: AttemptRef;
-  try {
-    const reservation = await deps.attempts.reserveAttempt({ taskId, dryRun: options.dryRun === true, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, maximumPerTask: deps.maxAttemptsPerTask ?? 3, repo: selected.repo, definitionRevision: selected.definitionRevision,
-      specification, ...(reviewEvidence ? { reviewEvidence } : {}), requested: {
-      ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
-    } });
-    ref = reservation.ref;
-    if (options.dryRun) return result({
-      ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
-      selection: { taskId, contract: { name: contractName, ...contract } }, nextAction: "none",
-    });
-    if (!reservation.created) {
-      const existing = await deps.attempts.findByRequest(options.requestId!);
-      if (!existing) throw new Error("The reserved request record is missing");
-      return existingRequest(deps, existing, options.requestId, reads);
+    // Copy configuration before reservation; neither later edits nor acquisition may change this attempt's inputs.
+    const specification = specificationFactory(deps, contract);
+    let ref: AttemptRef;
+    try {
+      const reservation = await deps.attempts.reserveAttempt({ taskId, dryRun: options.dryRun === true, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, maximumPerTask: deps.maxAttemptsPerTask ?? 3, repo: selected.repo, definitionRevision: selected.definitionRevision,
+        specification, ...(reviewEvidence ? { reviewEvidence } : {}), requested: {
+        ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
+      } });
+      ref = reservation.ref;
+      if (options.dryRun) return result({
+        ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
+        selection: { taskId, contract: { name: contractName, ...contract } }, nextAction: "none",
+      });
+      if (!reservation.created) {
+        const existing = await deps.attempts.findByRequest(options.requestId!);
+        if (!existing) throw new Error("The reserved request record is missing");
+        return existingRequest(deps, existing, options.requestId, reads);
+      }
+    } catch (error) {
+      if (error instanceof AttemptStoreError && error.reason === "not_ready" && namedTask === undefined) continue;
+      if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
+        ok: false, reason: "request_input_mismatch", stage: "select", lease: "none", observed, detail: error.message, nextAction: "inspect_attempt",
+      });
+      if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", error instanceof AttemptStoreError ? error.nextAction : "inspect_attempt", error.message, { ...observed, reason: error.reason });
+      return refusal("select", "fix_configuration", `The attempt store could not be written: ${message(error)}`, observed);
     }
-  } catch (error) {
-    if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
-      ok: false, reason: "request_input_mismatch", stage: "select", lease: "none", observed, detail: error.message, nextAction: "inspect_attempt",
-    });
-    if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", error instanceof AttemptStoreError ? error.nextAction : "inspect_attempt", error.message, { ...observed, reason: error.reason });
-    return refusal("select", "fix_configuration", `The attempt store could not be written: ${message(error)}`, observed);
+    return executeReserved(deps, options, reads, ref, taskId, observed);
   }
-  return executeReserved(deps, options, reads, ref, taskId, observed);
+  return result({ ok: true, reason: "no_ready_work", stage: "select", lease: "none", observed, nextAction: "dispatch_again" });
 }
 
 async function executeReserved(deps: Dependencies, options: DispatchOptions, reads: OwnerReads, ref: AttemptRef, taskId: string, observed: Record<string, unknown>): Promise<DispatchResult> {

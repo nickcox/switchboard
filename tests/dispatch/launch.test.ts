@@ -33,6 +33,8 @@ test("a launch error after the runtime reserved its records leaves the attempt u
   assert.equal(outcome.nextAction.code, "stop_worker");
   assert.equal((await f.tasks.read("launch-a1"))?.state, "in_flight");
   assert.ok(!(await f.deps.attempts.forTask("launch-a1"))[0]!.entries.some(e => e.kind === "task_recorded"));
+  const record = (await f.runtime.discover(f.deps.contextId))[0]!;
+  await record.storage.releaseClaim(record.claimId);
   const next = await dispatchOnce(f.deps);
   assert.equal(next.reason, "refused");
   assert.equal(next.nextAction.code, "stop_worker");

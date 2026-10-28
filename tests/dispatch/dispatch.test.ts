@@ -99,13 +99,13 @@ test("an attempt whose worker may still be running blocks all dispatch", async (
   // A runtime binding with no exit record, as left by a dispatcher that died after launching a worker.
   const ref = await deps.attempts.create("earlier-a1", {}, 0);
   await deps.attempts.append(ref, "leased", { leaseId: "lease-x", workspace, baseRef: "main", outputBranch: "o", startingCommit: "a".repeat(40) });
-  await runtime.reserve({
+  const reserved = await runtime.reserve({
     identity: { contextId: "fixture-context", taskId: "earlier-a1", leaseId: "lease-x", sessionId: randomUUID() },
     workspace, instructions: "Earlier", acceptanceCriteria: [],
     delivery: { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] },
   });
+  await reserved.storage.releaseClaim(reserved.claimId);
   const outcome = await dispatchOnce(deps);
-  assert.equal(outcome.nextAction.code, "stop_worker");
   assert.equal(outcome.nextAction.code, "stop_worker");
   assert.deepEqual(await deps.attempts.forTask("next-a1"), []);
 });

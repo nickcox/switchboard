@@ -184,6 +184,8 @@ test("import refuses open attempts, possibly running workers and fresh dispatche
   const reserved = await runtime.reserve({ identity: { contextId: "context", taskId: "settled", leaseId: "lease", sessionId: randomUUID() },
     workspace: join(f.directory, "workspace"), instructions: "Fixture", acceptanceCriteria: [], delivery: { baseRef: "main", outputBranch: "output", startingCommit: "a".repeat(40), kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] } });
   await assert.rejects(importAttempts(f.config), /may still be running/);
+  await writeFile(join(reserved.directory, "heartbeat.json"), JSON.stringify({ version: 1, pid: process.pid, at: new Date().toISOString() }));
+  await assert.rejects(importAttempts(f.config), /heartbeat is fresh/);
   await runtime.recordChildExit(reserved, { started: true, code: 0, signal: null });
   await writeFile(join(reserved.directory, "heartbeat.json"), JSON.stringify({ version: 1, pid: process.pid, at: new Date().toISOString() }));
   await assert.rejects(importAttempts(f.config), /heartbeat is fresh/);

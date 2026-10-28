@@ -11,6 +11,8 @@ export type AttemptFacts = {
   hasRecord: boolean;
   possiblyRunning: boolean;
   dispatcherRunning: boolean;
+  /** A possibly running worker with runtime records but no fresh dispatcher heartbeat blocks the whole context. */
+  blocksDispatch: boolean;
   leaseHeld: boolean;
   leaseInOtherPool: boolean;
   open: boolean;
@@ -59,7 +61,10 @@ export function assessAttempt(observation: AttemptObservation): AttemptAssessmen
   const leaseHeld = leases.some(l => l.leaseId === observation.attempt.leaseId);
   const pool = otherPool(observation);
   const facts: AttemptFacts = {
-    unknown, hasRecord: record !== undefined, possiblyRunning, dispatcherRunning, leaseHeld, leaseInOtherPool: pool !== undefined,
+    unknown, hasRecord: record !== undefined, possiblyRunning, dispatcherRunning,
+    // The runtime creates its launch row and fresh claim before starting a worker. A pending launch blocks only its task.
+    blocksDispatch: possiblyRunning && (!observation.runtime.known || observation.runtime.value !== undefined && !dispatcherRunning),
+    leaseHeld, leaseInOtherPool: pool !== undefined,
     open: record !== undefined && isOpen(record), unfinished: unfinished(observation), task,
     recordedOutcome: recorded !== undefined,
     matchingHold: typeof task === "object" && task.held && recorded !== undefined && task.holdReason === recorded.data.reason,

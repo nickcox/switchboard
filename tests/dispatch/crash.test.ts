@@ -64,10 +64,11 @@ test("killed after launch: dispatch is refused until the operator confirms the w
   await sleep(500);
   assert.equal((await f.deps.attempts.forTask("crash-a1"))[0]!.entries.at(-1)?.kind, "launched");
   const blocked = await dispatchOnce(f.deps);
-  assert.equal(blocked.nextAction.code, "stop_worker");
+  assert.equal(blocked.observed.reason, "capacity");
   // A crash leaves a fresh heartbeat briefly. Simulate its expiry rather than sleeping for 30 seconds.
   const record = (await f.runtime.discover("fixture-context"))[0]!;
   await f.tasks.database.transaction(() => f.tasks.database.run("UPDATE worker_claims SET heartbeat_at = ? WHERE id = ?", new Date(Date.now() - 60_000).toISOString(), record.claimId));
+  assert.equal((await dispatchOnce(f.deps)).nextAction.code, "stop_worker");
   const view = await status(f.deps);
   const stuck = view.attempts.find(a => a.attempt.taskId === "crash-a1");
   assert.equal(stuck?.possiblyRunning, true);
