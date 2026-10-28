@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 7) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 8) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -220,6 +220,18 @@ export class Database {
             SELECT RAISE(ABORT, 'Worker observations cannot be changed');
           END;
           PRAGMA user_version = 7;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 8) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 8) return;
+        db.exec(`
+          ALTER TABLE tasks ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(acceptance_criteria) AND json_type(acceptance_criteria) = 'array');
+          DROP TRIGGER task_definition_changed;
+          CREATE TRIGGER task_definition_changed AFTER UPDATE OF title, body, repo, kind, acceptance_criteria ON tasks
+            WHEN NEW.title IS NOT OLD.title OR NEW.body IS NOT OLD.body OR NEW.repo IS NOT OLD.repo OR NEW.kind IS NOT OLD.kind
+              OR NEW.acceptance_criteria IS NOT OLD.acceptance_criteria
+            BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END;
+          PRAGMA user_version = 8;
         `);
       });
       return result;

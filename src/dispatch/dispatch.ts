@@ -165,12 +165,12 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
     const reservation = await deps.attempts.reserveAttempt({ taskId, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, repo: selected.repo, definitionRevision: selected.definitionRevision,
       specification: (task, ref) => ({
         version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
-        title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], repository: task.repo, kind: task.kind,
+        title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: task.acceptanceCriteria, repository: task.repo, kind: task.kind,
         backingRepository: configuration.repository, baseRef: configuration.delivery.baseRef,
         outputBranch: `${configuration.delivery.branchPrefix}${task.id}/attempt-${ref.attempt}`,
         delivery: resolvedContract, runtime: configuration.runtime, provenance: {
           ...configuration.provenance,
-          definitionRevision: `task:${task.id}.definitionRevision`, title: `task:${task.id}.title`,
+          definitionRevision: `task:${task.id}.definitionRevision`, title: `task:${task.id}.title`, acceptanceCriteria: `task:${task.id}.acceptanceCriteria`,
           instructions: `task:${task.id}.${task.body.trim() === "" ? "title" : "body"}`, kind: `task:${task.id}.kind`,
           ...Object.fromEntries(Object.keys(resolvedContract).map(key => [`delivery.${key}`,
             configuration.provenance[`delivery.${task.kind === null ? "default" : `byTaskKind.${task.kind}`}.${key}`] ?? "unknown"])),
@@ -349,6 +349,7 @@ async function finalise(
   });
   return result({
     ok: outcome.done, reason: outcome.done ? "done" : "held", stage: "finalise", lease: "preserved", observed, attempt: summary, worker, retention,
+    ...(report?.result?.criteriaReport ? { criteriaReport: report.result.criteriaReport } : {}),
     ...(typeof observed.resultDiscrepancy === "string" ? { resultDiscrepancy: observed.resultDiscrepancy } : {}),
     task: { id: recorded.id, state: recorded.state, held: recorded.held, holdReason: recorded.holdReason },
     ...(!applied ? { detail: "The attempt outcome was recorded, but a newer operator decision left the task unchanged" } : outcome.done ? {} : { detail: holdReason }),

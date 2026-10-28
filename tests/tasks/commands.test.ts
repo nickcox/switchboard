@@ -63,9 +63,41 @@ test("all operator task commands support JSON without Git, Treehouse or Pi prefl
   }
 });
 
+test("criteria flags preserve order, replace the list, allow clearing and appear in show output", async () => {
+  const f = await fixture();
+  const added = f.json("add", "criteria", "Criteria", "--criterion", "First", "--criterion", "Second").task;
+  assert.deepEqual(added.acceptanceCriteria, ["First", "Second"]);
+  assert.equal(added.definitionRevision, 1);
+  const file = join(f.dir, "criteria.txt");
+  await writeFile(file, "Second\r\n\r\nFirst\r\n");
+  const changed = f.json("update", "criteria", "--criteria-file", file).task;
+  assert.deepEqual(changed.acceptanceCriteria, ["Second", "First"]);
+  assert.equal(changed.definitionRevision, 2);
+  assert.equal(f.json("update", "criteria", "--criterion", "Second", "--criterion", "First").task.definitionRevision, 2);
+  assert.match(f.run("show", "criteria").stdout, /acceptanceCriteria/);
+  assert.deepEqual(f.json("show", "criteria").task.acceptanceCriteria, ["Second", "First"]);
+  await writeFile(file, "");
+  assert.deepEqual(f.json("update", "criteria", "--criteria-file", file).task.acceptanceCriteria, []);
+  const invalid = f.run("update", "criteria", "--criterion", " ", "--json");
+  assert.equal(invalid.status, 1, invalid.stderr);
+  assert.equal(JSON.parse(invalid.stdout).reason, "rejected");
+});
+
+test("conversion command reports converted and unconverted tasks in text and JSON", async () => {
+  const f = await fixture();
+  f.json("add", "flat", "Flat", "--body", "Do work\n\n## Acceptance criteria\n- First\n- Second\n");
+  const nested = "## Acceptance criteria\n- First\n  - Nested\n";
+  f.json("add", "nested", "Nested", "--body", nested);
+  const converted = f.json("convert-criteria").reports;
+  assert.deepEqual(converted.map((entry: { id: string; status: string }) => [entry.id, entry.status]), [["flat", "converted"], ["nested", "unconverted"]]);
+  assert.deepEqual(f.json("show", "flat").task.acceptanceCriteria, ["First", "Second"]);
+  assert.equal(f.json("show", "nested").task.body, nested);
+  assert.match(f.run("convert-criteria").stdout, /nested[\s\S]*unconverted/);
+});
+
 test("task CLI refuses usage errors before opening configuration; operators cannot start tasks", async () => {
   for (const args of [[], ["start", "a"], ["add", "a"], ["show"], ["show", "a", "extra"], ["hold", "a"], ["block", "a"],
-    ["update", "a", "--body", "x", "--body-file", "x"], ["done", "a", "--reason", "x"], ["list", "--state", "invalid"], ["ready", "--dry-run"]]) {
+    ["update", "a", "--body", "x", "--body-file", "x"], ["add", "a", "A", "--criterion", "x", "--criteria-file", "x"], ["convert-criteria", "a"], ["done", "a", "--reason", "x"], ["list", "--state", "invalid"], ["ready", "--dry-run"]]) {
     const result = spawnSync(process.execPath, [cli, "task", ...args, "--config", "missing.json"], { encoding: "utf8" });
     assert.equal(result.status, 2, args.join(" ") + result.stderr);
     assert.match(result.stderr, /Usage:/);

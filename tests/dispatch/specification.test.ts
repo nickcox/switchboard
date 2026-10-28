@@ -7,7 +7,7 @@ import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { attemptsWith, fixture, task } from "./fixture.ts";
 
-for (const [field, value] of [["title", "New title"], ["body", "New instructions"], ["repo", "other"], ["kind", "unconfigured"]] as const) {
+for (const [field, value] of [["title", "New title"], ["body", "New instructions"], ["repo", "other"], ["kind", "unconfigured"], ["acceptanceCriteria", ["New criterion"]]] as const) {
   test(`changing ${field} during acquisition holds the attempt with its unused lease and never launches`, async () => {
     const f = await fixture({ tasks: [task("snapshot-a1")] });
     const acquire = f.deps.workspaces.acquire.bind(f.deps.workspaces);
@@ -113,10 +113,11 @@ test("a changed definition never replaces a newer operator hold during acquisiti
 
 test("task and configuration changes after start leave the worker's input and runtime settings unchanged", async () => {
   const f = await fixture({ tasks: [task("snapshot-a1")], scenario: "commit-result" });
+  await f.tasks.update("snapshot-a1", { acceptanceCriteria: ["Stored first criterion", "Stored second criterion"] });
   const original = structuredClone({ delivery: f.deps.delivery, settings: f.deps.runtimeSettings, repository: f.deps.repository });
   const attempts = attemptsWith(f, { startReservedTask: async ref => {
     const started = await f.deps.attempts.startReservedTask(ref);
-    await f.tasks.update(ref.taskId, { title: "New title", body: "New instructions", repo: "other", kind: "unconfigured" });
+    await f.tasks.update(ref.taskId, { title: "New title", body: "New instructions", repo: "other", kind: "unconfigured", acceptanceCriteria: ["Current criterion, not for this attempt"] });
     await f.tasks.hold(ref.taskId, "Newer operator hold");
     f.deps.delivery.baseRef = "missing";
     f.deps.delivery.branchPrefix = "changed/";
@@ -134,6 +135,7 @@ test("task and configuration changes after start leave the worker's input and ru
     launches++;
     const [input, , , settings] = args;
     assert.equal(input.instructions, "Implement the fixture change");
+    assert.deepEqual(input.acceptanceCriteria, ["Stored first criterion", "Stored second criterion"]);
     assert.deepEqual(input.delivery, { ...original.delivery.default, baseRef: "main", outputBranch: "switchboard/snapshot-a1/attempt-1", startingCommit: f.run(["rev-parse", "main"]) });
     assert.deepEqual(settings, original.settings);
     return launch(...args);
@@ -146,6 +148,8 @@ test("task and configuration changes after start leave the worker's input and ru
     assert.equal((await f.tasks.read("snapshot-a1"))!.holdReason, "Newer operator hold");
     const [record] = await attempts.forTask("snapshot-a1");
     assert.equal(record!.specification!.instructions, "Implement the fixture change");
+    assert.deepEqual(record!.specification!.acceptanceCriteria, ["Stored first criterion", "Stored second criterion"]);
+    assert.deepEqual((await f.runtime.discover(f.deps.contextId))[0]!.binding.input.acceptanceCriteria, record!.specification!.acceptanceCriteria);
     assert.equal(record!.allocation!.backingRepository, original.repository);
     assert.equal(record!.entries.at(-1)!.data.applied, false);
   } finally { f.tasks.close(); }

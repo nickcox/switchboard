@@ -1,3 +1,4 @@
+import type { CriteriaReport } from "../runtime/contracts.ts";
 import { isOpen } from "./attempt.ts";
 import { otherPool, unfinished, workerMayBeRunning, type AttemptObservation, type ContextObservation } from "./observe.ts";
 import { classify, type AttemptState, type TaskView } from "./state.ts";
@@ -36,6 +37,7 @@ export type AttemptAssessment = {
   task: TaskView;
   taskDisagreement?: boolean;
   resultDiscrepancy?: string;
+  criteriaReport?: CriteriaReport;
   facts: AttemptFacts;
 };
 
@@ -73,6 +75,8 @@ export function assessAttempt(observation: AttemptObservation): AttemptAssessmen
   return { attempt: observation.attempt, state, nextAction: { code, description: nextActions[code] }, facts,
     lastEntry: record?.entries.at(-1)?.kind ?? "none", possiblyRunning, leaseHeld, task,
     ...(pool === undefined ? {} : { leaseInOtherPool: pool }),
+    ...(observation.runtime.known && observation.runtime.value?.validatedResult?.content.criteriaReport
+      ? { criteriaReport: observation.runtime.value.validatedResult.content.criteriaReport } : {}),
     ...(observation.runtime.known && observation.runtime.value?.resultDiscrepancy ? { resultDiscrepancy: observation.runtime.value.resultDiscrepancy } : {}),
     ...(record?.entries.some(e => e.kind === "task_recorded" && e.data.applied === false) ? { taskDisagreement: true } : {}) };
 }

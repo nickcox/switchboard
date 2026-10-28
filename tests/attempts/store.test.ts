@@ -100,6 +100,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
         tasks.database.run(`DROP TABLE ${table}`);
       }
       tasks.database.run("DROP TRIGGER task_definition_changed");
+      tasks.database.run("ALTER TABLE tasks DROP COLUMN acceptance_criteria");
       tasks.database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
       tasks.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
       tasks.database.run("PRAGMA user_version = 1");
@@ -108,7 +109,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const reopened = await SqliteTaskStore.open({ path });
   try {
     assert.deepEqual(await reopened.list(), before);
-    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 7);
+    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 8);
     assert.deepEqual(new AttemptStore(reopened.database, "context").list(), []);
   } finally { reopened.close(); }
 });

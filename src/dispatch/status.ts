@@ -1,3 +1,5 @@
+import { describeCriteriaReport } from "../runtime/criteria-report.ts";
+import type { CriteriaReport } from "../runtime/contracts.ts";
 import type { ReadFailure } from "./failure.ts";
 import { unsettledReads } from "./owner-reads.ts";
 import { readActivity } from "../runtime/activity.ts";
@@ -18,6 +20,7 @@ export type AttemptStatus = {
   unsettledReadFailures?: (ReadFailure & { sequence: number })[];
   validatedResult?: RuntimeRecord["validatedResult"];
   resultDiscrepancy?: string;
+  criteriaReport?: CriteriaReport;
   specification?: StoredSpecification;
   specificationComplete: boolean;
   allocation?: AttemptAllocation;
@@ -196,6 +199,7 @@ export function describeStatus(value: StatusResult): string {
       if (a.unsettledReadFailures?.length) lines.push(`  Unsettled read failures: ${a.unsettledReadFailures.map(f => f.sequence).join(", ")}`);
       lines.push(`  Read diagnostics: ${JSON.stringify(f.diagnostics)}`);
     }
+    for (const line of describeCriteriaReport(a.criteriaReport)) lines.push(`  ${line}`);
     if (a.resultDiscrepancy) lines.push(`  Result discrepancy: ${a.resultDiscrepancy}`);
     if (a.taskDisagreement) lines.push("  Task unchanged: a newer operator decision disagrees with the attempt outcome");
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;

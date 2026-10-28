@@ -13,7 +13,8 @@ export type Task = {
   held: boolean;
   holdReason: string | null;
   body: string;
-  /** Increased only when the task's title, body, repository or kind changes. */
+  acceptanceCriteria: string[];
+  /** Increased only when the task's title, body, repository, kind or criteria change. */
   definitionRevision: number;
   /** Used to compare a finalisation plan with later operator holds. */
   holdRevision?: number;

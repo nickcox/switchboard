@@ -56,6 +56,63 @@ test("fields, body fidelity, update, missing reads and persistence across opens"
   try { assert.equal((await reopened.read("a"))?.body, body); } finally { reopened.close(); }
 });
 
+test("criteria are ordered definition data and changing several fields increases the revision once", async () => {
+  const { store, path } = await fixture();
+  try {
+    assert.deepEqual((await store.add({ id: "a", title: "A" })).acceptanceCriteria, []);
+    const updated = await store.update("a", { title: "B", body: "Instructions", acceptanceCriteria: ["Second", "First", "First"] });
+    assert.equal(updated.definitionRevision, 2);
+    assert.deepEqual(updated.acceptanceCriteria, ["Second", "First", "First"]);
+    assert.equal((await store.update("a", { acceptanceCriteria: [...updated.acceptanceCriteria] })).definitionRevision, 2);
+    assert.equal((await store.update("a", { acceptanceCriteria: ["First", "Second", "First"] })).definitionRevision, 3);
+    for (const criterion of ["", "  ", "two\nlines"]) {
+      await assert.rejects(store.update("a", { acceptanceCriteria: [criterion] }), rejected);
+      assert.equal((await store.read("a"))!.definitionRevision, 3);
+    }
+    assert.equal((await store.update("a", { acceptanceCriteria: [] })).definitionRevision, 4);
+    const reopened = await SqliteTaskStore.open({ path });
+    try { assert.deepEqual((await reopened.read("a"))!.acceptanceCriteria, []); } finally { reopened.close(); }
+  } finally { store.close(); }
+});
+
+test("conversion moves only safe queued sections, including held tasks, and leaves all refusals unchanged", async () => {
+  const { store } = await fixture();
+  try {
+    const flat = "Intro\n\n## Acceptance criteria\n\n- First\n* Second\n+ Third\n\n## Notes\nKeep these\n";
+    const bodies = {
+      flat, held: flat, running: flat, done: flat, existing: flat,
+      nested: "## Acceptance criteria\n- First\n  - Nested\n",
+      prose: "## Acceptance criteria\nSome prose\n- First\n",
+      continuation: "## Acceptance criteria\n- First\n  continued\n",
+      repeated: "## Acceptance criteria\n- One\n## Acceptance criteria\n- Two\n",
+      empty: "## Acceptance criteria\n\n",
+      absent: "No section here",
+      fenced: "```md\n## Acceptance criteria\n- Example only\n```\n",
+    };
+    for (const [id, body] of Object.entries(bodies)) await store.add({ id, title: id, body });
+    await store.hold("held", "Waiting");
+    await start(store, "running");
+    await store.hold("running", "Still running");
+    await store.done("done");
+    await store.update("existing", { acceptanceCriteria: ["Stored criterion"] });
+    const before = await store.list();
+    const reports = await store.convertCriteria();
+    assert.deepEqual(reports.filter(r => r.status === "converted").map(r => r.id), ["flat", "held"]);
+    assert.deepEqual(reports.filter(r => r.status === "unconverted").map(r => r.id), ["running", "done", "existing", "nested", "prose", "continuation", "repeated", "empty"]);
+    for (const id of ["flat", "held"]) {
+      const task = (await store.read(id))!;
+      assert.equal(task.body, "Intro\n\n## Notes\nKeep these\n");
+      assert.deepEqual(task.acceptanceCriteria, ["First", "Second", "Third"]);
+      assert.equal(task.definitionRevision, 2);
+    }
+    assert.equal((await store.read("held"))!.holdReason, "Waiting");
+    for (const task of before.filter(t => !["flat", "held"].includes(t.id))) assert.deepEqual(await store.read(task.id), task);
+    const after = await store.list();
+    assert.ok((await store.convertCriteria()).every(r => r.status === "unconverted"));
+    assert.deepEqual(await store.list(), after);
+  } finally { store.close(); }
+});
+
 test("holds are separate from state, validate atomically, and accept parentheses", async () => {
   const { store } = await fixture();
   try {
@@ -149,6 +206,7 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
     store.database.run("DROP INDEX worker_stop_per_attempt");
     store.database.run("ALTER TABLE confirmations DROP COLUMN note");
     store.database.run("DROP TRIGGER task_definition_changed");
+    store.database.run("ALTER TABLE tasks DROP COLUMN acceptance_criteria");
     store.database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
     store.database.run("PRAGMA user_version = 2");
   });
@@ -156,7 +214,7 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
   const reopened = await Promise.all([SqliteTaskStore.open({ path }), SqliteTaskStore.open({ path })]);
   try {
     for (const current of reopened) {
-      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 7);
+      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 8);
       assert.ok(current.database.all("PRAGMA table_info(tasks)").every(column => column.name !== "started_body"));
       assert.deepEqual(await current.list(), tasksBefore);
       assert.deepEqual(new AttemptStore(current.database, "fixture").read(ref), attemptBefore);
@@ -205,7 +263,7 @@ test("database durability, schema version, absolute canonical regular paths", as
   assert.equal(store.database.get("PRAGMA synchronous")?.synchronous, 2);
   assert.equal(store.database.get("PRAGMA fullfsync")?.fullfsync, 1);
   assert.equal(store.database.get("PRAGMA busy_timeout")?.timeout, 0);
-  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 7);
+  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 8);
   store.close();
   await assert.rejects(SqliteTaskStore.open({ path: "relative.db" }), /absolute/);
   await assert.rejects(SqliteTaskStore.open({ path: dir }), /regular file/);

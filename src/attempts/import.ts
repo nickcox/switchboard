@@ -222,8 +222,8 @@ export async function importAttempts(config: Config) {
     await source.vacuumInto(staging);
     copy = await Database.open(staging, config.databaseRetryMs);
     await writeSnapshot(config, copy, before);
-    // Migrations drop the obsolete body snapshot and initialise definition revisions; other fields must still match.
-    const currentTasks = tasks.map(({ started_body: _startedBody, ...task }) => ({ ...task, definition_revision: task.definition_revision ?? 1 }));
+    // Migrations drop the obsolete body snapshot and initialise definition revisions and criteria; other fields must still match.
+    const currentTasks = tasks.map(({ started_body: _startedBody, ...task }) => ({ ...task, definition_revision: task.definition_revision ?? 1, acceptance_criteria: task.acceptance_criteria ?? "[]" }));
     assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), currentTasks, "Task fields changed in the copy");
     assert.deepEqual(copy.all("SELECT * FROM dependencies ORDER BY task, blocker"), dependencies, "Dependencies changed in the copy");
     await requireSettled(config);

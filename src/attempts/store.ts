@@ -384,7 +384,7 @@ export class AttemptStore {
   private task(id: string): Task | undefined {
     const row = this.database.get(`SELECT *, EXISTS(SELECT 1 FROM dependencies d JOIN tasks b ON b.id = d.blocker
       WHERE d.task = tasks.id AND b.state <> 'done') AS blocked FROM tasks WHERE id = ?`, id);
-    return row ? { id: String(row.id), title: String(row.title), body: String(row.body), repo: row.repo as string | null,
+    return row ? { id: String(row.id), title: String(row.title), body: String(row.body), acceptanceCriteria: JSON.parse(String(row.acceptance_criteria)) as string[], repo: row.repo as string | null,
       kind: row.kind as string | null, definitionRevision: Number(row.definition_revision), state: row.state as TaskState, held: row.hold_reason !== null,
       holdReason: row.hold_reason as string | null, holdRevision: Number(row.hold_revision), blocked: Boolean(row.blocked) } : undefined;
   }

@@ -229,6 +229,7 @@ export function workerPrompt(binding: RuntimeBinding, deadline: Date): string {
     "Do not write binding.json or child-exit.json. Do not create alternative result files.",
     "Use the exact supplied identity and this result JSON Schema:",
     JSON.stringify(resultJsonSchema, null, 2),
+    "Report every acceptanceCriteria entry exactly once in criteriaReport: {position,criterion,status,evidence}. Use its 1-based position and exact text, status 'met' or 'not_met', and a short note of the evidence. Report criteria for every outcome, including hold and failed. With no criteria, omit criteriaReport or use an empty array. A met report is your claim, not proof.",
     "validationEvidence is an array of {name,summary}. It reports your checks; it is not independent acceptance verification.",
     "workReferences is an array of {kind:'git',name,branch,commit} or {kind:'artefact',name,path,description}.",
     `Write reports and other artefact deliverables under ${JSON.stringify(binding.artefactDirectory)}, which survives after the workspace is recycled, and give their absolute paths in workReferences. Files left only in the workspace are not retained.`,

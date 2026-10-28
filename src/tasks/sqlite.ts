@@ -1,10 +1,15 @@
 import { Database } from "../database.ts";
+import { acceptanceCriteriaSchema, criteriaSection } from "./criteria.ts";
 import { TaskStoreError, type Task, type TaskState, type TaskStore } from "./store.ts";
 
 export type StoredTask = Task & { position: number; blockedBy: string[]; holdRevision: number };
-export type NewTask = { id: string; title: string; body?: string; repo?: string | null; kind?: string | null };
-export type TaskChanges = Partial<Pick<Task, "title" | "body" | "repo" | "kind">>;
+export type NewTask = { id: string; title: string; body?: string; repo?: string | null; kind?: string | null; acceptanceCriteria?: string[] };
+export type TaskChanges = Partial<Pick<Task, "title" | "body" | "repo" | "kind" | "acceptanceCriteria">>;
 const reject = (message: string): never => { throw new TaskStoreError("rejected", message); };
+const validCriteria = (criteria: string[]) => {
+  if (!acceptanceCriteriaSchema.safeParse(criteria).success) reject("Each criterion must be a nonempty single line");
+  return criteria;
+};
 const validReason = (reason: string) => {
   if (!reason || reason.length > 200 || /[\r\n]/.test(reason)) reject("Hold reason must be one line of 1–200 characters");
 };
@@ -36,6 +41,7 @@ export class SqliteTaskStore implements TaskStore {
     return {
       id: String(row.id), title: String(row.title), body: String(row.body), repo: row.repo as string | null,
       kind: row.kind as string | null, state: row.state as TaskState, definitionRevision: Number(row.definition_revision),
+      acceptanceCriteria: acceptanceCriteriaSchema.parse(JSON.parse(String(row.acceptance_criteria))),
       held: row.hold_reason !== null,
       holdReason: row.hold_reason as string | null, blocked: Boolean(row.blocked), position: Number(row.position), holdRevision: Number(row.hold_revision),
       blockedBy: this.database.all("SELECT blocker FROM dependencies WHERE task = ? ORDER BY blocker", id).map(r => String(r.blocker)),
@@ -46,19 +52,38 @@ export class SqliteTaskStore implements TaskStore {
     return this.database.transaction(() => {
       if (!/^[a-zA-Z0-9._-]+$/.test(task.id)) reject("Task ID must contain only letters, digits, ., _ and -");
       if (this.readNow(task.id)) reject(`Task ${task.id} already exists`);
-      this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,position) VALUES(?,?,?,?,?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
-        task.id, task.title, task.body ?? "", task.repo === undefined ? this.repo : task.repo || null, task.kind === "task" ? null : task.kind || null);
+      this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,acceptance_criteria,position) VALUES(?,?,?,?,?,?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
+        task.id, task.title, task.body ?? "", task.repo === undefined ? this.repo : task.repo || null, task.kind === "task" ? null : task.kind || null, JSON.stringify(validCriteria(task.acceptanceCriteria ?? [])));
       return this.require(task.id);
     });
   }
   async update(id: string, changes: TaskChanges): Promise<StoredTask> {
     return this.database.transaction(() => {
       this.require(id);
-      const fields = (["title", "body", "repo", "kind"] as const).filter(key => changes[key] !== undefined);
-      if (fields.length) this.database.run(`UPDATE tasks SET ${fields.map(key => `${key} = ?`).join(", ")} WHERE id = ?`,
-        ...fields.map(key => key === "kind" && changes[key] === "task" ? null
+      if (changes.acceptanceCriteria !== undefined) validCriteria(changes.acceptanceCriteria);
+      const fields = (["title", "body", "repo", "kind", "acceptanceCriteria"] as const).filter(key => changes[key] !== undefined);
+      if (fields.length) this.database.run(`UPDATE tasks SET ${fields.map(key => `${key === "acceptanceCriteria" ? "acceptance_criteria" : key} = ?`).join(", ")} WHERE id = ?`,
+        ...fields.map(key => key === "acceptanceCriteria" ? JSON.stringify(changes[key]) : key === "kind" && changes[key] === "task" ? null
           : (key === "repo" || key === "kind") && changes[key] === "" ? null : changes[key]!), id);
       return this.require(id);
+    });
+  }
+  async convertCriteria(): Promise<{ id: string; status: "converted" | "unconverted"; reason?: string }[]> {
+    return this.database.transaction(() => {
+      const reports: { id: string; status: "converted" | "unconverted"; reason?: string }[] = [];
+      for (const row of this.database.all("SELECT id FROM tasks WHERE (? IS NULL OR repo = ?) ORDER BY position", this.repo, this.repo)) {
+        const task = this.require(String(row.id));
+        const section = criteriaSection(task.body);
+        if (!section) continue;
+        const reason = task.state !== "queued" ? "Task is in flight or done"
+          : task.acceptanceCriteria.length ? "Task already has stored criteria" : "reason" in section ? section.reason : undefined;
+        if (reason) reports.push({ id: task.id, status: "unconverted", reason });
+        else if ("body" in section) {
+          this.database.run("UPDATE tasks SET body = ?, acceptance_criteria = ? WHERE id = ?", section.body, JSON.stringify(section.acceptanceCriteria), task.id);
+          reports.push({ id: task.id, status: "converted" });
+        }
+      }
+      return reports;
     });
   }
   async hold(id: string, reason: string): Promise<StoredTask> {

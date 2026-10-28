@@ -32,10 +32,16 @@ function reportResult() {
   const result = {
     version: 1, identity: binding.input.identity, outcome: "completed",
     summary: "Synthetic worker completion, not a model run",
+    criteriaReport: binding.input.acceptanceCriteria.map((criterion: string, index: number) => ({
+      position: index + 1, criterion, status: "met", evidence: "Synthetic fixture evidence",
+    })),
     validationEvidence: [{ name: "tests", summary: "Fixture checks passed" }],
     workReferences: [{ kind: "git", name: "code", branch: binding.input.delivery.outputBranch, commit: "b".repeat(40) }],
   };
   if (scenario === "missing-result") return;
+  if (scenario === "missing-criteria") result.criteriaReport = [];
+  if (scenario === "duplicate-criteria") result.criteriaReport = [result.criteriaReport[0]!, result.criteriaReport[0]!];
+  if (scenario === "extra-criteria") result.criteriaReport.push({ position: result.criteriaReport.length + 1, criterion: "Extra criterion", status: "met", evidence: "Claim" });
   if (scenario === "artefact-result" || scenario === "artefact-in-workspace") {
     // A report deliverable: written to the attempt's artefact directory, or wrongly left in the workspace.
     const directory = scenario === "artefact-result" ? binding.artefactDirectory! : process.cwd();

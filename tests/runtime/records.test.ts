@@ -87,6 +87,11 @@ test("schema 6 observations survive migration and can gain a validated result", 
       database.run("INSERT INTO worker_observations SELECT * FROM current_observations");
       database.run("DROP TABLE current_observations");
       database.run("CREATE TRIGGER worker_observations_immutable BEFORE UPDATE ON worker_observations BEGIN SELECT RAISE(ABORT, 'Worker observations cannot be changed'); END");
+      database.run("DROP TRIGGER task_definition_changed");
+      database.run("ALTER TABLE tasks DROP COLUMN acceptance_criteria");
+      database.run(`CREATE TRIGGER task_definition_changed AFTER UPDATE OF title, body, repo, kind ON tasks
+        WHEN NEW.title IS NOT OLD.title OR NEW.body IS NOT OLD.body OR NEW.repo IS NOT OLD.repo OR NEW.kind IS NOT OLD.kind
+        BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END`);
       database.run("PRAGMA user_version = 6");
     });
   });

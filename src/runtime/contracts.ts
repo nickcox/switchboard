@@ -35,12 +35,18 @@ const workReference = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("git"), name: nonempty, branch: nonempty, commit }),
   z.strictObject({ kind: z.literal("artefact"), name: nonempty, path: nonempty, description: nonempty }),
 ]);
+export const criteriaReportSchema = z.array(z.strictObject({
+  position: z.number().int().positive(), criterion: nonempty, status: z.enum(["met", "not_met"]), evidence: nonempty,
+}));
+export type CriteriaReport = z.infer<typeof criteriaReportSchema>;
+
 const resultFields = {
   version: z.literal(1),
   identity: identitySchema,
   summary: nonempty,
   validationEvidence: z.array(z.strictObject({ name: nonempty, summary: nonempty })),
   workReferences: z.array(workReference),
+  criteriaReport: criteriaReportSchema.optional(),
 };
 export const workerResultSchema = z.discriminatedUnion("outcome", [
   z.strictObject({ ...resultFields, outcome: z.literal("completed") }),
@@ -58,6 +64,11 @@ export function sameIdentity(a: WorkerIdentity, b: WorkerIdentity): boolean {
 export function validateWorkerResult(value: unknown, input: WorkerInput): WorkerResult {
   const result = workerResultSchema.parse(value);
   if (!sameIdentity(result.identity, input.identity)) throw new Error("Result identity does not match this worker");
+  const reports = result.criteriaReport ?? [];
+  if (reports.length !== input.acceptanceCriteria.length || new Set(reports.map(report => report.position)).size !== reports.length ||
+    reports.some(report => input.acceptanceCriteria[report.position - 1] !== report.criterion)) {
+    throw new Error("Criteria report must report every acceptance criterion exactly once, with its 1-based position and exact text");
+  }
   const evidenceNames = result.validationEvidence.map(entry => entry.name);
   if (new Set(evidenceNames).size !== evidenceNames.length) throw new Error("Duplicate evidence names");
   if (result.outcome === "completed") {

@@ -47,6 +47,39 @@ test("a required deliverable may be either kind of reference, whatever the contr
   ] }, input).outcome, "completed");
 });
 
+test("every criterion needs one report with its exact text and 1-based position, for every outcome", () => {
+  const { input } = fixture();
+  input.acceptanceCriteria = ["First", "Second", "First"];
+  const valid = resultFor(input);
+  const reports = valid.criteriaReport;
+  for (const outcome of ["completed", "hold", "failed"]) {
+    const value = { ...valid, outcome, ...(outcome === "completed" ? {} : { reason: "Needs work", nextAction: "Inspect" }) };
+    assert.equal(validateWorkerResult(value, input).outcome, outcome);
+    assert.equal(validateWorkerResult({ ...value, criteriaReport: [...reports].reverse() }, input).outcome, outcome);
+    const invalid = [
+      undefined, [], reports.slice(1), [reports[0], reports[0], reports[2]],
+      [...reports, { ...reports[0], position: 4 }],
+      [reports[0], { ...reports[1], position: 4 }, reports[2]],
+      [reports[0], { ...reports[1], criterion: "Wrong text" }, reports[2]],
+      [reports[0], { ...reports[1], position: 0 }, reports[2]],
+      [reports[0], { ...reports[1], evidence: "" }, reports[2]],
+      [reports[0], { ...reports[1], status: "unknown" }, reports[2]],
+    ];
+    for (const criteriaReport of invalid) assert.throws(() => validateWorkerResult({ ...value, criteriaReport }, input));
+  }
+  assert.equal(validateWorkerResult({ ...valid, criteriaReport: reports.map(report => ({ ...report, status: "not_met" })) }, input).outcome, "completed");
+});
+
+test("tasks without criteria need no report and refuse extra reports", () => {
+  const { input } = fixture();
+  input.acceptanceCriteria = [];
+  const valid = resultFor(input);
+  const { criteriaReport: _, ...withoutReport } = valid;
+  assert.equal(validateWorkerResult(withoutReport, input).outcome, "completed");
+  assert.equal(validateWorkerResult(valid, input).outcome, "completed");
+  assert.throws(() => validateWorkerResult({ ...valid, criteriaReport: [{ position: 1, criterion: "Extra", status: "met", evidence: "Claim" }] }, input));
+});
+
 test("hold and failure require a reason and next action but need not claim successful evidence", () => {
   const { input } = fixture();
   const held = { ...resultFor(input), outcome: "hold", validationEvidence: [], workReferences: [], reason: "Needs operator input", nextAction: "Inspect retained workspace" };
