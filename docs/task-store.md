@@ -8,7 +8,7 @@ Switchboard owns its tasks from ADR-0007 onwards. tasks-axi applied some of thes
 
 - A task ID is chosen by whoever adds the task, and must be slug-shaped, as tasks-axi requires: letters, digits, `.`, `_` and `-`, with no spaces. It is unique within the database. Tasks are never deleted, so an ID is never reused.
 - Task IDs are not scoped to a context: one database's tasks are shared by every context that uses it, and each context selects tasks by repository, as it did with a shared tasks-axi backlog.
-- A request ID is unique within a context. The same request ID may be used in two contexts.
+- A request ID is unique within a context. The same request ID may be used in two contexts. Request records are separate from attempts and never expire, including after pruning.
 
 ## States and holds
 
@@ -35,6 +35,13 @@ Switchboard owns its tasks from ADR-0007 onwards. tasks-axi applied some of thes
 - Acquisition records a separate immutable allocation: lease, workspace, backing repository, pool, output branch and actual starting commit. The worker's input is built from the stored specification and allocation, not from a later task or configuration read. `status --json` reports both, with `specificationComplete`.
 - Starting checks both readiness and the definition revision in its transaction. A definition changed during acquisition halts the attempt as `task_definition_changed`, without a launch, and keeps the unused lease. It holds the task unless a newer operator hold or state decision already applies. Return the unused lease through Treehouse, record its return with `resolve --lease <lease-id> --lease-returned`, check and release the task, then dispatch a new attempt. Switchboard never returns that lease automatically.
 - Existing attempts are migrated from their stored runtime bindings. Facts and configuration provenance not retained by those bindings are left missing or marked `unknown`, never guessed from today's task or configuration. An attempt without a complete specification remains inspectable, fenceable and resolvable, but cannot start or obtain permission to launch.
+
+## Request records and pruning
+
+- Reservation writes the request record and attempt in one transaction. The record names the selected task and attempt, even when the caller requested automatic selection. A replay returns that attempt, never selects the next ready task and never acquires a lease or launches or prompts a worker.
+- Encoding version 1 fingerprints the canonical UTF-8 JSON object `{"taskId":null}` for automatic selection, or `{"taskId":"<explicit ID>"}` for explicit selection, using SHA-256. The context scopes the key; the request ID is not an input to its own fingerprint. Configuration, resolved contracts, current task definitions, cancellation signals and dry-run mode are not explicit task-selection inputs. A dry run does not reserve an ID. Reusing an ID with different explicit inputs refuses as `request_input_mismatch`, before and after pruning. An unreadable request record is an error, never absence.
+- Pruning writes the archived summary, switches the request record to that summary, removes the attempt and its entries, and schedules runtime directory deletion in one transaction. Deletion follows outside the transaction and can be resumed. Request records and attempt numbers stay indefinitely; pruning does not change tasks, leases or Git refs.
+- Schema version 6 migrates existing reservations and request IDs in archived summaries, including legacy file imports. Historical records use encoding version 0 with an unknown fingerprint because the old records did not distinguish explicit from automatic selection. They still exclude reuse: a provably different task refuses as `request_input_mismatch`; otherwise dispatch refuses as `request_reserved` and asks for inspection, without launching. An orphan reservation can be linked to an archived attempt only when its task agrees. Conflicting historical tasks or attempt numbers for the same context and request ID refuse the migration transaction rather than choosing one.
 
 ## Changes during an attempt
 

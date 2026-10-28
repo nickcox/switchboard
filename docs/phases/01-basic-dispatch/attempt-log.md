@@ -6,7 +6,7 @@ Attempts link tasks, leases, sessions, commits and outcomes. Tasks and attempts 
 
 ## Database records
 
-Schema version 3 holds attempts, entries, request-ID reservations, retained attempt numbers, confirmations, archive summaries and pending directory deletions. Opening an older database migrates it automatically. Version 3 removes the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID.
+Schema version 6 holds attempts, entries, separate request records, retained attempt numbers, confirmations, archive summaries, pending directory deletions, runtime records and attempt specifications. Opening an older database migrates it automatically. Version 3 removed the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context and never expire. Each new request record stores a versioned fingerprint of explicit selection inputs and the selected attempt; archiving switches it to the archived summary. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID. Historical requests with unknown explicit inputs remain excluded, and conflicting historical mappings refuse migration. See the [request-record contract](../../task-store.md#request-records-and-pruning).
 
 Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequence`, `kind`, `recordedAt` (an ISO time) and validated `data`. Database references enforce ownership, and a trigger refuses entry updates. Corrections are new entries.
 
@@ -51,7 +51,7 @@ The CLI flags are unchanged. Confirmation records, not old `acceptedBy` or `noPr
 
 ## Pruning
 
-Pruning checks external owners before archiving. Its transaction compares the observed entries and confirmations, writes an archive summary, removes the attempt and its reservation, and records runtime directories to delete. Retained attempt numbers never go away, so output-branch names are never reused. Directory deletion follows outside the transaction; a later prune completes pending deletion. There is no prune lock or stale lock to remove. Summaries live in `archived_attempts`, not archive files.
+Pruning checks external owners before archiving. Its transaction compares the observed entries and confirmations, writes an archive summary, keeps the request record pointing to that summary, removes the attempt and its entries, and records runtime directories to delete. Retained attempt numbers never go away, so output-branch names are never reused. Directory deletion follows outside the transaction; a later prune completes pending deletion. There is no prune lock or stale lock to remove. Summaries live in `archived_attempts`, not archive files.
 
 ## Importing the old files
 

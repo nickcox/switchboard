@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { migrateRequestRecords } from "./requests.ts";
 import { readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { databasePath, type Config } from "../config.ts";
@@ -15,8 +14,9 @@ import { AttemptLog, holdLabels, parseAttemptEntry, type AttemptEntry, type Atte
 import { archiveSchema, reservationSchema, type ArchivedAttempt } from "./prune.ts";
 import { AttemptStore, type Confirmation, type ConfirmationRecord } from "./store.ts";
 import { specificationFromBinding } from "./specification.ts";
+import { migrateRequestRecords } from "./requests.ts";
 
-const hasAttempts = (database: Database) => ["attempts", "attempt_numbers"].some(table =>
+const hasAttempts = (database: Database) => ["attempts", "attempt_numbers", "request_records"].some(table =>
   database.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", table) && database.get(`SELECT 1 FROM ${table} LIMIT 1`));
 const names = async (path: string) => readdir(path).catch(error => { if (error.code === "ENOENT") return []; throw error; });
 

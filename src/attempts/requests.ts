@@ -15,8 +15,18 @@ export function migrateRequestRecords(database: Database): void {
       requestId: String(row.request_id), reservedAt: String(row.reserved_at), archived: false }));
   for (const row of database.all("SELECT context, task, attempt, summary FROM archived_attempts")) {
     const archive = JSON.parse(String(row.summary));
+    if ((archive.contextId !== undefined && archive.contextId !== row.context) ||
+      (archive.taskId !== undefined && archive.taskId !== row.task) ||
+      (archive.attempt !== undefined && archive.attempt !== row.attempt) ||
+      (archive.reservation?.taskId !== undefined && archive.reservation.taskId !== row.task)) {
+      throw new Error("Conflicting historical identity in an archived request");
+    }
     const ids = [archive.requestId, archive.reservation?.requestId, archive.summary?.requestId, archive.summary?.facts?.requested?.data?.requestId]
-      .filter((value): value is string => typeof value === "string");
+      .filter((value): value is string => {
+        if (value === undefined) return false;
+        if (typeof value !== "string" || !value.trim()) throw new Error("Invalid historical request ID in an archived attempt");
+        return true;
+      });
     if (new Set(ids).size > 1) throw new Error("Conflicting historical request IDs in an archived attempt");
     if (ids.length > 0) candidates.push({ context: String(row.context), task: String(row.task), attempt: Number(row.attempt), requestId: ids[0]!,
       reservedAt: archive.reservation?.reservedAt ?? archive.finishedAt, archived: true });

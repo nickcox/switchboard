@@ -76,7 +76,9 @@ test("imports entries, old confirmations, orphan reservations and pruned numbers
     const intent = entries.find(e => e.kind === "lease_return_started")!;
     assert.equal((confirmations[1]!.scope as { returnId: string }).returnId, intent.data.returnId);
     assert.equal(entries.find(e => e.kind === "lease_returned")!.data.returnId, intent.data.returnId);
-    assert.equal((await attempts.reserveAttempt({ taskId: "pruned", requested: { requestId: "pruned-request" }, maximum: 1, specification: specificationFor })).ref.attempt, 2);
+    assert.equal((await attempts.findByRequest("pruned-request"))?.attempt, 1);
+    await assert.rejects(attempts.reserveAttempt({ taskId: "pruned", requested: { requestId: "pruned-request" }, maximum: 1, specification: specificationFor }), { reason: "request_reserved" });
+    assert.equal((await attempts.reserveAttempt({ taskId: "pruned", requested: { requestId: "new-request" }, maximum: 1, specification: specificationFor })).ref.attempt, 2);
     await assert.rejects(attempts.reserveAttempt({ taskId: "orphan", requested: { requestId: "orphan-request" }, maximum: 2, specification: specificationFor }), { reason: "request_reserved" });
     assert.equal((await tasks.read("settled"))!.body, "Original instructions");
     assert.equal(Number(tasks.database.get("SELECT count(*) AS n FROM archived_attempts")!.n), 1);
