@@ -6,7 +6,7 @@ Attempts link tasks, leases, sessions, commits and outcomes. Tasks and attempts 
 
 ## Database records
 
-Schema version 6 holds attempts, entries, separate request records, retained attempt numbers, confirmations, archive summaries, pending directory deletions, runtime records and attempt specifications. Opening an older database migrates it automatically. Version 3 removed the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context and never expire. Each new request record stores a versioned fingerprint of explicit selection inputs and the selected attempt; archiving switches it to the archived summary. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID. Historical requests with unknown explicit inputs remain excluded, and conflicting historical mappings refuse migration. See the [request-record contract](../../task-store.md#request-records-and-pruning).
+Schema version 7 holds attempts, entries, separate request records, retained attempt numbers, confirmations, archive summaries, pending directory deletions, runtime records and attempt specifications. Opening an older database migrates it automatically. Version 3 removed the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context and never expire. Each new request record stores a versioned fingerprint of explicit selection inputs and the selected attempt; archiving switches it to the archived summary. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID. Historical requests with unknown explicit inputs remain excluded, and conflicting historical mappings refuse migration. See the [request-record contract](../../task-store.md#request-records-and-pruning).
 
 Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequence`, `kind`, `recordedAt` (an ISO time) and validated `data`. Database references enforce ownership, and a trigger refuses entry updates. Corrections are new entries.
 
@@ -28,6 +28,12 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `lease_return_started`, `lease_returned` | `leaseId`, `by` (`finish` or `discard`) and the return's unique `returnId` |
 
 Outcome categories are `done`, `review_required`, `not_retained`, `held_by_worker`, `failed`, `interrupted` and `over_budget`. Classification reads the category, never a category inferred from a hold reason. Task instructions are not changed to carry attempt evidence; the result and attempt records retain it.
+
+## Validated worker results
+
+The immutable `validated_result` runtime observation belongs to the attempt's launch row. It records the validated result content, the SHA-256 digest of the source file's bytes, its source path, `validationVersion: 1` and `validatedAt`. It is committed after observing the worker's successful exit and before dispatch records completion or checks retention. The first record wins; subsequent validation cannot replace it.
+
+Dispatch and finish use this content for the reported outcome, work references and exact integration commit. Status includes the recorded report and reports discrepancies with the current result file. A changed, missing or unreadable file is diagnostic only, never replacement evidence. Existing worker, task, retention and process-ownership gates still apply. For an older attempt without the observation, finish applies the existing result checks and records the result before checking retention; a dry run validates without writing. Explicit operator output acceptance remains separate.
 
 ## Transaction boundaries
 

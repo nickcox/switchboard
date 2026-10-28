@@ -8,7 +8,7 @@ import { inside, requireRetainedStorage } from "../infra/storage.ts";
 export { inside } from "../infra/storage.ts";
 import { workerInputSchema, type WorkerInput } from "./contracts.ts";
 import { RuntimeStore, type RuntimeAddress } from "./store.ts";
-import { parseValidatedResult, resultDiscrepancy, type ValidatedResult } from "./validated-result.ts";
+import { parseValidatedResult, recordValidatedResult, resultDiscrepancy, type ValidatedResult } from "./validated-result.ts";
 
 import { thinkingLevelSchema, type ThinkingLevel } from "./settings.ts";
 export { thinkingLevelSchema, type ThinkingLevel } from "./settings.ts";
@@ -138,6 +138,9 @@ export class RuntimeRecords {
   }
   async recordSessionStart(record: Pick<RuntimeRecord, "directory">, thinkingLevel: ThinkingLevel): Promise<void> {
     await this.storage.recordObservation(record.directory, "session_start", thinkingLevelSchema.parse(thinkingLevel));
+  }
+  async recordValidatedResult(record: Pick<RuntimeRecord, "storage" | "directory" | "binding">): Promise<ValidatedResult> {
+    return recordValidatedResult(record);
   }
   async recordChildExit(record: Pick<RuntimeRecord, "directory">, exit: ChildExit): Promise<void> {
     await this.storage.recordObservation(record.directory, "exit", childExitSchema.parse(exit));

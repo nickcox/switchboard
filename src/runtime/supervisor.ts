@@ -1,6 +1,5 @@
 import { bounded, RuntimeFailure } from "./async.ts";
 import type { WorkerInput, WorkerResult } from "./contracts.ts";
-import { recordValidatedResult } from "./validated-result.ts";
 import { ActivityWriter, shorten, type ActivityEntry, type Payload } from "./activity.ts";
 import { startHeartbeat } from "./heartbeat.ts";
 import { startKeepAwake, type KeepAwake } from "./keep-awake.ts";
@@ -208,7 +207,7 @@ export class WorkerSupervisor {
         } catch (error) { failure ??= asError(error); }
       }
       if (!failure && session.childExit?.started && session.childExit.code === 0 && session.childExit.signal === null) {
-        try { result = (await recordValidatedResult(reserved)).content; }
+        try { result = (await this.records.recordValidatedResult(reserved)).content; }
         catch (error) { failure = new RuntimeFailure("invalid_result", asError(error).message); }
       } else if (!failure && session.childExit) {
         failure = new RuntimeFailure("worker_exit", "The worker did not exit successfully");

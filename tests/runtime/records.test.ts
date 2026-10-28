@@ -4,7 +4,7 @@ import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { RuntimeRecords, readJsonFile } from "../../src/runtime/records.ts";
-import { fixture, withRuntimeDatabase } from "../helpers.ts";
+import { fixture, resultFor, withRuntimeDatabase } from "../helpers.ts";
 
 const posixOnly = { skip: process.platform === "win32" };
 
@@ -48,6 +48,54 @@ test("exit observations are bound to an existing launch and recorded once", asyn
   await f.records.recordChildExit(reserved, { started: true, code: 0, signal: null });
   await assert.rejects(f.records.recordChildExit(reserved, { started: false, code: null, signal: null }));
   await assert.rejects(f.records.recordChildExit({ directory: join(f.dir, "unknown") }, { started: true, code: 0, signal: null }), /FOREIGN KEY/);
+});
+
+test("validated results are recorded once and concurrent writers use the first record", async () => {
+  const f = fixture();
+  const reserved = await f.records.reserve(f.input);
+  const content = resultFor(f.input);
+  await writeFile(reserved.binding.resultPath, JSON.stringify(content));
+  const recorded = await f.records.recordValidatedResult(reserved);
+  const changed = { ...recorded, content: { ...content, summary: "Must not replace the record" } };
+  const values = await Promise.all([reserved.storage.recordValidatedResult(reserved.directory, recorded),
+    reserved.storage.recordValidatedResult(reserved.directory, changed)]);
+  assert.deepEqual(values, [recorded, recorded]);
+  await writeFile(reserved.binding.resultPath, JSON.stringify(changed.content));
+  assert.deepEqual(await f.records.recordValidatedResult(reserved), recorded);
+  const fresh = new RuntimeRecords(join(f.dir, "runtime"));
+  const discovered = (await fresh.discover(f.input.identity.contextId))[0]!;
+  assert.deepEqual(discovered.validatedResult, recorded);
+  assert.match(discovered.resultDiscrepancy ?? "", /differs/);
+  await withRuntimeDatabase(f.records, async database => {
+    await assert.rejects(database.transaction(() => database.run("UPDATE worker_observations SET value = '{}' WHERE kind = 'validated_result'")), /cannot be changed/);
+  });
+});
+
+test("schema 6 observations survive migration and can gain a validated result", async () => {
+  const f = fixture();
+  const reserved = await f.records.reserve(f.input);
+  await f.records.recordChildExit(reserved, { started: true, code: 0, signal: null });
+  await f.records.recordSessionStart(reserved, "high");
+  await withRuntimeDatabase(f.records, async database => {
+    await database.transaction(() => {
+      database.run("DROP TRIGGER worker_observations_immutable");
+      database.run("ALTER TABLE worker_observations RENAME TO current_observations");
+      database.run(`CREATE TABLE worker_observations (
+        directory TEXT NOT NULL REFERENCES launches(directory) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('exit','session_start')), recorded_at TEXT NOT NULL,
+        value TEXT NOT NULL CHECK(json_valid(value)), PRIMARY KEY(directory, kind))`);
+      database.run("INSERT INTO worker_observations SELECT * FROM current_observations");
+      database.run("DROP TABLE current_observations");
+      database.run("CREATE TRIGGER worker_observations_immutable BEFORE UPDATE ON worker_observations BEGIN SELECT RAISE(ABORT, 'Worker observations cannot be changed'); END");
+      database.run("PRAGMA user_version = 6");
+    });
+  });
+  const migrated = (await f.records.discover(f.input.identity.contextId))[0]!;
+  assert.deepEqual(migrated.child, { status: "exited", exit: { started: true, code: 0, signal: null } });
+  assert.equal(migrated.thinkingLevel, "high");
+  assert.equal(migrated.validatedResult, undefined);
+  await writeFile(reserved.binding.resultPath, JSON.stringify(resultFor(f.input)));
+  assert.ok(await f.records.recordValidatedResult(reserved));
 });
 
 test("reserve commits launch permission and a fresh claim before its hook, and writes no dispatcher files", async () => {

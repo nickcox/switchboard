@@ -5,12 +5,24 @@ import { join } from "node:path";
 import { dispatchOnce, type ContractSpec } from "../../src/dispatch/dispatch.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { fixture } from "./fixture.ts";
-import { RuntimeRecords } from "../../src/runtime/records.ts";
+import { readJsonFile, RuntimeRecords, type RuntimeBinding } from "../../src/runtime/records.ts";
+import type { WorkerResult } from "../../src/runtime/contracts.ts";
 import { requireRetainedStorage } from "../../src/infra/storage.ts";
 
 // Per-task delivery contracts: a task's kind selects its contract from the configuration.
 const scout: ContractSpec = { kind: "artefact", acceptance: "independent_deliverable", requiredEvidence: ["tests"], requiredDeliverables: ["report"] };
 const scoutTask = (id: string) => ["add", id, `Investigate ${id}`, "--repo", "fixture", "--kind", "scout", "--body", "Write a short report"];
+
+/** Adjust synthetic worker output before its first validation, not the application record afterwards. */
+function changeResult(f: Awaited<ReturnType<typeof fixture>>, change: (result: WorkerResult, binding: RuntimeBinding) => void) {
+  const record = f.runtime.recordValidatedResult.bind(f.runtime);
+  f.runtime.recordValidatedResult = async runtime => {
+    const result = await readJsonFile(runtime.binding.resultPath) as WorkerResult;
+    change(result, runtime.binding);
+    writeFileSync(runtime.binding.resultPath, JSON.stringify(result));
+    return record(runtime);
+  };
+}
 
 test("a task kind with a report contract is done when its report is retained outside the workspace", async () => {
   const f = await fixture({ tasks: [scoutTask("scout-a1")], scenario: "artefact-result", byTaskKind: { scout } });
@@ -40,13 +52,9 @@ test("every named Git branch and commit is retained-checked, including a second 
   for (const branch of ["does-not-exist", "output"]) {
     const f = await fixture({ tasks: [["add", "multi-a1", "Multiple commits", "--repo", "fixture"]], scenario: "commit-result", acceptance: "independent_deliverable" });
     f.deps.delivery.default.requiredDeliverables = ["code", "second"];
-    const launch = f.deps.launch;
-    f.deps.launch = async (...args) => {
-      const report = await launch({ ...args[0], delivery: { ...args[0].delivery, requiredDeliverables: ["code"] } }, args[1], args[2]);
-      assert.ok(report.result);
-      report.result.workReferences.push({ kind: "git", name: "second", branch: branch === "output" ? args[0].delivery.outputBranch : branch, commit: "c".repeat(40) });
-      return report;
-    };
+    changeResult(f, (result, binding) => {
+      result.workReferences.push({ kind: "git", name: "second", branch: branch === "output" ? binding.input.delivery.outputBranch : branch, commit: "c".repeat(40) });
+    });
     const outcome = await dispatchOnce(f.deps);
     assert.equal(outcome.reason, "held", branch);
     assert.equal(outcome.retention?.retained, false);
@@ -56,18 +64,14 @@ test("every named Git branch and commit is retained-checked, including a second 
 test("a required report supplied as a Git reference to a missing branch is not retained, whatever else is reported", async () => {
   // Review finding 7: an unrelated artefact must not stand in for the required report.
   const f = await fixture({ tasks: [scoutTask("kind-a1")], scenario: "artefact-result", byTaskKind: { scout } });
-  const launch = f.deps.launch;
-  f.deps.launch = async (...args) => {
-    const report = await launch(...args);
-    assert.ok(report.result);
-    const extra = join(report.binding.artefactDirectory!, "extra.md");
+  changeResult(f, (result, binding) => {
+    const extra = join(binding.artefactDirectory, "extra.md");
     writeFileSync(extra, "Unrelated\n");
-    report.result.workReferences = [
+    result.workReferences = [
       { kind: "git", name: "report", branch: "does-not-exist", commit: "c".repeat(40) },
       { kind: "artefact", name: "extra", path: extra, description: "Unrelated" },
     ];
-    return report;
-  };
+  });
   const outcome = await dispatchOnce(f.deps);
   assert.equal(outcome.reason, "held");
   assert.equal(outcome.retention?.retained, false);
@@ -77,15 +81,11 @@ test("a required report supplied as a Git reference to a missing branch is not r
 test("a code contract can also require a report, which must be retained in the artefact directory", async () => {
   const f = await fixture({ tasks: [["add", "both-a1", "Code and report", "--repo", "fixture"]], scenario: "commit-result" });
   f.deps.delivery.default.requiredDeliverables = ["code", "report"];
-  const launch = f.deps.launch;
-  f.deps.launch = async (...args) => {
-    const report = await launch({ ...args[0], delivery: { ...args[0].delivery, requiredDeliverables: ["code"] } }, args[1], args[2]);
-    assert.ok(report.result);
-    const path = join(report.binding.artefactDirectory!, "report.md");
+  changeResult(f, (result, binding) => {
+    const path = join(binding.artefactDirectory, "report.md");
     writeFileSync(path, "Report\n");
-    report.result.workReferences.push({ kind: "artefact", name: "report", path, description: "Required report" });
-    return report;
-  };
+    result.workReferences.push({ kind: "artefact", name: "report", path, description: "Required report" });
+  });
   const outcome = await dispatchOnce(f.deps);
   assert.equal(outcome.reason, "held");
   assert.equal(outcome.retention?.retained, true, JSON.stringify(outcome.retention));
@@ -94,16 +94,12 @@ test("a code contract can also require a report, which must be retained in the a
 
 test("a code result referencing its assigned artefact directory and log files is retained for review", async () => {
   const f = await fixture({ tasks: [["add", "directory-a1", "Code and logs", "--repo", "fixture"]], scenario: "commit-result" });
-  const launch = f.deps.launch;
-  f.deps.launch = async (...args) => {
-    const report = await launch(...args);
-    assert.ok(report.result);
-    const directory = report.binding.artefactDirectory!;
+  changeResult(f, (result, binding) => {
+    const directory = binding.artefactDirectory;
     writeFileSync(join(directory, "check.log"), "Checks passed\n");
     writeFileSync(join(directory, "tests.log"), "Tests passed\n");
-    report.result.workReferences.push({ kind: "artefact", name: "logs", path: directory, description: "Validation logs" });
-    return report;
-  };
+    result.workReferences.push({ kind: "artefact", name: "logs", path: directory, description: "Validation logs" });
+  });
   const outcome = await dispatchOnce(f.deps);
   assert.equal(outcome.reason, "held");
   assert.equal(outcome.retention?.retained, true, JSON.stringify(outcome.retention));
@@ -114,13 +110,9 @@ test("a report outside the attempt's artefact directory is not retained, even ou
   const f = await fixture({ tasks: [scoutTask("elsewhere-a1")], scenario: "artefact-result", byTaskKind: { scout } });
   const path = join(f.dir, "report-elsewhere.md");
   writeFileSync(path, "Report outside the artefact directory\n");
-  const launch = f.deps.launch;
-  f.deps.launch = async (...args) => {
-    const report = await launch(...args);
-    assert.ok(report.result);
-    report.result.workReferences = [{ kind: "artefact", name: "report", path, description: "Required report" }];
-    return report;
-  };
+  changeResult(f, result => {
+    result.workReferences = [{ kind: "artefact", name: "report", path, description: "Required report" }];
+  });
   const outcome = await dispatchOnce(f.deps);
   assert.equal(outcome.reason, "held");
   assert.equal(outcome.retention?.retained, false);
@@ -150,13 +142,9 @@ test("a report in an earlier recyclable workspace is not retained", async () => 
   const earlier = await f.deps.workspaces.acquire({ holder: "earlier", baseRef: "main", branch: "earlier" });
   const path = join(earlier.path, "report.md");
   writeFileSync(path, "Report in another workspace\n");
-  const launch = f.deps.launch;
-  f.deps.launch = async (...args) => {
-    const report = await launch(...args);
-    assert.ok(report.result);
-    report.result.workReferences = [{ kind: "artefact", name: "report", path, description: "Required report" }];
-    return report;
-  };
+  changeResult(f, result => {
+    result.workReferences = [{ kind: "artefact", name: "report", path, description: "Required report" }];
+  });
   const outcome = await dispatchOnce(f.deps);
   assert.equal(outcome.reason, "held");
   assert.equal(outcome.retention?.retained, false);
