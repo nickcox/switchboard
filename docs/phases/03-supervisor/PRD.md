@@ -239,6 +239,7 @@ The whole-project review also proposed the following. Each is reasonable, but no
 | One execution host per context, with the command line as its client | Phase 4's background dispatcher |
 | Non-recycled workspaces, or a qualified container or virtual machine with evidence that every process stopped | Retained leases become a burden, or automatic lease return is wanted |
 | An attempt revision for concurrency checks, instead of comparing whole histories | Measurements show the comparison is slow |
+| Moving Switchboard to another machine, once or back and forth: a hand-over with no open attempts or leases, kept output branches pushed, the database copied with its writers stopped, and a recorded map from the old storage and repository roots to the new ones, applied when stored paths are read, then reconciliation before dispatch | The operator wants to move Switchboard, or work from two machines at different times |
 
 ## Deferred to Phase 4
 
