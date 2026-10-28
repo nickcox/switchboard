@@ -80,6 +80,21 @@ test("tasks without criteria need no report and refuse extra reports", () => {
   assert.throws(() => validateWorkerResult({ ...valid, criteriaReport: [{ position: 1, criterion: "Extra", status: "met", evidence: "Claim" }] }, input));
 });
 
+test("every review outcome must name the exact reviewed commit once, as well as report each criterion", () => {
+  const { input } = fixture();
+  input.reviewTarget = { taskId: "source-a1", attempt: 1, outputBranch: "source-output", commit: "c".repeat(40) };
+  const valid = resultFor(input);
+  const reference = { kind: "git" as const, name: "reviewed-output", branch: input.reviewTarget.outputBranch, commit: input.reviewTarget.commit };
+  for (const outcome of ["completed", "hold", "failed"]) {
+    const value = { ...valid, outcome, ...(outcome === "completed" ? {} : { reason: "Needs work", nextAction: "Inspect" }) };
+    assert.equal(validateWorkerResult({ ...value, workReferences: [...value.workReferences, reference] }, input).outcome, outcome);
+    for (const references of [[], [reference, reference], [{ ...reference, branch: "other" }], [{ ...reference, commit: "d".repeat(40) }]]) {
+      assert.throws(() => validateWorkerResult({ ...value, workReferences: [...value.workReferences, ...references] }, input), /reviewed-output once/);
+    }
+    assert.throws(() => validateWorkerResult({ ...value, workReferences: [...value.workReferences, reference], criteriaReport: [] }, input), /every acceptance criterion/);
+  }
+});
+
 test("hold and failure require a reason and next action but need not claim successful evidence", () => {
   const { input } = fixture();
   const held = { ...resultFor(input), outcome: "hold", validationEvidence: [], workReferences: [], reason: "Needs operator input", nextAction: "Inspect retained workspace" };

@@ -428,7 +428,7 @@ export class AttemptStore {
     reviewTargetSchema.parse(target);
     const checked = this.checkStartingPoint(target.taskId, target, evidence);
     const source = this.read({ contextId: this.contextId, taskId: target.taskId, attempt: target.attempt });
-    const sessionId = source.entries.find(entry => entry.kind === "launched")?.data.sessionId;
+    const sessionId = this.workerSession(source);
     if (checked.commit !== target.commit || source.allocation?.outputBranch !== target.outputBranch || sessionId !== target.sessionId) {
       throw new AttemptStoreError("attempt_changed", "The reviewed attempt no longer matches the exact recorded review target");
     }
@@ -450,7 +450,7 @@ export class AttemptStore {
     const validated = validateWorkerResult(parseValidatedResult(JSON.parse(String(result.value)), binding).content, binding.input);
     const source = this.findForTask(target.taskId, target.attempt);
     if (!source || this.startingPointCommit(source) !== target.commit || review.allocation?.startingCommit !== target.commit ||
-      binding.input.identity.sessionId === target.sessionId || JSON.stringify(binding.input.reviewTarget) !== JSON.stringify(target) ||
+      binding.input.identity.sessionId === this.workerSession(source) || JSON.stringify(binding.input.reviewTarget) !== JSON.stringify(target) ||
       JSON.stringify(binding.input.acceptanceCriteria) !== JSON.stringify(review.specification!.acceptanceCriteria)) {
       throw new AttemptStoreError("attempt_changed", "The review does not name the reviewed attempt's exact output commit in a separate session");
     }
@@ -459,6 +459,12 @@ export class AttemptStore {
     const findings = validated.criteriaReport ?? [];
     this.insert(source, "review_recorded", { taskId: ref.taskId, attempt: ref.attempt, commit: target.commit,
       verdict: retained && validated.outcome === "completed" && findings.every(finding => finding.status === "met") ? "passed" : "failed", findings });
+  }
+
+  private workerSession(record: AttemptRecord): string | undefined {
+    const launch = this.database.get("SELECT binding FROM launches WHERE context = ? AND task = ? AND attempt = ? AND kind = 'launch'", record.contextId, record.taskId, record.attempt);
+    return launch ? (JSON.parse(String(launch.binding)) as RuntimeBinding).input.identity.sessionId
+      : record.entries.find(entry => entry.kind === "launched")?.data.sessionId as string | undefined;
   }
 
   /** Only immutable, recorded output is a starting point – never today's branch head or result file. */

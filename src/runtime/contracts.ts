@@ -76,9 +76,12 @@ export function validateWorkerResult(value: unknown, input: WorkerInput): Worker
     reports.some(report => input.acceptanceCriteria[report.position - 1] !== report.criterion)) {
     throw new Error("Criteria report must report every acceptance criterion exactly once, with its 1-based position and exact text");
   }
-  if (input.reviewTarget && !result.workReferences.some(reference => reference.kind === "git" &&
-    reference.name === "reviewed-output" && reference.branch === input.reviewTarget!.outputBranch && reference.commit === input.reviewTarget!.commit)) {
-    throw new Error("A review must report reviewed-output with the exact reviewed branch and commit");
+  if (input.reviewTarget) {
+    const references = result.workReferences.filter(reference => reference.name === "reviewed-output");
+    const reference = references[0];
+    if (references.length !== 1 || reference?.kind !== "git" || reference.branch !== input.reviewTarget.outputBranch || reference.commit !== input.reviewTarget.commit) {
+      throw new Error("A review must report reviewed-output once with the exact reviewed branch and commit");
+    }
   }
   const evidenceNames = result.validationEvidence.map(entry => entry.name);
   if (new Set(evidenceNames).size !== evidenceNames.length) throw new Error("Duplicate evidence names");

@@ -29,7 +29,8 @@ export async function reviewSource(deps: Dependencies, taskId: string, attempt?:
     recyclableRoots: await deps.workspaces.recyclableRoots(),
   });
   if (!retention.retained) throw new AttemptStoreError("not_retained", retention.findings.join("; ") || "The reviewed output commit is not retained", "fix_or_discard");
-  const sessionId = record.entries.find(entry => entry.kind === "launched")?.data.sessionId as string | undefined;
+  const runtime = observation.runtime.known ? observation.runtime.value.find(runtime => runtime.binding.input.identity.leaseId === allocation.leaseId) : undefined;
+  const sessionId = runtime?.binding.input.identity.sessionId ?? record.entries.find(entry => entry.kind === "launched")?.data.sessionId as string | undefined;
   return {
     target: { taskId, attempt: record.attempt, commit, outputBranch: allocation.outputBranch, ...(sessionId ? { sessionId } : {}) },
     evidence: { records: observation.records.known ? observation.records.value : [], unknown: [], retainedCommit: commit },

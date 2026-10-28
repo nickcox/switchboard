@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { createReview } from "../../src/dispatch/review.ts";
+import { finish } from "../../src/dispatch/finish.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { workerInput } from "../../src/attempts/specification.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
@@ -82,6 +83,11 @@ for (const verdict of ["passed", "failed"] as const) test(`a ${verdict} review s
     assert.throws(() => workerInput(specification as Parameters<typeof workerInput>[0], { ...allocation, startingCommit: "c".repeat(40) }, randomUUID()), /allocation does not match/);
     assert.equal((await dispatchOnce(f.deps, { taskId: reviewId, requestId: "review-request" })).reason, "existing_request");
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1);
+    const commit = f.run(["rev-parse", "HEAD"], f.source.allocation!.workspace);
+    await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }, "operator:fixture");
+    const changed = await status(f.deps);
+    assert.equal(changed.attempts.find(attempt => attempt.attempt.taskId === taskId)!.reviews, undefined, "Old findings do not apply to a later output commit");
+    assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1, "Historical findings are kept");
   } finally { f.tasks.close(); }
 });
 
@@ -124,6 +130,22 @@ test("a review reporting another commit is invalid and is never recorded against
   } finally { f.tasks.close(); }
 });
 
+test("launch permission refuses a reviewer trying to reuse the source worker session", async () => {
+  const f = await completed();
+  try {
+    const created = await createReview(f.deps, { taskId });
+    reviewWorker(f, "review-pass");
+    const launch = f.deps.launch;
+    f.deps.launch = (input, ...rest) => launch({ ...input, identity: { ...input.identity, sessionId: f.first.attempt!.sessionId! } }, ...rest);
+    const outcome = await dispatchOnce(f.deps, { taskId: created.task!.id });
+    assert.equal(outcome.reason, "held", JSON.stringify(outcome));
+    assert.equal(outcome.worker!.status, "not_started");
+    assert.match(outcome.worker!.reason!, /separate worker session/);
+    assert.equal((await f.runtime.discover(f.deps.contextId)).length, 1);
+    assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.some(entry => entry.kind === "review_recorded"), false);
+  } finally { f.tasks.close(); }
+});
+
 test("dispatch refuses when the reviewed output changes after review task creation", async () => {
   const f = await completed();
   try {
@@ -136,6 +158,35 @@ test("dispatch refuses when the reviewed output changes after review task creati
     assert.match(outcome.detail!, /exact recorded target/);
     assert.equal(f.deps.attempts.findForTask(created.task!.id), undefined);
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.some(entry => entry.kind === "review_recorded"), false);
+  } finally { f.tasks.close(); }
+});
+
+test("review findings and task outcome roll back together, and finish recovers the immutable report once", async () => {
+  const f = await completed();
+  try {
+    const created = await createReview(f.deps, { taskId });
+    const reviewId = created.task!.id;
+    reviewWorker(f, "review-pass");
+    await f.tasks.database.transaction(() => f.tasks.database.run(`CREATE TRIGGER fail_review_outcome BEFORE INSERT ON attempt_entries
+      WHEN NEW.task = '${reviewId}' AND json_extract(NEW.entry, '$.kind') = 'task_recorded'
+      BEGIN SELECT RAISE(ABORT, 'Injected outcome failure'); END`));
+    const outcome = await dispatchOnce(f.deps, { taskId: reviewId });
+    assert.equal(outcome.reason, "stopped", JSON.stringify(outcome));
+    assert.equal((await f.tasks.read(reviewId))!.state, "in_flight");
+    assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.some(entry => entry.kind === "review_recorded"), false);
+    await f.tasks.database.transaction(() => f.tasks.database.run("DROP TRIGGER fail_review_outcome"));
+    const review = f.deps.attempts.findForTask(reviewId, 1)!;
+    const runtime = (await f.runtime.discover(f.deps.contextId, { leaseId: review.allocation!.leaseId }))[0]!;
+    writeFileSync(runtime.binding.resultPath, "Changed after validation");
+    const finished = await finish(f.deps, { leaseId: review.allocation!.leaseId, noProcesses: false });
+    assert.equal(finished.reason, "finished", JSON.stringify(finished));
+    assert.equal((await f.tasks.read(reviewId))!.state, "done");
+    const findings = f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded");
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.data.verdict, "passed");
+    assert.deepEqual(findings[0]!.data.findings, runtime.validatedResult!.content.criteriaReport);
+    assert.equal((await finish(f.deps, { leaseId: review.allocation!.leaseId, noProcesses: false })).reason, "finished");
+    assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1);
   } finally { f.tasks.close(); }
 });
 
