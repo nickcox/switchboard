@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { discard, finish } from "../../src/dispatch/finish.ts";
 import { resolveStopped } from "../../src/dispatch/resolve.ts";
+import { prune } from "../../src/dispatch/prune.ts";
+import { reserveFromAttempt } from "../../src/dispatch/reserve.ts";
+import { describe } from "../../src/dispatch/result.ts";
+import { onPath } from "../../src/infra/executables.ts";
+import { startingPointBranch } from "../../src/workspaces/starting-point.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { watch } from "../../src/dispatch/watch.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
@@ -86,6 +91,8 @@ test("dispatch starts at the exact recorded output, stores and shows an immutabl
     assert.ok(instructions.endsWith(handover));
     assert.equal(next.allocation!.startingCommit, f.first.attempt!.resultCommit);
     assert.equal(next.allocation!.baseRef, "main");
+    assert.equal(f.run(["branch", "--list", startingPointBranch(next.specification!.outputBranch!)]), "");
+    assert.equal((outcome.observed.startingPointCleanup as { status: string }).status, "removed");
     const after = sourceRows(f);
     assert.deepEqual(after.record, before.record);
     assert.equal(after.branch, before.branch);
@@ -108,6 +115,100 @@ test("dispatch starts at the exact recorded output, stores and shows an immutabl
     assert.equal(acquisitions, 1);
     assert.equal(launches, 1);
   } finally { f.tasks.close(); }
+});
+
+for (const allocated of [false, true]) test(`prune removes an interrupted starting-point ref ${allocated ? "after allocation is recorded" : "once the attempt is closed"}`, async () => {
+  const f = await completed();
+  try {
+    assert.equal((await reserveFromAttempt(f.deps, options)).reason, "reserved");
+    const next = f.deps.attempts.findForTask(taskId, 2)!;
+    const specification = next.specification!;
+    const branch = startingPointBranch(specification.outputBranch!);
+    if (allocated) {
+      const allocation = await f.deps.workspaces.acquire({ holder: taskId, baseRef: specification.baseRef!, branch: specification.outputBranch!, startingCommit: specification.startingPoint!.commit });
+      await f.deps.attempts.append(next, "leased", {
+        leaseId: allocation.leaseId, workspace: allocation.path, baseRef: specification.baseRef!, outputBranch: allocation.branch,
+        startingCommit: allocation.startingCommit, backingRepository: allocation.backingRepository, pool: allocation.pool,
+      });
+    } else {
+      f.run(["branch", branch, specification.startingPoint!.commit]);
+      await prune(f.deps, { olderThan: 1 });
+      assert.equal(f.run(["rev-parse", branch]), specification.startingPoint!.commit, "An open acquisition must keep its base");
+      await f.deps.attempts.append(next, "halted", { stage: "acquire", reason: "outcome_unknown" });
+    }
+    const before = f.deps.attempts.findForTask(taskId, 2)!;
+    const preview = await prune(f.deps, { olderThan: 1, dryRun: true });
+    assert.equal(preview.ok, true, JSON.stringify(preview));
+    assert.ok(describe(preview).includes(`Would remove starting-point branch ${branch}`));
+    assert.equal(f.run(["rev-parse", branch]), specification.startingPoint!.commit);
+    const pruned = await prune(f.deps, { olderThan: 1 });
+    assert.equal(pruned.ok, true, JSON.stringify(pruned));
+    assert.equal(f.run(["branch", "--list", branch]), "");
+    assert.deepEqual(f.deps.attempts.findForTask(taskId, 2), before, "Ref cleanup does not alter attempt records or outcomes");
+  } finally { f.tasks.close(); }
+});
+
+for (const moved of [false, true]) test(`starting-point cleanup ${moved ? "leaves a moved branch" : "failure does not affect dispatch"} and prune reports it`, async () => {
+  const f = await completed();
+  let lock: string | undefined;
+  try {
+    const acquire = f.deps.workspaces.acquire.bind(f.deps.workspaces);
+    let branch = "";
+    const other = f.run(["rev-parse", "main"]);
+    f.deps.workspaces.acquire = async request => {
+      const allocation = await acquire(request);
+      branch = startingPointBranch(request.branch);
+      if (moved) f.run(["update-ref", `refs/heads/${branch}`, other]);
+      else {
+        lock = join(f.deps.repository, ".git", "refs", "heads", `${branch}.lock`);
+        writeFileSync(lock, "fixture lock");
+      }
+      return allocation;
+    };
+    const outcome = await dispatchOnce(f.deps, options);
+    assert.equal(outcome.reason, "held", JSON.stringify(outcome));
+    assert.equal(outcome.retention?.retained, true);
+    assert.equal(f.deps.attempts.findForTask(taskId, 2)!.entries.at(-1)!.data.category, "review_required");
+    const cleanup = outcome.observed.startingPointCleanup as { status: string; detail: string };
+    assert.equal(cleanup.status, "preserved");
+    assert.ok(describe(outcome).includes(cleanup.detail));
+    assert.ok(cleanup.detail.includes(moved ? "no longer points" : "Could not remove"), cleanup.detail);
+    assert.equal(f.run(["rev-parse", branch]), moved ? other : f.first.attempt!.resultCommit);
+    const pruned = await prune(f.deps, { olderThan: 1 });
+    assert.equal(pruned.ok, true, JSON.stringify(pruned));
+    assert.ok((pruned.observed.startingPointCleanup as { status: string }[]).some(c => c.status === "preserved"));
+    assert.ok(describe(pruned).includes(moved ? "no longer points" : "Could not remove"));
+    assert.equal(f.run(["rev-parse", branch]), moved ? other : f.first.attempt!.resultCommit);
+    if (lock) {
+      rmSync(lock);
+      lock = undefined;
+      await prune(f.deps, { olderThan: 1 });
+      assert.equal(f.run(["branch", "--list", branch]), "");
+    }
+  } finally {
+    if (lock) rmSync(lock, { force: true });
+    f.tasks.close();
+  }
+});
+
+test("handover uses the configured Git executable and host environment, not the process PATH or environment", async () => {
+  const f = await completed();
+  const path = process.env.PATH;
+  const count = process.env.GIT_CONFIG_COUNT;
+  try {
+    f.deps.policy = { git: onPath("git"), environment: f.environment, repository: f.deps.repository, baseRef: "main", globalFile: join(f.dir, "missing-policy.json"), context: {} };
+    process.env.PATH = "";
+    process.env.GIT_CONFIG_COUNT = "not a number";
+    const reserved = await reserveFromAttempt(f.deps, options);
+    assert.equal(reserved.reason, "reserved", JSON.stringify(reserved));
+    const written = f.deps.attempts.findForTask(taskId, 2)!.specification!.handover!;
+    assert.ok(written.includes(f.first.attempt!.resultCommit!));
+    assert.ok(written.includes("Synthetic worker output"));
+  } finally {
+    if (path === undefined) delete process.env.PATH; else process.env.PATH = path;
+    if (count === undefined) delete process.env.GIT_CONFIG_COUNT; else process.env.GIT_CONFIG_COUNT = count;
+    f.tasks.close();
+  }
 });
 
 test("an allocation at the wrong commit is preserved for inspection and never launched", async () => {

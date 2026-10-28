@@ -1,5 +1,6 @@
 import type { StartingPoint } from "../attempts/specification.ts";
 import { AttemptStoreError } from "../attempts/store.ts";
+import { onPath } from "../infra/executables.ts";
 import type { Dependencies } from "./dependencies.ts";
 import { assessAttempts } from "./assess.ts";
 import { observeAttempts } from "./observe.ts";
@@ -60,7 +61,7 @@ export async function reserveFromAttempt(deps: Dependencies, options: {
     await deps.runtime.probeExclusiveCreation();
     const previousResult = observation.runtime.known ? observation.runtime.value.find(r =>
       r.binding.input.identity.leaseId === allocation.leaseId)?.validatedResult?.content : undefined;
-    const writtenHandover = await handover(task, record, output, previousResult, options.note);
+    const writtenHandover = await handover(deps.policy?.git ?? onPath("git"), deps.policy?.environment ?? {}, task, record, output, previousResult, options.note);
     const specification = specificationFactory(deps, contract);
     const reservation = await deps.attempts.reserveAttempt({
       taskId: task.id, requestInputs: inputs, startingPoint: options.startingPoint, dryRun: options.dryRun === true,

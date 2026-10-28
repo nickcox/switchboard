@@ -8,15 +8,19 @@ import { observeAttempt, observeAttempts } from "./observe.ts";
 import { assessAttempt, assessAttempts } from "./assess.ts";
 import { checkCanPrune } from "./safety.ts";
 import { result, type DispatchResult } from "./result.ts";
+import { cleanupStartingPoint } from "./starting-point.ts";
+import type { StartingPointCleanup } from "../workspaces/starting-point.ts";
 
 /** Owner uncertainty preserves records regardless of age. Directory removal follows the archive transaction. */
 export async function prune(deps: Dependencies, options: { olderThan: number; dryRun?: boolean }, files = { lstat, rm }): Promise<DispatchResult> {
   const removed: { taskId: string; attempt: number; archive: string }[] = [];
   const skipped: { taskId: string; attempt: number; reason: string }[] = [];
+  const startingPointCleanup: (StartingPointCleanup & { taskId: string; attempt: number })[] = [];
+  const preservedStartingPoints = new Set<string>();
   let changed = false;
   const reads = new OwnerReads(deps, "prune");
   const report = (ok: boolean, reason: DispatchResult["reason"], detail: string) => result({
-    ok, reason, stage: "prune", lease: "unknown", observed: { removed, skipped }, detail,
+    ok, reason, stage: "prune", lease: "unknown", observed: { removed, skipped, startingPointCleanup }, detail,
     nextAction: ok ? "none" : "inspect_attempt",
   });
   if (!Number.isFinite(options.olderThan) || options.olderThan <= 0) return report(false, "refused", "--older-than must be a positive number of days");
@@ -28,9 +32,20 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     if (context.records.known) reads.record = context.records.value[0];
     await reads.context(context, "inspect prune candidates");
     reads.record = undefined;
+    // Private bases have no retention age: an allocation or a closed attempt no longer needs them.
+    if (context.records.known) for (const record of context.records.value) {
+      const cleanup = await cleanupStartingPoint(deps, record, options.dryRun);
+      if (!cleanup) continue;
+      startingPointCleanup.push({ taskId: record.taskId, attempt: record.attempt, ...cleanup });
+      if (cleanup.status === "preserved") preservedStartingPoints.add(`${record.taskId}/${record.attempt}`);
+    }
     const cutoff = Date.now() - options.olderThan * 86400000;
     for (const attempt of assessAttempts(context)) {
       const { taskId, attempt: number } = attempt.attempt;
+      if (preservedStartingPoints.has(`${taskId}/${number}`)) {
+        skipped.push({ taskId, attempt: number, reason: "starting_point_preserved" });
+        continue;
+      }
       const permission = checkCanPrune(attempt.facts, cutoff);
       if (!permission.allowed) {
         if (permission.reason !== "too_recent") skipped.push({ taskId, attempt: number, reason: permission.reason });
@@ -64,7 +79,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     return report(true, options.dryRun ? "planned" : "pruned", `${options.dryRun ? "Would remove" : "Removed"} ${removed.length} attempt(s). Preserved ${skipped.length} ineligible attempt(s)`);
   } catch (error) {
     const failed = readRefusal(error);
-    if (failed) return { ...failed, observed: { ...failed.observed, removed, skipped } };
+    if (failed) return { ...failed, observed: { ...failed.observed, removed, skipped, startingPointCleanup } };
     return report(false, changed || reads.effectAttempted ? "stopped" : "refused", `${error instanceof Error ? error.message : String(error)}. Run prune again after checking the records`);
   }
 }

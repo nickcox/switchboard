@@ -17,6 +17,7 @@ import { checkCanDispatch, checkCanRedispatch } from "./safety.ts";
 import { OwnerReads, readRefusal } from "./owner-reads.ts";
 import { specificationFactory } from "./specification.ts";
 import { reserveFromAttempt } from "./reserve.ts";
+import { cleanupStartingPoint } from "./starting-point.ts";
 export type { ContractSpec, DeliveryConfiguration, Dependencies } from "./dependencies.ts";
 
 /** Owner state read before dispatch. Every field comes from its owner, not from memory. */
@@ -209,6 +210,11 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
       stage, reason, detail: detail.slice(0, 4000),
       ...(summary.leaseId ? { leaseId: summary.leaseId, workspace: summary.workspace, outputBranch: summary.outputBranch } : {}),
     }).catch(() => {});
+    // A closed attempt without an allocation may have left its private base behind.
+    try {
+      const cleanup = await cleanupStartingPoint(deps, deps.attempts.read(ref));
+      if (cleanup) observed.startingPointCleanup = cleanup;
+    } catch { /* Keep the original halt if the attempt record cannot be read. */ }
     return result({ ok: false, reason: "stopped", stage, lease: summary.leaseId ? "preserved" : "none", observed, attempt: summary, detail, nextAction });
   };
 
@@ -248,6 +254,12 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
       leaseId: allocation.leaseId, workspace: allocation.path, baseRef: specification.baseRef, outputBranch: allocation.branch, startingCommit: allocation.startingCommit,
       pool: allocation.pool, backingRepository: allocation.backingRepository,
     });
+    const cleanup = await cleanupStartingPoint(deps, { ...ref, entries: [], specification, allocation: {
+      leaseId: allocation.leaseId, workspace: allocation.path, baseRef: specification.baseRef, outputBranch: allocation.branch,
+      startingCommit: allocation.startingCommit, backingRepository: allocation.backingRepository, pool: allocation.pool,
+    } });
+    if (cleanup) observed.startingPointCleanup = cleanup;
+    if (cleanup?.detail) deps.progress?.(cleanup.detail);
     deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
     if (specification.startingPoint && allocation.startingCommit !== specification.startingPoint.commit) {
       return halt("acquire", "inspect_attempt", "The acquired workspace does not start at the recorded earlier output commit");

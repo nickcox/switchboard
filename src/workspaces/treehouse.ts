@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { CommandError, describeCommand, runCommand } from "../infra/command.ts";
 import { inside, isMissing } from "../runtime/records.ts";
 import { WorkspaceError, type Allocation, type Lease, type LeaseIdentity, type WorkspaceProvider } from "./provider.ts";
+import { startingPointBranch } from "./starting-point.ts";
 
 /**
  * Treehouse 3.1 adapter. Commands run from the configured repository with an explicit pool root dedicated to this
@@ -73,8 +73,8 @@ export class TreehouseProvider implements WorkspaceProvider {
     if (request.startingCommit !== undefined) {
       const startingCommit = commit.parse(request.startingCommit);
       // Treehouse accepts only branch names as bases. A create-only private ref pins this attempt's exact commit;
-      // it is kept if acquisition is interrupted and is never reused for another acquisition.
-      baseRef = `switchboard-starting-points/${createHash("sha256").update(branch).digest("hex")}`;
+      // dispatch removes it after recording the allocation; prune handles interrupted preparation.
+      baseRef = startingPointBranch(branch);
       const prepared = await runCommand(resolveExecutable(this.options.git), ["update-ref", `refs/heads/${baseRef}`, startingCommit, ""], {
         cwd: this.options.repository, env: this.options.environment, timeoutMs: gitTimeoutMs,
       });

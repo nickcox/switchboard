@@ -127,6 +127,12 @@ export function describe(value: DispatchResult): string {
   lines.push(`Lease: ${value.lease}`);
   if (value.resultDiscrepancy) lines.push(`Result discrepancy: ${value.resultDiscrepancy}`);
   if (value.detail) lines.push(`Detail: ${value.detail}`);
+  const cleanup = value.observed.startingPointCleanup;
+  for (const entry of Array.isArray(cleanup) ? cleanup : [cleanup]) {
+    if (!entry || typeof entry !== "object") continue;
+    if (typeof entry.detail === "string") lines.push(`Starting-point cleanup: ${entry.detail}`);
+    else if (entry.status === "planned" && typeof entry.branch === "string") lines.push(`Would remove starting-point branch ${entry.branch}`);
+  }
   lines.push(`Next: ${value.nextAction.description}`);
   return lines.join("\n");
 }

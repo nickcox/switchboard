@@ -1,15 +1,14 @@
 import type { AttemptRecord } from "../attempts/log.ts";
 import { runCommand, describeCommand } from "../infra/command.ts";
-import { onPath } from "../infra/executables.ts";
 import type { WorkerResult } from "../runtime/contracts.ts";
 import type { Task } from "../tasks/store.ts";
 
 /** Read only the recorded range, not the source branch's current head. Stored with the new reservation. */
-export async function handover(task: Task, source: AttemptRecord, commit: string, result: WorkerResult | undefined, note?: string): Promise<string> {
+export async function handover(git: string, environment: Record<string, string>, task: Task, source: AttemptRecord, commit: string, result: WorkerResult | undefined, note?: string): Promise<string> {
   const allocation = source.allocation!;
   if (!allocation.backingRepository) throw new Error("The earlier attempt has no recorded backing repository");
-  const commits = await runCommand(onPath("git"), ["log", "--reverse", "--format=%H %s", `${allocation.startingCommit}..${commit}`], {
-    cwd: allocation.backingRepository, env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), timeoutMs: 15000,
+  const commits = await runCommand(git, ["log", "--reverse", "--format=%H %s", `${allocation.startingCommit}..${commit}`], {
+    cwd: allocation.backingRepository, env: environment, timeoutMs: 15000,
   });
   if (commits.exitCode !== 0 || commits.timedOut || commits.truncated) throw new Error(`Could not read the earlier attempt's commits: ${describeCommand(commits)}`);
   return [
