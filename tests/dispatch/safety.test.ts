@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { CheckResult } from "../../src/attempts/checks.ts";
+import type { ReviewRecord } from "../../src/attempts/reviews.ts";
 import type { AttemptFacts } from "../../src/dispatch/assess.ts";
-import { checkCanAcceptOutput, checkCanConfirmLeaseReturned, checkCanConfirmStopped, checkCanControl, checkCanDiscard, checkCanDispatch, checkCanFinish, checkCanIntegrate, checkCanPrune, checkCanRedispatch, checkCanReturnLease, type Permission } from "../../src/dispatch/safety.ts";
+import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanConfirmLeaseReturned, checkCanConfirmStopped, checkCanControl, checkCanDiscard, checkCanDispatch, checkCanFinish, checkCanIntegrate, checkCanPrune, checkCanRedispatch, checkCanReturnLease, type Permission } from "../../src/dispatch/safety.ts";
 
 const facts = (overrides: Partial<AttemptFacts> = {}): AttemptFacts => ({
   unknown: [], hasRecord: true, possiblyRunning: false, dispatcherRunning: false, leaseHeld: true, leaseInOtherPool: false,
@@ -88,6 +90,31 @@ test("finishing uses outcome facts, never state labels or an editable hold's wor
   refusal(checkCanFinish(facts({ outcomeCategory: "failed" }), false), "no_completed_output");
   refusal(checkCanFinish(facts({ recordedOutcome: false, matchingHold: false }), true), "no_completed_output");
   refusal(checkCanFinish(facts({ task: { state: "in_flight", held: false, holdReason: null }, recordedOutcome: false, matchingHold: false }), true), "no_completed_output");
+});
+
+test("acceptance evidence needs every configured check and a passed review of the exact commit", () => {
+  const commit = "a".repeat(40);
+  const later = "b".repeat(40);
+  const configured = [{ name: "types" }, { name: "tests" }];
+  const check: CheckResult = { name: "types", commit, status: "passed", exitCode: 0, timedOut: false, durationMs: 1, stdout: "", stderr: "" };
+  const checks = [check, { ...check, name: "tests" }];
+  const review: ReviewRecord = { taskId: "review-a1", attempt: 1, commit, verdict: "passed", findings: [] };
+  const before = structuredClone({ configured, checks, review });
+  refusal(checkAcceptanceEvidence(undefined, [], [], []), "output_not_recorded");
+  refusal(checkAcceptanceEvidence(commit, [], [], []), "review_missing");
+  assert.deepEqual(checkAcceptanceEvidence(commit, [], [], [review]), { allowed: true }, "No configured checks need no check results, but still need review");
+  refusal(checkAcceptanceEvidence(commit, configured, [check], [review]), "check_missing");
+  for (const status of ["failed", "not_run"] as const) {
+    refusal(checkAcceptanceEvidence(commit, configured, [check, { ...check, name: "tests", status }], [review]), "check_not_passed");
+  }
+  refusal(checkAcceptanceEvidence(commit, configured, checks, []), "review_missing");
+  refusal(checkAcceptanceEvidence(commit, configured, checks, [{ ...review, verdict: "failed" }]), "review_not_passed");
+  assert.deepEqual(checkAcceptanceEvidence(commit, configured, checks, [review]), { allowed: true });
+  refusal(checkAcceptanceEvidence(later, configured, checks, [review]), "check_missing");
+  refusal(checkAcceptanceEvidence(later, configured, checks.map(check => ({ ...check, commit: later })), [review]), "review_missing");
+  refusal(checkAcceptanceEvidence(commit, configured, [...checks, { ...check, status: "failed" }], [review]), "check_not_passed");
+  refusal(checkAcceptanceEvidence(commit, configured, checks, [review, { ...review, verdict: "failed" }]), "review_not_passed");
+  assert.deepEqual({ configured, checks, review }, before, "The evidence check must not change its inputs");
 });
 
 test("accepting output requires a strict descendant of the attempt's starting commit", () => {

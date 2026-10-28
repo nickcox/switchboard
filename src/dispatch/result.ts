@@ -1,4 +1,5 @@
 import { describeChecks, type CheckResult } from "../attempts/checks.ts";
+import type { AcceptanceEvidence } from "./safety.ts";
 import type { CriteriaReport } from "../runtime/contracts.ts";
 import { describeCriteriaReport } from "../runtime/criteria-report.ts";
 import type { ContractSpec } from "./dispatch.ts";
@@ -89,6 +90,7 @@ export type DispatchResult = {
   resultDiscrepancy?: string;
   criteriaReport?: CriteriaReport;
   checks?: CheckResult[];
+  acceptanceEvidence?: AcceptanceEvidence;
   /** A lease is absent, preserved, or unknown when its current state could not be checked. */
   lease: "none" | "preserved" | "unknown";
   /** Owner state the decision was based on, including anything that was unknown. */
@@ -101,6 +103,10 @@ export function result(fields: Omit<DispatchResult, "version" | "summary" | "nex
   const leaseSummary = { none: "Its lease was returned.", preserved: "Its lease is retained.", unknown: "Its lease state is unknown." };
   const summary = reasons[fields.reason] + (fields.reason === "finished" ? ` ${leaseSummary[fields.lease]}` : "");
   return { ...fields, version: 1, summary, nextAction: { code: fields.nextAction, description: nextActions[fields.nextAction] } };
+}
+
+export function describeAcceptanceEvidence(evidence: AcceptanceEvidence): string {
+  return `Acceptance evidence${evidence.commit ? ` for ${evidence.commit}` : ""}: ${evidence.permission.allowed ? "sufficient" : `NOT sufficient – ${evidence.permission.detail}`}`;
 }
 
 export function describe(value: DispatchResult): string {
@@ -120,6 +126,7 @@ export function describe(value: DispatchResult): string {
     lines.push(`Worker: ${w.status}${w.outcome ? `, outcome ${w.outcome}` : ""}${w.reason ? ` – ${w.reason}` : ""}`);
     if (w.summary) lines.push(`Summary: ${w.summary}`);
   }
+  if (value.acceptanceEvidence) lines.push(describeAcceptanceEvidence(value.acceptanceEvidence));
   lines.push(...describeChecks(value.checks));
   lines.push(...describeCriteriaReport(value.criteriaReport));
   if (value.task) lines.push(`Task state: ${value.task.state}${value.task.held ? `, held: ${value.task.holdReason}` : ""}`);

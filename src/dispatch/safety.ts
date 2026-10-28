@@ -1,3 +1,5 @@
+import type { CheckCommand, CheckResult } from "../attempts/checks.ts";
+import type { ReviewRecord } from "../attempts/reviews.ts";
 import type { AttemptFacts } from "./assess.ts";
 import type { NextAction } from "./result.ts";
 
@@ -5,6 +7,23 @@ export type Permission = { allowed: true } | { allowed: false; reason: string; d
 const permit: Permission = { allowed: true };
 const refuse = (reason: string, detail: string, nextAction: NextAction, evidence: unknown): Permission =>
   ({ allowed: false, reason, detail, nextAction, evidence });
+
+export type AcceptanceEvidence = { commit?: string; permission: Permission };
+
+/** Evidence only: the supervisor must also satisfy the operation's worker, retention and policy checks. */
+export function checkAcceptanceEvidence(commit: string | undefined, configured: Pick<CheckCommand, "name">[], checks: CheckResult[], reviews: ReviewRecord[]): Permission {
+  if (!commit) return refuse("output_not_recorded", "There is no exact recorded output commit to accept", "inspect_attempt", { commit: null });
+  for (const check of configured) {
+    const result = [...checks].reverse().find(result => result.name === check.name && result.commit === commit);
+    if (!result) return refuse("check_missing", `Check ${check.name} has no recorded result for ${commit}`, "inspect_attempt", { commit, check: check.name });
+    if (result.status !== "passed") return refuse("check_not_passed", `Check ${check.name} has not passed for ${commit}`, "inspect_attempt", result);
+  }
+  // A later review of the same commit supersedes an earlier verdict, including an earlier pass.
+  const review = [...reviews].reverse().find(review => review.commit === commit);
+  if (!review) return refuse("review_missing", `There is no recorded review for ${commit}`, "review_then_finish", { commit });
+  if (review.verdict !== "passed") return refuse("review_not_passed", `The latest review failed for ${commit}`, "inspect_attempt", review);
+  return permit;
+}
 
 function known(facts: AttemptFacts): Permission {
   if (facts.unknown.length) return refuse("unknown", facts.unknown.join("; "), "inspect_attempt", facts.unknown);

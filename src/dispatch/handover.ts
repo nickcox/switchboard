@@ -1,4 +1,6 @@
 import type { AttemptRecord } from "../attempts/log.ts";
+import { latestChecks } from "../attempts/checks.ts";
+import { recordedReviews } from "../attempts/reviews.ts";
 import { runCommand, describeCommand } from "../infra/command.ts";
 import type { WorkerResult } from "../runtime/contracts.ts";
 import type { Task } from "../tasks/store.ts";
@@ -21,8 +23,9 @@ export async function handover(git: string, environment: Record<string, string>,
     `Summary: ${result?.summary ?? "No worker summary recorded"}`,
     `Commits since ${allocation.startingCommit}:\n${commits.stdout.trim() || "None"}`,
     `Criteria report:\n${JSON.stringify(result?.criteriaReport ?? [], null, 2)}`,
-    // Keep recorded findings and notes verbatim, including operator decisions and any review evidence.
-    `Review findings and recorded evidence:\n${JSON.stringify({ result: result ?? null, entries: source.entries }, null, 2)}`,
+    `Review findings for ${commit}:\n${JSON.stringify(recordedReviews(source, commit), null, 2)}`,
+    `Check results for ${commit}:\n${JSON.stringify(latestChecks(source, commit), null, 2)}`,
+    `Recorded worker evidence:\n${JSON.stringify({ validationEvidence: result?.validationEvidence ?? [], workReferences: result?.workReferences ?? [] }, null, 2)}`,
     `Requester's note:\n${note ?? "No note supplied"}`,
     "This is a separate request, not a retry of the earlier worker. Do not change the earlier attempt's branch, lease or records.",
   ].join("\n\n");

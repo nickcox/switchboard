@@ -48,7 +48,12 @@ test("dispatch starts at the exact recorded output, stores and shows an immutabl
   const f = await completed();
   try {
     const source = f.deps.attempts.findForTask(taskId, 1)!;
-    await f.deps.attempts.append(source, "operator_request", { id: randomUUID(), kind: "steer", sender: "reviewer", outcome: "delivered", message: "Review finding: cover the edge case" });
+    const commit = f.first.attempt!.resultCommit!;
+    await f.deps.attempts.append(source, "operator_request", { id: randomUUID(), kind: "steer", sender: "operator", outcome: "delivered", message: "Unrelated log entry" });
+    const check = { name: "tests", commit, status: "failed" as const, exitCode: 1, timedOut: false, durationMs: 42, stdout: "Edge case test failed", stderr: "Failure details" };
+    await f.deps.attempts.append(source, "check_finished", { ...check, commit: source.allocation!.startingCommit, stdout: "Old check output" });
+    await f.deps.attempts.append(source, "check_finished", { ...check, status: "passed", stdout: "Superseded check output" });
+    await f.deps.attempts.append(source, "check_finished", check);
     // Neither a later source branch head nor a newer target commit is the requested starting point.
     f.run(["commit", "--allow-empty", "--no-gpg-sign", "-m", "Later source work"], source.allocation!.workspace);
     const laterSource = f.run(["rev-parse", "HEAD"], source.allocation!.workspace);
@@ -86,7 +91,9 @@ test("dispatch starts at the exact recorded output, stores and shows an immutabl
     assert.equal(launches, 1);
     const next = f.deps.attempts.findForTask(taskId, 2)!;
     const handover = next.specification!.handover!;
-    for (const text of ["Implement the fixture change", "Keep the earlier work", "Add the remaining change", "completed", "Synthetic worker completion", "Synthetic worker output", f.first.attempt!.resultCommit!, "Synthetic fixture evidence", "Review finding: cover the edge case", "Finish the edge case, then run checks"]) assert.ok(handover.includes(text), text);
+    for (const text of ["Implement the fixture change", "Keep the earlier work", "Add the remaining change", "completed", "Synthetic worker completion", "Synthetic worker output", f.first.attempt!.resultCommit!, "Synthetic fixture evidence", "Edge case test failed", "Finish the edge case, then run checks"]) assert.ok(handover.includes(text), text);
+    for (const text of ["Unrelated log entry", "Old review findings", "Old check output", "Superseded check output", '"entries"', "worker_finished", "task_recorded"]) assert.ok(!handover.includes(text), text);
+    for (const text of ["Review findings for", "Check results for", "Edge case test failed", "Failure details", '"exitCode": 1']) assert.ok(handover.includes(text), text);
     assert.ok(!handover.includes(laterSource));
     assert.ok(!handover.includes("Later source work"));
     assert.ok(instructions.endsWith(handover));

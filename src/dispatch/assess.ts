@@ -40,6 +40,7 @@ export type AttemptAssessment = {
   taskDisagreement?: boolean;
   resultDiscrepancy?: string;
   criteriaReport?: CriteriaReport;
+  outputCommit?: string;
   checks?: CheckResult[];
   reviews?: ReviewRecord[];
   facts: AttemptFacts;
@@ -79,7 +80,7 @@ export function assessAttempt(observation: AttemptObservation): AttemptAssessmen
   const outputCommit = [...(record?.entries ?? [])].reverse().find(e => e.kind === "output_accepted")?.data.commit as string | undefined ?? observation.attempt.resultCommit;
   const checks = latestChecks(record, outputCommit);
   const reviews = recordedReviews(record, outputCommit);
-  return { ...(checks.length ? { checks } : {}), ...(reviews.length ? { reviews } : {}), attempt: observation.attempt, state, nextAction: { code, description: nextActions[code] }, facts,
+  return { ...(outputCommit ? { outputCommit } : {}), ...(checks.length ? { checks } : {}), ...(reviews.length ? { reviews } : {}), attempt: observation.attempt, state, nextAction: { code, description: nextActions[code] }, facts,
     lastEntry: record?.entries.at(-1)?.kind ?? "none", possiblyRunning, leaseHeld, task,
     ...(pool === undefined ? {} : { leaseInOtherPool: pool }),
     ...(observation.runtime.known && observation.runtime.value?.validatedResult?.content.criteriaReport

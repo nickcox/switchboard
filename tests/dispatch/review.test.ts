@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { createReview } from "../../src/dispatch/review.ts";
 import { finish } from "../../src/dispatch/finish.ts";
+import { describe } from "../../src/dispatch/result.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { workerInput } from "../../src/attempts/specification.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
@@ -76,6 +77,9 @@ for (const verdict of ["passed", "failed"] as const) test(`a ${verdict} review s
     assert.deepEqual(view.attempts.find(attempt => attempt.attempt.taskId === taskId)!.reviews, reviews.map(entry => entry.data));
     assert.match(describeStatus(view), new RegExp(`Review ${reviewId} attempt 1: ${verdict}`));
     assert.ok(describeStatus(view).includes("Cover the edge case: met"));
+    const evidence = view.attempts.find(attempt => attempt.attempt.taskId === taskId)!.acceptanceEvidence;
+    assert.equal(evidence.commit, f.first.attempt!.resultCommit);
+    assert.equal(evidence.permission.allowed, verdict === "passed", "No configured checks still requires a passed review");
     const specification = f.deps.attempts.findForTask(reviewId, 1)!.specification!;
     const allocation = f.deps.attempts.findForTask(reviewId, 1)!.allocation!;
     assert.equal(f.run(["branch", "--list", `switchboard-starting-points/*`]), "");
@@ -88,6 +92,79 @@ for (const verdict of ["passed", "failed"] as const) test(`a ${verdict} review s
     const changed = await status(f.deps);
     assert.equal(changed.attempts.find(attempt => attempt.attempt.taskId === taskId)!.reviews, undefined, "Old findings do not apply to a later output commit");
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1, "Historical findings are kept");
+  } finally { f.tasks.close(); }
+});
+
+test("status and finish report exact-commit acceptance evidence without restricting the operator", async () => {
+  const f = await completed();
+  try {
+    const created = await createReview(f.deps, { taskId });
+    reviewWorker(f, "review-pass");
+    assert.equal((await dispatchOnce(f.deps, { taskId: created.task!.id })).reason, "done");
+    f.deps.checks = [{ name: "tests", command: [process.execPath, "-e", "process.exit(0)"], timeoutMs: 5000 }];
+    f.deps.checkEnvironment = f.environment;
+    const before = await status(f.deps);
+    assert.equal(before.attempts.find(attempt => attempt.attempt.taskId === taskId)!.acceptanceEvidence.permission.allowed, false);
+    const leaseId = f.source.allocation!.leaseId;
+    const plan = await finish(f.deps, { leaseId, noProcesses: false, dryRun: true });
+    assert.equal(plan.reason, "planned", JSON.stringify(plan));
+    assert.equal(plan.acceptanceEvidence!.permission.allowed, false, "A planned check is not evidence of a pass");
+    const finished = await finish(f.deps, { leaseId, noProcesses: false });
+    assert.equal(finished.reason, "finished", JSON.stringify(finished));
+    assert.deepEqual(finished.acceptanceEvidence, { commit: f.first.attempt!.resultCommit, permission: { allowed: true } });
+    assert.match(describe(finished), /Acceptance evidence for .*: sufficient/);
+    const after = await status(f.deps);
+    assert.deepEqual(after.attempts.find(attempt => attempt.attempt.taskId === taskId)!.acceptanceEvidence, finished.acceptanceEvidence);
+    assert.match(describeStatus(after), /Acceptance evidence for .*: sufficient/);
+    f.run(["commit", "--allow-empty", "--no-gpg-sign", "-m", "Later unreviewed output"], f.source.allocation!.workspace);
+    const later = f.run(["rev-parse", "HEAD"], f.source.allocation!.workspace);
+    const accepted = await finish(f.deps, { leaseId, noProcesses: false, acceptOutput: true });
+    assert.equal(accepted.reason, "finished", JSON.stringify(accepted));
+    assert.equal(accepted.acceptanceEvidence!.commit, later);
+    assert.equal(accepted.acceptanceEvidence!.permission.allowed, false, "The operator can accept later output without a new review");
+    assert.match(describe(accepted), /Acceptance evidence for .*: NOT sufficient.*no recorded review/);
+    const changed = await status(f.deps);
+    assert.deepEqual(changed.attempts.find(attempt => attempt.attempt.taskId === taskId)!.acceptanceEvidence, accepted.acceptanceEvidence);
+  } finally { f.tasks.close(); }
+});
+
+test("dispatch from a failed review starts a repair at the reviewed commit with its findings", async () => {
+  const f = await completed();
+  try {
+    const repairLaunch = f.deps.launch;
+    const created = await createReview(f.deps, { taskId });
+    reviewWorker(f, "review-fail");
+    const reviewed = await dispatchOnce(f.deps, { taskId: created.task!.id });
+    assert.equal(reviewed.reason, "done", JSON.stringify(reviewed));
+    const source = f.deps.attempts.findForTask(taskId, 1)!;
+    const review = source.entries.find(entry => entry.kind === "review_recorded")!.data;
+    assert.equal(review.verdict, "failed");
+    const commit = review.commit as string;
+    f.run(["commit", "--allow-empty", "--no-gpg-sign", "-m", "Later unreviewed output"], source.allocation!.workspace);
+    const later = f.run(["rev-parse", "HEAD"], source.allocation!.workspace);
+    await f.tasks.release(taskId);
+    let launches = 0;
+    f.deps.launch = async (input, ...rest) => {
+      launches++;
+      assert.equal(input.delivery.startingCommit, commit);
+      assert.equal(f.run(["rev-parse", "HEAD"], input.workspace), commit);
+      assert.notEqual(input.delivery.startingCommit, later);
+      assert.notEqual(input.identity.sessionId, f.first.attempt!.sessionId);
+      assert.notEqual(input.identity.leaseId, source.allocation!.leaseId);
+      assert.notEqual(input.workspace, source.allocation!.workspace);
+      assert.ok(input.instructions.includes(JSON.stringify([review], null, 2)));
+      return repairLaunch(input, ...rest);
+    };
+    const repaired = await dispatchOnce(f.deps, { taskId, startingPoint: { taskId, attempt: 1 }, requestId: "repair-request", note: "Repair the failed criterion" });
+    assert.equal(repaired.retention?.retained, true, JSON.stringify(repaired));
+    assert.equal(launches, 1);
+    const repair = f.deps.attempts.findForTask(taskId, 2)!;
+    assert.equal(repair.allocation!.startingCommit, commit);
+    assert.equal(repair.specification!.startingPoint!.commit, commit);
+    assert.ok(repair.specification!.handover!.includes("Repair the failed criterion"));
+    assert.deepEqual(f.deps.attempts.findForTask(taskId, 1), source, "Repair leaves the source records unchanged");
+    assert.equal(f.run(["rev-parse", source.allocation!.outputBranch]), later);
+    assert.ok((await f.deps.workspaces.leases()).some(lease => lease.leaseId === source.allocation!.leaseId));
   } finally { f.tasks.close(); }
 });
 

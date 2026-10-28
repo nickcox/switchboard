@@ -14,7 +14,8 @@ import { observeAttempts } from "./observe.ts";
 import { assessAttempts } from "./assess.ts";
 import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
 import { summariseActivity, transcriptPath, type ActivitySummary } from "./watch.ts";
-import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
+import { describeAcceptanceEvidence, nextActions, type AttemptSummary, type NextAction } from "./result.ts";
+import { checkAcceptanceEvidence, type AcceptanceEvidence } from "./safety.ts";
 
 export type AttemptStatus = {
   taskDisagreement?: boolean;
@@ -25,6 +26,8 @@ export type AttemptStatus = {
   criteriaReport?: CriteriaReport;
   checks?: CheckResult[];
   reviews?: ReviewRecord[];
+  outputCommit?: string;
+  acceptanceEvidence: AcceptanceEvidence;
   specification?: StoredSpecification;
   specificationComplete: boolean;
   allocation?: AttemptAllocation;
@@ -137,6 +140,8 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const unsettled = record ? unsettledReads(record) : [];
     const reconcile = unsettled.length > 0;
     attempts.push({ ...assessment,
+      acceptanceEvidence: { ...(assessment.outputCommit ? { commit: assessment.outputCommit } : {}),
+        permission: checkAcceptanceEvidence(assessment.outputCommit, deps.checks ?? [], assessment.checks ?? [], assessment.reviews ?? []) },
       ...(latestReadFailure ? { latestReadFailure: { ...latestReadFailure.data as ReadFailure, sequence: latestReadFailure.sequence } } : {}),
       ...(reconcile ? { unsettledReadFailures: unsettled.map(e => ({ ...e.data as ReadFailure, sequence: e.sequence })) } : {}),
       specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,
@@ -204,6 +209,7 @@ export function describeStatus(value: StatusResult): string {
       if (a.unsettledReadFailures?.length) lines.push(`  Unsettled read failures: ${a.unsettledReadFailures.map(f => f.sequence).join(", ")}`);
       lines.push(`  Read diagnostics: ${JSON.stringify(f.diagnostics)}`);
     }
+    lines.push(`  ${describeAcceptanceEvidence(a.acceptanceEvidence)}`);
     for (const line of describeReviews(a.reviews)) lines.push(`  ${line}`);
     for (const line of describeChecks(a.checks)) lines.push(`  ${line}`);
     for (const line of describeCriteriaReport(a.criteriaReport)) lines.push(`  ${line}`);

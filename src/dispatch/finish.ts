@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { checkWorkspace, runChecks } from "./checks.ts";
 import type { CriteriaReport } from "../runtime/contracts.ts";
 import type { AttemptRecord } from "../attempts/log.ts";
+import { latestChecks } from "../attempts/checks.ts";
+import { recordedReviews } from "../attempts/reviews.ts";
 import { CommandError } from "../infra/command.ts";
 import { onPath } from "../infra/executables.ts";
 import { recordValidatedResult, resultDiscrepancy, validateResultFile } from "../runtime/validated-result.ts";
@@ -16,7 +18,7 @@ import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
 import { result, type DispatchResult, type NextAction } from "./result.ts";
 import { observeAttempt } from "./observe.ts";
 import { assessAttempt, type AttemptAssessment } from "./assess.ts";
-import { checkCanAcceptOutput, checkCanDiscard, checkCanFinish, checkCanIntegrate, checkCanReturnLease } from "./safety.ts";
+import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanDiscard, checkCanFinish, checkCanIntegrate, checkCanReturnLease, type AcceptanceEvidence } from "./safety.ts";
 
 /**
  * `finish` and `discard` (Phase 2 PRD): the only commands that return a lease, subject to every condition in
@@ -187,7 +189,9 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
   const { attempt, record } = located;
-  const base = { attempt: attempt.attempt, checks: attempt.checks ?? [], ...(attempt.criteriaReport ? { criteriaReport: attempt.criteriaReport } : {}), ...(attempt.resultDiscrepancy ? { resultDiscrepancy: attempt.resultDiscrepancy } : {}) };
+  const evidence = (record: AttemptRecord, commit: string | undefined): AcceptanceEvidence => ({ ...(commit ? { commit } : {}),
+    permission: checkAcceptanceEvidence(commit, deps.checks ?? [], latestChecks(record, commit), recordedReviews(record, commit)) });
+  const base = { attempt: attempt.attempt, acceptanceEvidence: evidence(record, attempt.outputCommit), checks: attempt.checks ?? [], ...(attempt.criteriaReport ? { criteriaReport: attempt.criteriaReport } : {}), ...(attempt.resultDiscrepancy ? { resultDiscrepancy: attempt.resultDiscrepancy } : {}) };
   if (await completeReturn(deps, record, attempt, "finish", options.dryRun)) return result({
     ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: {}, ...base,
     ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
@@ -232,6 +236,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   const outputCommit = acceptedCommit ?? retention.outputCommit ?? ((deps.checks?.length ?? 0) > 0
     ? await branchHead({ git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? deps.checkEnvironment ?? {}, repository: deps.repository, ...gitReads(deps) }, outputBranch)
     : undefined);
+  base.acceptanceEvidence = evidence(record, outputCommit);
   let integration: { target: string; from: string; to: string } | undefined;
   // The target already contains the work, but an earlier run's fast-forward may not have been recorded.
   let unrecorded: { target: string; commit: string } | undefined;
@@ -283,6 +288,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     if (!outputCommit) return refused("inspect_attempt", "The exact output commit for checks cannot be read", base);
     const checked = await runChecks(deps, deps.reads, record, attempt.attempt.workspace!, outputCommit);
     base.checks = checked.checks;
+    base.acceptanceEvidence = evidence(await deps.attempts.read(record), outputCommit);
     if (checked.refusal) return refused("inspect_attempt", checked.refusal, base);
   }
   if (acceptedCommit && accepted?.scope.commit !== acceptedCommit) {

@@ -79,6 +79,9 @@ test("failed checks report redacted output but do not refuse operator acceptance
   };
   const result = await finish(f.deps, { leaseId, noProcesses: false, acceptOutput: true });
   assert.equal(result.reason, "finished", result.detail ?? "");
+  assert.equal(result.acceptanceEvidence!.commit, commit);
+  assert.equal(result.acceptanceEvidence!.permission.allowed, false);
+  assert.match(describe(result), /Acceptance evidence for .*: NOT sufficient.*Check fail has not passed/);
   assert.equal(f.run(["rev-parse", "main"]), commit);
   assert.equal((await f.tasks.read("checks-a1"))?.state, "done");
   assert.ok(existsSync(marker));
