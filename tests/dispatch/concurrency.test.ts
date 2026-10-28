@@ -102,13 +102,20 @@ test("automatic selection skips a task reserved after inspection, while a named 
         return f.deps.attempts.reserveAttempt(options);
       },
     });
-    const outcome = await dispatchOnce({ ...f.deps, attempts }, named ? { taskId: "race-a1" } : {});
+    const options = { requestId: "racing-request", ...(named ? { taskId: "race-a1" } : {}) };
+    const outcome = await dispatchOnce({ ...f.deps, attempts }, options);
     assert.equal((await f.deps.attempts.forTask("race-a1")).length, 1);
     if (named) {
       assert.equal(outcome.reason, "refused");
       assert.equal(outcome.observed.reason, "not_ready");
       assert.deepEqual(await f.deps.attempts.forTask("race-b1"), []);
-    } else assert.equal(outcome.attempt?.taskId, "race-b1", JSON.stringify(outcome));
+    } else {
+      assert.equal(outcome.attempt?.taskId, "race-b1", JSON.stringify(outcome));
+      const replay = await dispatchOnce(f.deps, options);
+      assert.equal(replay.reason, "existing_request");
+      assert.equal(replay.attempt?.taskId, "race-b1");
+      assert.equal(f.deps.attempts.list().length, 2);
+    }
   }
 });
 
@@ -156,7 +163,7 @@ const blocking: { name: string; apply: (f: Fixture, reserved: NonNullable<Awaite
 ];
 
 for (const c of blocking) {
-  test(`a ${c.name} heartbeat blocks all dispatch and never permits a reservation`, async () => {
+  test(`a heartbeat that is ${c.name} blocks all dispatch and never permits a reservation`, async () => {
     const f = await fixture({ tasks: [task("orphan-a1"), task("next-b1")], scenario: "commit-result", maxAttempts: 2 });
     const reserved = (await earlierWorker(f, "orphan-a1"))!;
     const heartbeat = f.runtime.storage.heartbeat.bind(f.runtime.storage);
@@ -181,6 +188,15 @@ for (const c of blocking) {
     assert.equal((await dispatchOnce(f.deps)).attempt?.taskId, "next-b1");
   });
 }
+
+test("status reports an unreadable active count as unknown, never as spare capacity", async () => {
+  const f = await fixture({ maxAttempts: 2 });
+  const view = await status({ ...f.deps, attempts: attemptsWith(f, { activeCount: () => { throw new Error("count unavailable"); } }) });
+  assert.equal(view.reason, "refused");
+  assert.deepEqual(view.capacity, { maximum: 2, active: null });
+  assert.match(describeStatus(view), /Active attempts: unknown of at most 2/);
+  assert.match(view.detail!, /Active attempts could not be counted: count unavailable/);
+});
 
 test("one stale worker blocks the context even with another fresh dispatcher, in status text and JSON", async () => {
   const f = await fixture({ tasks: [task("fresh-a1"), task("stale-b1"), task("next-c1")], scenario: "commit-result", maxAttempts: 3 });
