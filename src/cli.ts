@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createDependencies, databasePath, loadConfig } from "./config.ts";
+import { createDependencies, loadConfig } from "./config.ts";
 import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
@@ -14,8 +14,6 @@ import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { taskCommand } from "./tasks/cli.ts";
-import { SqliteTaskStore } from "./tasks/sqlite.ts";
-import { requireRetainedStorage } from "./infra/storage.ts";
 
 const usage = `Usage:
   switchboard --version
@@ -156,17 +154,15 @@ async function main(argv: string[]): Promise<number> {
   let deps;
   try {
     const config = await loadConfig(configPath);
-    await requireRetainedStorage(config.runtimeRoot, [config.workspaces.poolRoot]);
-    await requireRetainedStorage(databasePath(config), [config.workspaces.poolRoot]);
-    deps = await createDependencies(config, message => { if (!values.json) console.error(message); });
-    // Close the database however the process ends, so it never exits with the database open unless it crashes.
-    const tasks = deps.tasks;
-    if (tasks instanceof SqliteTaskStore) process.once("exit", () => tasks.close());
+    deps = await createDependencies(config, {
+      dispatch: command === "dispatch", progress: message => { if (!values.json) console.error(message); },
+    });
   } catch (error) {
     console.error(`Configuration error (${configPath}): ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
 
+  try {
   // A task's attempt is acted on through its lease, so --task is resolved to the attempt's lease ID first.
   let leaseId = values.lease;
   if (byAttempt && values.task !== undefined) {
@@ -241,6 +237,7 @@ async function main(argv: string[]): Promise<number> {
   });
   console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
   return value.ok ? 0 : 1;
+  } finally { deps.close(); }
 }
 
 process.exitCode = await main(process.argv.slice(2)).catch(error => {

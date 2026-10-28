@@ -7,7 +7,7 @@ import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 
 const [configPath, stage] = process.argv.slice(2);
 const config = await loadConfig(configPath!);
-const deps = await createDependencies(config);
+const deps = await createDependencies(config, { dispatch: true });
 const die = () => process.kill(process.pid, "SIGKILL");
 
 if (stage === "after-lease") {

@@ -11,9 +11,11 @@ import { WorkspaceError, type Allocation, type Lease, type LeaseIdentity, type W
  * several leases with the same holder, so this adapter verifies the workspace with Git and callers must check for an
  * existing lease before acquiring. See docs/phases/01-basic-dispatch/investigation.md for the tested mapping.
  */
+const executable = z.union([z.string().refine(isAbsolute, "Executable must be absolute"), z.custom<() => string>(value => typeof value === "function")]);
+const resolveExecutable = (value: z.infer<typeof executable>) => typeof value === "function" ? value() : value;
 const optionsSchema = z.object({
-  treehouse: z.string().refine(isAbsolute, "Treehouse executable must be absolute"),
-  git: z.string().refine(isAbsolute, "Git executable must be absolute"),
+  treehouse: executable,
+  git: executable,
   repository: z.string().refine(isAbsolute, "Repository path must be absolute"),
   poolRoot: z.string().refine(isAbsolute, "Pool root must be absolute"),
   /** Phase 1 default: no fetch, so acquisition uses the local base branch and works without a remote. */
@@ -36,18 +38,30 @@ export class TreehouseProvider implements WorkspaceProvider {
   private readonly options: z.output<typeof optionsSchema>;
   private constructor(options: z.output<typeof optionsSchema>) { this.options = options; }
 
+  /** Defers owner access until an operation needs it; mutations still validate the repository. */
+  static connect(options: TreehouseOptions): TreehouseProvider {
+    return new TreehouseProvider(optionsSchema.parse(options));
+  }
+
   /** Validates that `repository` is the canonical top level of a Git work tree. */
   static async open(options: TreehouseOptions): Promise<TreehouseProvider> {
-    const parsed = optionsSchema.parse(options);
-    if (await realpath(parsed.repository) !== parsed.repository) throw new Error("Repository path must be canonical");
-    const provider = new TreehouseProvider(parsed);
-    // Git prints forward slashes on Windows, so compare the canonical form of its answer.
-    const top = await realpath(await provider.git(parsed.repository, ["rev-parse", "--show-toplevel"]));
-    if (top !== parsed.repository) throw new Error("Repository path must be the top level of a Git work tree");
+    const provider = TreehouseProvider.connect(options);
+    resolveExecutable(provider.options.treehouse);
+    resolveExecutable(provider.options.git);
+    await provider.validateRepository();
     return provider;
   }
 
+  private async validateRepository(): Promise<void> {
+    const { repository } = this.options;
+    if (await realpath(repository) !== repository) throw new Error("Repository path must be canonical");
+    // Git prints forward slashes on Windows, so compare the canonical form of its answer.
+    const top = await realpath(await this.git(repository, ["rev-parse", "--show-toplevel"]));
+    if (top !== repository) throw new Error("Repository path must be the top level of a Git work tree");
+  }
+
   async acquire(request: { holder: string; baseRef: string; branch: string }): Promise<Allocation> {
+    await this.validateRepository();
     const holder = argument.parse(request.holder);
     const baseRef = argument.parse(request.baseRef);
     const branch = argument.parse(request.branch);
@@ -72,6 +86,7 @@ export class TreehouseProvider implements WorkspaceProvider {
   async recyclableRoots(): Promise<string[]> { return [this.options.poolRoot]; }
 
   async returnLease(lease: LeaseIdentity, options: { discardChanges: boolean }): Promise<void> {
+    await this.validateRepository();
     const holder = argument.parse(lease.holder);
     const leaseId = argument.parse(lease.leaseId);
     if (!isAbsolute(lease.path)) throw new WorkspaceError("rejected", "Workspace path must be absolute");
@@ -112,7 +127,7 @@ export class TreehouseProvider implements WorkspaceProvider {
    */
   async pool(): Promise<string> {
     const { git, repository, environment, poolRoot } = this.options;
-    const origin = await runCommand(git, ["remote", "get-url", "origin"], { cwd: repository, env: environment, timeoutMs: gitTimeoutMs });
+    const origin = await runCommand(resolveExecutable(git), ["remote", "get-url", "origin"], { cwd: repository, env: environment, timeoutMs: gitTimeoutMs });
     if (origin.timedOut || origin.exitCode === null) throw new WorkspaceError("unreadable", "The repository's origin remote could not be read", describeCommand(origin));
     return JSON.stringify(origin.exitCode === 0 ? { root: poolRoot, origin: origin.stdout.trim() } : { root: poolRoot, repository });
   }
@@ -137,11 +152,11 @@ export class TreehouseProvider implements WorkspaceProvider {
 
   private treehouse(args: string[], input?: string) {
     const { treehouse, poolRoot, repository, environment, timeoutMs } = this.options;
-    return runCommand(treehouse, ["--root", poolRoot, ...args], { cwd: repository, env: environment, timeoutMs, ...(input === undefined ? {} : { input }) });
+    return runCommand(resolveExecutable(treehouse), ["--root", poolRoot, ...args], { cwd: repository, env: environment, timeoutMs, ...(input === undefined ? {} : { input }) });
   }
 
   private async git(cwd: string, args: string[]): Promise<string> {
-    const result = await runCommand(this.options.git, args, { cwd, env: this.options.environment, timeoutMs: gitTimeoutMs });
+    const result = await runCommand(resolveExecutable(this.options.git), args, { cwd, env: this.options.environment, timeoutMs: gitTimeoutMs });
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${describeCommand(result)}`);
     return result.stdout.trim();
   }

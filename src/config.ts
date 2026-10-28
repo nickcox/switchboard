@@ -112,16 +112,18 @@ function inherited(names: string[]): Record<string, string> {
   return Object.fromEntries(names.flatMap(name => (process.env[name] === undefined ? [] : [[name, process.env[name]!]])));
 }
 
-/** Opens and validates every adapter. Fails before any dispatch if a store, repository or executable is unusable. */
-export async function createDependencies(config: Config, progress?: (message: string) => void): Promise<Dependencies> {
-  // The worker is started later with this Node.js binary, so a missing Pi entrypoint would otherwise be found only
-  // after a lease was acquired and the task marked in flight.
-  const entrypoint = await stat(config.worker.piEntrypoint).catch(() => undefined);
-  if (!entrypoint?.isFile()) throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`);
-  await access(config.worker.piEntrypoint, constants.R_OK).catch(() => { throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`); });
+/** Opens local records, deferring external owners unless dispatch needs its preflight before reservation. */
+export async function createDependencies(config: Config, options: { dispatch?: boolean; progress?: (message: string) => void } = {}): Promise<Dependencies & { close(): void }> {
+  const { progress } = options;
+  if (options.dispatch) {
+    // Otherwise a missing entrypoint would be found only after acquisition and task start.
+    const entrypoint = await stat(config.worker.piEntrypoint).catch(() => undefined);
+    if (!entrypoint?.isFile()) throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`);
+    await access(config.worker.piEntrypoint, constants.R_OK).catch(() => { throw new Error(`Pi entrypoint is not a readable file: ${config.worker.piEntrypoint}`); });
+  }
   await requireRetainedStorage(config.runtimeRoot, [config.workspaces.poolRoot]);
   await requireRetainedStorage(databasePath(config), [config.workspaces.poolRoot]);
-  const git = onPath("git");
+  const git = () => onPath("git");
   // Git and Treehouse use the operator's own environment, including their Git identity and credentials.
   const hostEnvironment = Object.fromEntries(Object.entries(process.env).flatMap(([k, v]) => (v === undefined ? [] : [[k, v]])));
   const runtimeSettings = runtimeSettingsSchema.parse({
@@ -138,12 +140,15 @@ export async function createDependencies(config: Config, progress?: (message: st
   ]));
   const keepAwake = structuredClone(config.keepAwake);
   const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
-  const runtime = new RuntimeRecords(config.runtimeRoot, tasks.database);
-  const workspaces = await TreehouseProvider.open({
-    treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
-    fetch: config.workspaces.fetch, environment: hostEnvironment,
-  });
-  return {
+  try {
+    const runtime = new RuntimeRecords(config.runtimeRoot, tasks.database);
+    const workspaceOptions = {
+      treehouse: () => onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
+      fetch: config.workspaces.fetch, environment: hostEnvironment,
+    };
+    const workspaces = options.dispatch ? await TreehouseProvider.open(workspaceOptions) : TreehouseProvider.connect(workspaceOptions);
+    return {
+    close: () => tasks.close(),
     contextId: config.contextId,
     tasks,
     maxAttempts: config.maxAttempts,
@@ -158,13 +163,13 @@ export async function createDependencies(config: Config, progress?: (message: st
         ...(progress ? { onActivity: entry => progress(describeEntry(entry)) } : {}), ...(onRequest ? { onRequest } : {}),
       });
     },
-    retention: request => checkRetention(git, hostEnvironment, request),
+    retention: async request => checkRetention(git(), hostEnvironment, request),
     repository: config.workspaces.repository,
     policy: {
-      git, environment: hostEnvironment, repository: config.workspaces.repository, baseRef: config.delivery.baseRef,
+      get git() { return git(); }, environment: hostEnvironment, repository: config.workspaces.repository, baseRef: config.delivery.baseRef,
       globalFile: config.finalisation.globalFile ?? join(homedir(), ".config", "switchboard", "policy.json"),
       context: { ...(config.finalisation.kind ? { kind: config.finalisation.kind } : {}), ...(config.finalisation.targetBranch ? { targetBranch: config.finalisation.targetBranch } : {}), ...(config.finalisation.forbid ? { forbid: config.finalisation.forbid } : {}) },
-      forge: branch => githubBranchProtection({ git, gh: onPathOrUndefined("gh"), repository: config.workspaces.repository, environment: hostEnvironment, branch }),
+      forge: branch => githubBranchProtection({ git: git(), gh: onPathOrUndefined("gh"), repository: config.workspaces.repository, environment: hostEnvironment, branch }),
     },
     staleMs: config.worker.staleMs,
     delivery: {
@@ -175,7 +180,11 @@ export async function createDependencies(config: Config, progress?: (message: st
       },
     },
     ...(progress ? { progress } : {}),
-  };
+    };
+  } catch (error) {
+    tasks.close();
+    throw error;
+  }
 }
 
 function onPathOrUndefined(name: string): string | undefined {

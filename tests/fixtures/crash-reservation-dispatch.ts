@@ -3,7 +3,7 @@ import { createDependencies, loadConfig } from "../../src/config.ts";
 import { Database } from "../../src/database.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 
-const deps = await createDependencies(await loadConfig(process.argv[2]!));
+const deps = await createDependencies(await loadConfig(process.argv[2]!), { dispatch: true });
 const run = Database.prototype.run;
 Database.prototype.run = function(sql, ...values) {
   const result = run.call(this, sql, ...values);

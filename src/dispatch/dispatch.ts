@@ -3,7 +3,7 @@ import { type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory }
 import { AttemptStoreError, type ArchivedRequest } from "../attempts/store.ts";
 import { attemptSpecificationSchema, workerInput } from "../attempts/specification.ts";
 import type { DeliveryContract, WorkerResult } from "../runtime/contracts.ts";
-import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
+import type { RunReport, WorkerHooks } from "../runtime/supervisor.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import { TaskStoreError, type Task } from "../tasks/store.ts";
 import { WorkspaceError, type Allocation, type Lease } from "../workspaces/provider.ts";
@@ -242,7 +242,7 @@ export async function dispatchOnce(
     summary.sessionId = sessionId;
     await deps.attempts.append(ref, "launched", { sessionId });
     deps.progress?.(`Session ${sessionId}`);
-    let report: PiRunReport;
+    let report: RunReport;
     // Each stop request or operator message the worker forwards is recorded with its sender (ADR-0005).
     let requests = Promise.resolve();
     const onRequest: WorkerHooks["onRequest"] = (request, outcome) => {
@@ -300,7 +300,7 @@ export async function dispatchOnce(
 /** Step 8: decide the task outcome, check retention, record it and read it back. The lease is always preserved. */
 async function finalise(
   deps: Dependencies, ref: AttemptRef, summary: AttemptSummary, observed: Record<string, unknown>,
-  delivery: DeliveryContract, report: PiRunReport | undefined, notStarted?: string,
+  delivery: DeliveryContract, report: RunReport | undefined, notStarted?: string,
 ): Promise<DispatchResult> {
   const worker = workerView(report, notStarted);
   const retention = await deps.retention({
@@ -330,7 +330,7 @@ async function finalise(
 }
 
 /** The outcome table in the Phase 1 PRD. Only a valid, retained completion with an independent contract is done. */
-function decide(report: PiRunReport | undefined, delivery: DeliveryContract, retention: RetentionResult):
+function decide(report: RunReport | undefined, delivery: DeliveryContract, retention: RetentionResult):
   { done: true; category: "done" } | { done: false; category: Exclude<OutcomeCategory, "done"> } {
   const hold = (category: Exclude<OutcomeCategory, "done">) => ({ done: false as const, category });
   if (!report || report.status === "failed") return hold("failed");
@@ -378,7 +378,7 @@ function refusal(stage: Stage, nextAction: NextAction, detail: string, observed:
   return result({ ok: false, reason: "refused", stage, lease: "none", observed, detail, nextAction });
 }
 
-function workerView(report: PiRunReport | undefined, notStarted?: string): NonNullable<DispatchResult["worker"]> {
+function workerView(report: RunReport | undefined, notStarted?: string): NonNullable<DispatchResult["worker"]> {
   if (!report) return { status: "not_started", ...(notStarted ? { reason: notStarted } : {}) };
   const r = report.result;
   const reason = r && r.outcome !== "completed" ? r.reason : report.detail ?? report.reason;

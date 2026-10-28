@@ -100,11 +100,11 @@ test("finding 13: take-over advice needs the lease to be still held, and quotes 
   assert.equal(returned.takeover, undefined);
 });
 
-test("finding 14: a missing Pi entrypoint is refused when the configuration is loaded, before any dispatch", async () => {
+test("finding 14: a missing Pi entrypoint is refused by dispatch preflight, before reservation", async () => {
   const f = await fixture({ tasks: [task("entry-a1")] });
   const config = await loadConfig(f.config);
   config.worker.piEntrypoint = join(f.dir, "missing-pi.js");
-  await assert.rejects(createDependencies(config), /Pi entrypoint/);
+  await assert.rejects(createDependencies(config, { dispatch: true }), /Pi entrypoint/);
   assert.deepEqual(await f.deps.attempts.list(), []);
 });
 

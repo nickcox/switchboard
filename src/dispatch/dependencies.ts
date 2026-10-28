@@ -1,7 +1,7 @@
 import type { AttemptStore } from "../attempts/store.ts";
 import type { RuntimeSettings } from "../attempts/specification.ts";
 import type { DeliveryContract, WorkerInput } from "../runtime/contracts.ts";
-import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
+import type { RunReport, WorkerHooks } from "../runtime/supervisor.ts";
 import type { RuntimeRecords } from "../runtime/records.ts";
 import type { TaskStore } from "../tasks/store.ts";
 import type { WorkspaceProvider } from "../workspaces/provider.ts";
@@ -26,7 +26,7 @@ export type Dependencies = {
   attempts: AttemptStore;
   maxAttempts?: number;
   runtime: RuntimeRecords;
-  launch: (input: WorkerInput, signal?: AbortSignal, onRequest?: WorkerHooks["onRequest"], settings?: RuntimeSettings) => Promise<PiRunReport>;
+  launch: (input: WorkerInput, signal?: AbortSignal, onRequest?: WorkerHooks["onRequest"], settings?: RuntimeSettings) => Promise<RunReport>;
   runtimeSettings: RuntimeSettings;
   configurationProvenance: Record<string, string>;
   retention: (request: RetentionRequest) => Promise<RetentionResult>;
