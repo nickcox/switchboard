@@ -13,6 +13,7 @@ import { reserveFromAttempt } from "../../src/dispatch/reserve.ts";
 import { describe } from "../../src/dispatch/result.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import { startingPointBranch } from "../../src/workspaces/starting-point.ts";
+import { WorkspaceError } from "../../src/workspaces/provider.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { watch } from "../../src/dispatch/watch.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
@@ -145,6 +146,25 @@ for (const allocated of [false, true]) test(`prune removes an interrupted starti
     assert.equal(pruned.ok, true, JSON.stringify(pruned));
     assert.equal(f.run(["branch", "--list", branch]), "");
     assert.deepEqual(f.deps.attempts.findForTask(taskId, 2), before, "Ref cleanup does not alter attempt records or outcomes");
+  } finally { f.tasks.close(); }
+});
+
+test("dispatch removes a prepared starting-point ref when acquisition is rejected and the attempt closes without an allocation", async () => {
+  const f = await completed();
+  try {
+    let branch = "";
+    f.deps.workspaces.acquire = async request => {
+      branch = startingPointBranch(request.branch);
+      f.run(["branch", branch, request.startingCommit!]);
+      throw new WorkspaceError("rejected", "Fixture acquisition refused");
+    };
+    const outcome = await dispatchOnce(f.deps, options);
+    assert.equal(outcome.reason, "stopped", JSON.stringify(outcome));
+    assert.ok(outcome.detail?.includes("Fixture acquisition refused"));
+    assert.equal(f.deps.attempts.findForTask(taskId, 2)!.allocation, undefined);
+    assert.equal((outcome.observed.startingPointCleanup as { status: string }).status, "removed");
+    assert.equal(f.run(["branch", "--list", branch]), "");
+    assert.equal((await f.deps.workspaces.leases()).length, 1);
   } finally { f.tasks.close(); }
 });
 

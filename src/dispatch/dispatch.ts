@@ -259,7 +259,6 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
       startingCommit: allocation.startingCommit, backingRepository: allocation.backingRepository, pool: allocation.pool,
     } });
     if (cleanup) observed.startingPointCleanup = cleanup;
-    if (cleanup?.detail) deps.progress?.(cleanup.detail);
     deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
     if (specification.startingPoint && allocation.startingCommit !== specification.startingPoint.commit) {
       return halt("acquire", "inspect_attempt", "The acquired workspace does not start at the recorded earlier output commit");
