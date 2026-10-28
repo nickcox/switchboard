@@ -28,7 +28,6 @@ const entrySchemas = {
       requiredEvidence: z.array(nonempty), requiredDeliverables: z.array(nonempty),
     }).optional(),
   }),
-  acquisition_started: z.strictObject({ outputBranch: nonempty }),
   integration_started: z.strictObject({ targetBranch: nonempty, from: commit, commit }),
   owner_read_reconciled: z.strictObject({ failureSequence: z.number().int().nonnegative(), targetBranch: nonempty, commit }),
   leased: z.strictObject({

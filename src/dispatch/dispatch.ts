@@ -81,7 +81,10 @@ export async function dispatchOnce(
   deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean } = {},
 ): Promise<DispatchResult> {
   const reads = new OwnerReads(deps, "dispatch");
-  return dispatchAttempt(deps, options, reads).catch(error => readRefusal(error) ?? refusal("preflight", "inspect_attempt", message(error)));
+  return dispatchAttempt(deps, options, reads).catch(error => {
+    const failed = readRefusal(error);
+    return failed ? { ...failed, lease: reads.effectAttempted ? "unknown" : "none" } : refusal("preflight", "inspect_attempt", message(error));
+  });
 }
 
 async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean }, reads: OwnerReads): Promise<DispatchResult> {
@@ -90,17 +93,18 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
     await deps.runtime.checkStorage(roots);
     await deps.attempts.checkStorage(roots);
   } catch (error) {
-    return readRefusal(error) ?? refusal("preflight", "fix_configuration", `Runtime storage is not retained: ${message(error)}`);
+    const failed = readRefusal(error);
+    return failed ? { ...failed, lease: "none" } : refusal("preflight", "fix_configuration", `Runtime storage is not retained: ${message(error)}`);
   }
   if (options.requestId !== undefined) {
     try {
       const existing = await deps.attempts.findByRequest(options.requestId, { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) });
-      if (existing) return existingRequest(deps, existing, options.requestId);
+      if (existing) return existingRequest(deps, existing, options.requestId, reads);
     } catch (error) {
       if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
         ok: false, reason: "request_input_mismatch", stage: "preflight", lease: "none", observed: {}, detail: error.message, nextAction: "inspect_attempt",
       });
-      return readRefusal(await reads.failure("Attempt records", "read request record", error))!;
+      return { ...readRefusal(await reads.failure("Attempt records", "read request record", error))!, lease: "none" };
     }
   }
   const state = await inspect(deps, reads);
@@ -145,7 +149,7 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
   }
 
   if (options.dryRun) {
-    if (deps.attempts.activeCount() >= (deps.maxAttempts ?? 1)) return refusal("select", "inspect_attempt", "The context's attempt maximum has been reached", { ...observed, reason: "capacity" });
+    if (await reads.read("Attempt records", "check capacity", () => deps.attempts.activeCount()) >= (deps.maxAttempts ?? 1)) return refusal("select", "inspect_attempt", "The context's attempt maximum has been reached", { ...observed, reason: "capacity" });
     return result({
       ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
       selection: { taskId, contract: { name: contractName, ...contract } }, nextAction: "none",
@@ -177,7 +181,7 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
     if (!reservation.created) {
       const existing = await deps.attempts.findByRequest(options.requestId!);
       if (!existing) throw new Error("The reserved request record is missing");
-      return existingRequest(deps, existing, options.requestId);
+      return existingRequest(deps, existing, options.requestId, reads);
     }
   } catch (error) {
     if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
@@ -202,6 +206,8 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
   // names the stage and preserves whatever exists.
   let stage: Stage = "acquire";
   try {
+    // The reservation's requested entry is the durable acquisition intent.
+    reads.effectAttempted = true;
     // The operator may have resolved this attempt while it was waiting; never acquire for a resolved attempt.
     if (resolvedBy(await reads.read("Attempt records", "check resolution before acquisition", () => deps.attempts.read(ref)), "lease_returned")) {
       return halt("acquire", "inspect_attempt", "The operator resolved this attempt before its lease was acquired");
@@ -213,8 +219,6 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
     const outputBranch = specification.outputBranch;
     let allocation: Allocation;
     try {
-      await deps.attempts.append(ref, "acquisition_started", { outputBranch });
-      reads.effectAttempted = true;
       allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.baseRef, branch: outputBranch });
     } catch (error) {
       if (error instanceof WorkspaceError && error.readFailure) throw await reads.failure(error.readFailure.owner, "read acquisition", error.readFailure.error);
@@ -363,15 +367,17 @@ function decide(report: RunReport | undefined, delivery: DeliveryContract, reten
 }
 
 /** Reports an existing attempt from each owner's current state, as `status` does, not from the log alone. */
-async function existingRequest(deps: Dependencies, attempt: AttemptRecord | ArchivedRequest, requestId?: string): Promise<DispatchResult> {
+async function existingRequest(deps: Dependencies, attempt: AttemptRecord | ArchivedRequest, requestId?: string, reads = new OwnerReads(deps, "dispatch")): Promise<DispatchResult> {
   if ("archived" in attempt) return result({
     ok: false, reason: "existing_request", lease: "none",
     attempt: { contextId: attempt.contextId, taskId: attempt.taskId, attempt: attempt.attempt, ...(requestId === undefined ? {} : { requestId }) },
     observed: { archived: true, archive: attempt.summary }, nextAction: "inspect_attempt",
   });
+  reads.record = attempt;
   const summary = summarise(attempt);
-  const task = await deps.tasks.read(attempt.taskId).catch(() => undefined);
-  const state = await inspect(deps);
+  const task = await reads.read("Task store", "read existing request", () => deps.tasks.read(attempt.taskId));
+  const state = await inspect(deps, reads);
+  if (isFailure(state)) return { ...state.failed, attempt: summary };
   let lease: DispatchResult["lease"] = "unknown";
   let running = false;
   if (!isFailure(state)) {

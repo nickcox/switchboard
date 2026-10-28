@@ -14,7 +14,8 @@ import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
 export type AttemptStatus = {
   taskDisagreement?: boolean;
-  latestReadFailure?: ReadFailure;
+  latestReadFailure?: ReadFailure & { sequence: number };
+  unsettledReadFailures?: (ReadFailure & { sequence: number })[];
   validatedResult?: RuntimeRecord["validatedResult"];
   resultDiscrepancy?: string;
   specification?: StoredSpecification;
@@ -126,9 +127,11 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
     const record = records.find(r => r.taskId === assessment.attempt.taskId && r.attempt === assessment.attempt.attempt);
     const latestReadFailure = [...(record?.entries ?? [])].reverse().find(e => e.kind === "owner_read_failed");
-    const reconcile = record !== undefined && unsettledReads(record).length > 0;
+    const unsettled = record ? unsettledReads(record) : [];
+    const reconcile = unsettled.length > 0;
     attempts.push({ ...assessment,
-      ...(latestReadFailure ? { latestReadFailure: latestReadFailure.data as ReadFailure } : {}),
+      ...(latestReadFailure ? { latestReadFailure: { ...latestReadFailure.data as ReadFailure, sequence: latestReadFailure.sequence } } : {}),
+      ...(reconcile ? { unsettledReadFailures: unsettled.map(e => ({ ...e.data as ReadFailure, sequence: e.sequence })) } : {}),
       specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,
       ...(worker?.validatedResult ? { validatedResult: worker.validatedResult } : {}),
       ...(record?.specification ? { specification: record.specification } : {}), ...(record?.allocation ? { allocation: record.allocation } : {}),
@@ -189,7 +192,8 @@ export function describeStatus(value: StatusResult): string {
     if (a.unknownOwners) for (const reason of a.unknownOwners) lines.push(`  Unknown: ${reason}`);
     if (a.latestReadFailure) {
       const f = a.latestReadFailure;
-      lines.push(`  Latest read failure: ${f.owner}; ${f.classification}; ${f.operation}/${f.step}; ${f.failedAt}`);
+      lines.push(`  Latest read failure: sequence ${f.sequence}; ${f.owner}; ${f.classification}; ${f.operation}/${f.step}; ${f.failedAt}`);
+      if (a.unsettledReadFailures?.length) lines.push(`  Unsettled read failures: ${a.unsettledReadFailures.map(f => f.sequence).join(", ")}`);
       lines.push(`  Read diagnostics: ${JSON.stringify(f.diagnostics)}`);
     }
     if (a.resultDiscrepancy) lines.push(`  Result discrepancy: ${a.resultDiscrepancy}`);

@@ -84,7 +84,7 @@ for (const owner of ["attempt", "runtime", "leases", "pool", "task"] as const) t
   const view = await status(deps, { activity: false, transcript: false });
   assert.ok(view.detail?.includes(`${owner} offline`) || view.attempts.some(a => a.unknownOwners?.some(reason => reason.includes(`${owner} offline`))));
   const dispatched = await dispatchOnce(deps, { taskId: "observe-b1", dryRun: true });
-  assert.equal(dispatched.reason, "refused");
+  assert.equal(dispatched.reason, "owner_read_retryable");
   assert.equal(dispatched.stage, "preflight");
   assert.match(dispatched.detail!, new RegExp(`${owner} offline`));
 });
@@ -118,7 +118,7 @@ test("heartbeat read failures are unknown, not stale or missing heartbeats", asy
   assert.equal(view.attempts[0]?.state, "unknown");
   assert.ok(view.attempts[0]?.unknownOwners?.some(reason => reason.includes("claim offline")));
   const dispatched = await dispatchOnce(f.deps, { dryRun: true });
-  assert.equal(dispatched.reason, "refused");
+  assert.equal(dispatched.reason, "owner_read_retryable");
   assert.match(dispatched.detail!, /claim offline/);
 });
 

@@ -12,7 +12,7 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 
 | Kind | Data |
 | --- | --- |
-| `requested` | Optional `requestId`, the acquisition `pool`, and the resolved delivery `contract` |
+| `requested` | Acquisition intent: optional `requestId`, the acquisition `pool`, and the resolved delivery `contract` |
 | `leased` | `leaseId`, `workspace`, `baseRef`, `outputBranch`, `startingCommit`, and acquisition `pool` |
 | `task_started` | No fields |
 | `launched` | `sessionId` |
@@ -20,10 +20,12 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `worker_finished` | Runtime `status`, `runtimeDirectory`, optional `reason`, `detail`, `outcome` and `resultCommit` |
 | `retention_checked` | `retained`, `findings` and `notes` |
 | `owner_read_failed` | `owner`, `classification`, `operation`, `step`, `failedAt` and bounded command `diagnostics` |
+| `owner_read_reconciled` | Settled `failureSequence`, recorded `targetBranch` and exact `commit` established by Git |
 | `task_recorded` | `outcome` (`done` or `hold`), `reason`, explicit `category`, and `applied` |
 | `halted` | `stage`, `reason`, optional `detail` and recovered lease identity |
-| `operator_resolved` | `action` (`worker_stopped` or `lease_returned`), optional `note` |
+| `operator_resolved` | `action` (`worker_stopped`, `lease_returned` or `owner_read_reconciled`), optional `note` |
 | `output_accepted` | Exact accepted `commit` |
+| `integration_started` | Intended `targetBranch`, its previous `from` commit and exact output `commit` |
 | `integrated` | `policy: local-merge`, `targetBranch` and `commit` |
 | `discarded` | Optional `note` |
 | `lease_return_started`, `lease_returned` | `leaseId`, `by` (`finish` or `discard`) and the return's unique `returnId` |
@@ -32,15 +34,27 @@ Outcome categories are `done`, `review_required`, `not_retained`, `held_by_worke
 
 ## Failed owner reads
 
-`finish` and `discard` classify failures at declared read boundaries, from evidence held by the operation, not by treating every exception as retryable. The shared classification has four kinds: `owner_read` (a failed read before any effect was attempted), `approval_required` (a missing or expired approval or confirmation), `effect_uncertain` (an external effect may have happened), and `rejected` (an invalid request or definite rejection).
+`dispatch`, `resolve`, `prune`, `finish` and `discard` classify failures at declared read boundaries, from evidence held by the operation, not by treating every exception as retryable. The shared classification has four kinds: `owner_read` (a failed read before any effect was attempted), `approval_required` (a missing or expired approval or confirmation), `effect_uncertain` (an external effect may have happened), and `rejected` (an invalid request or definite rejection).
 
-A failed read appends an immutable `owner_read_failed` entry. Its operation is `finish` or `discard`; its step names the read being checked. `failedAt` is the failure time, distinct from the entry's `recordedAt`. Diagnostics keep the error message and, when a command ran, its executable, arguments, exit status, timeout and truncation flags, and the last 2,000 characters of each output stream. Environment, stdin, arbitrary error properties and stacks are not copied. Credential-bearing URLs and common authentication fields are redacted.
+A failed read appends an immutable `owner_read_failed` entry. Its operation names the command; its step names the read being checked. Dispatch failures before reservation have no attempt to append to, so the structured result retains their diagnostics. If records cannot be read or written, the result still retains the failed command's diagnostics. `failedAt` is the failure time, distinct from the entry's `recordedAt`. Diagnostics keep the error message and, when a command ran, its executable, arguments, exit status, timeout and truncation flags, and the last 2,000 characters of each output stream. Environment, stdin, arbitrary error properties and stacks are not copied. Credential-bearing URLs and common authentication fields are redacted.
 
 Before any effect, the command refuses as `owner_read_retryable`, with next action `retry_owner_read`, naming the owner and saying the read can be tried again. Running the same command again reads the owner afresh; the historical entry does not block it. A definite retention finding, such as a missing output branch or uncommitted files, still refuses rather than promising a retry will fix the work.
 
-After an effect or `lease_return_started`, a failed read refuses as `reconciliation_required`, with next action `reconcile_owner`. The recorded failure blocks further effects on later invocations too. Inspect the owner and reconcile the outcome; do not repeat a return whose outcome is uncertain. If a later invocation can safely establish that the lease is absent from its recorded pool, it can complete the existing `lease_returned` record without returning it again. Existing process, retention, identity and confirmation checks still apply.
+After an effect or a durable intent (`requested` for acquisition, `integration_started`, or `lease_return_started`), a failed read refuses as `reconciliation_required`, with next action `reconcile_owner`. It cannot start another acquisition or repeat an uncertain effect. Existing process, retention, identity and confirmation checks still apply.
 
-`status` shows the latest recorded failure, including its diagnostics; JSON uses `latestReadFailure`. An unreconciled uncertain failure sets next action `reconcile_owner` and `changeable: false`. The diagnostic remains visible after a successful retry or a completed return record. A dry run changes no external owner, but still records failed-read diagnostics with the attempt.
+A later `finish` can settle an interrupted integration by reading the recorded target branch and proving it contains the exact intended commit. It records `owner_read_reconciled`, referring to the failure's entry sequence, and `integrated` together in one transaction, with integration recorded once. A failed read during this check refuses again and records another uncertain failure. A target that does not contain the commit does not authorise another fast-forward. A dry run does not settle an uncertain integration.
+
+For outcomes that reading cannot settle, inspect the owner, then use:
+
+```text
+switchboard resolve --lease <lease-id> --read-failure <entry-sequence> --effect-outcome not_happened --note "Inspected the owner and established no effect happened"
+```
+
+Use `happened` instead when that is the outcome established. `--task <task-id> [--attempt <n>]` can select the attempt instead of `--lease`. The required sequence names one unsettled `effect_uncertain` entry in that attempt, not an approval for other failures. The operator confirmation records the sequence and established outcome, with a required explanatory note. It never performs the effect. It refuses while the worker or dispatcher may still be running, including on the final recheck; stop confirmation remains a separate operation.
+
+An uncertain lease return is not retried. If Treehouse confirms absence from the recorded pool, `finish` or `discard` can complete the existing `lease_returned` record without returning the lease again. An operator confirmation of `happened` also needs that absence; it cannot overrule a listed lease or a pool Switchboard cannot observe. Only an operator confirmation of `not_happened`, scoped to the failure and its return UUID, permits a fresh return intent and confirmation on a later `finish`. Every unsettled failure must be reconciled before further effects.
+
+`status` shows the latest recorded failure, including its sequence and diagnostics; JSON uses `latestReadFailure` and lists every unsettled failure and sequence in `unsettledReadFailures`. An unreconciled uncertain failure sets next action `reconcile_owner` and `changeable: false`. The diagnostic remains visible after a successful retry or a completed return record. A dry run changes no external owner, but still records failed-read diagnostics with the attempt.
 
 ## Validated worker results
 
@@ -65,12 +79,13 @@ Every operator confirmation has one form: the attempt identity, `fact`, `confirm
 - `discard`: the lease ID.
 - `worker_stopped`: the lease ID and, when known, session ID.
 - `lease_returned`: the output branch and, when known, lease ID.
+- `owner_read_reconciled`: one `failureSequence`, the established `outcome` (`happened` or `not_happened`), and the return UUID when the failure followed a return intent.
 
-The CLI flags are unchanged. Confirmation records, not old `acceptedBy` or `noProcessesConfirmedBy` entry fields, carry the operator's decision. A worker-stop confirmation is not an observed process exit, and neither proves that background processes are gone.
+Confirmation records, not old `acceptedBy` or `noProcessesConfirmedBy` entry fields, carry the operator's decision. A worker-stop confirmation is not an observed process exit, and neither proves that background processes are gone.
 
 ## Pruning
 
-Pruning checks external owners before archiving. Its transaction compares the observed entries and confirmations, writes an archive summary, keeps the request record pointing to that summary, removes the attempt and its entries, and records runtime directories to delete. Retained attempt numbers never go away, so output-branch names are never reused. Directory deletion follows outside the transaction; a later prune completes pending deletion. There is no prune lock or stale lock to remove. Summaries live in `archived_attempts`, not archive files.
+Pruning checks external owners before archiving. Its transaction compares the observed entries and confirmations, writes an archive summary, keeps the request record pointing to that summary, removes the attempt and its entries, and records runtime directories to delete. Retained attempt numbers never go away, so output-branch names are never reused. Directory deletion follows outside the transaction. The archive summary's `cleanup` map, keyed by directory, keeps append-only cleanup evidence with its own sequences and times: `deletion_started` and `owner_read_failed` (the same failure payload as live attempt entries). A read failure before any effect is retryable; one after archiving or a deletion intent requires reconciliation. A later prune reads the directory again. Absence completes pending deletion without repeating it; if an earlier deletion is uncertain and the directory still exists, prune refuses rather than repeating a potentially partial removal. The operator must inspect and remove that directory manually, then run prune again. Diagnostics remain in the archive after cleanup. There is no prune lock or stale lock to remove. Summaries live in `archived_attempts`, not archive files.
 
 ## Importing the old files
 

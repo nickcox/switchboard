@@ -159,6 +159,6 @@ test("Phase 2 review finding 14: resolve refuses to record a stop when the attem
     delivery: { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] } });
   const tasks = Object.assign(Object.create(Object.getPrototypeOf(f.tasks)), f.tasks, { read: async () => { throw new Error("store offline"); } });
   const outcome = await resolveStopped({ ...f.deps, tasks }, { leaseId: "lease-unread", confirmed: true });
-  assert.equal(outcome.reason, "refused");
+  assert.equal(outcome.reason, "owner_read_retryable");
   assert.equal((await f.deps.attempts.read(ref)).entries.some(e => e.kind === "operator_resolved"), false);
 });

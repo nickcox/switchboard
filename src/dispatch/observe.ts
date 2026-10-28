@@ -58,7 +58,7 @@ async function observe(deps: Dependencies, selector?: AttemptSelector): Promise<
     const { contextId, taskId, leaseId, sessionId } = record.binding.input.identity;
     if (!summaries.some(a => a.leaseId === leaseId)) summaries.push({ contextId, taskId, leaseId, sessionId, attempt: 0 });
   }
-  if (!summaries.length && selector && (!records.known || !runtime.known)) {
+  if (!summaries.length && selector && (!records.known || !runtime.known || !leases.known || !pool.known)) {
     summaries.push({ contextId: deps.contextId, taskId: "taskId" in selector ? selector.taskId : "unknown", attempt: "attempt" in selector ? selector.attempt ?? 0 : 0,
       ...("leaseId" in selector ? { leaseId: selector.leaseId } : {}) });
   }

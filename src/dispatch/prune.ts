@@ -10,7 +10,7 @@ import { checkCanPrune } from "./safety.ts";
 import { result, type DispatchResult } from "./result.ts";
 
 /** Owner uncertainty preserves records regardless of age. Directory removal follows the archive transaction. */
-export async function prune(deps: Dependencies, options: { olderThan: number; dryRun?: boolean }): Promise<DispatchResult> {
+export async function prune(deps: Dependencies, options: { olderThan: number; dryRun?: boolean }, files = { lstat, rm }): Promise<DispatchResult> {
   const removed: { taskId: string; attempt: number; archive: string }[] = [];
   const skipped: { taskId: string; attempt: number; reason: string }[] = [];
   let changed = false;
@@ -25,7 +25,9 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     await deps.attempts.checkStorage(roots);
     await deps.runtime.checkStorage(roots);
     const context = await observeAttempts(deps);
+    if (context.records.known) reads.record = context.records.value[0];
     await reads.context(context, "inspect prune candidates");
+    reads.record = undefined;
     const cutoff = Date.now() - options.olderThan * 86400000;
     for (const attempt of assessAttempts(context)) {
       const { taskId, attempt: number } = attempt.attempt;
@@ -36,6 +38,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
       }
       if (!options.dryRun) {
         // External owners are checked again; archiveAttempt also checks the records in its transaction.
+        reads.record = { contextId: deps.contextId, taskId, attempt: number };
         const current = await observeAttempt(deps, { taskId, attempt: number });
         if (!current) { skipped.push({ taskId, attempt: number, reason: "unknown" }); continue; }
         await reads.attempt(current, "recheck before archive");
@@ -54,7 +57,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     }
     if (!options.dryRun) for (const deletion of deps.attempts.pendingDeletions()) {
       reads.record = undefined;
-      await removeRuntimeDirectory(deps, reads, deletion);
+      await removeRuntimeDirectory(deps, reads, deletion, files);
       await deps.attempts.completeDeletion(deletion);
     }
     return report(true, options.dryRun ? "planned" : "pruned", `${options.dryRun ? "Would remove" : "Removed"} ${removed.length} attempt(s). Preserved ${skipped.length} ineligible attempt(s)`);
@@ -69,14 +72,14 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
  * Deletes a recorded runtime directory only if it is a real directory, not a link, inside the runtime root. A missing
  * directory is already gone. Anything else is refused and its deletion record kept, for the operator to inspect.
  */
-async function removeRuntimeDirectory(deps: Dependencies, reads: OwnerReads, deletion: PendingDeletion): Promise<void> {
+async function removeRuntimeDirectory(deps: Dependencies, reads: OwnerReads, deletion: PendingDeletion, files: { lstat: typeof lstat; rm: typeof rm }): Promise<void> {
   const { directory } = deletion;
   const entries = deps.attempts.cleanupEntries(deletion);
   const started = entries.some(e => e.kind === "deletion_started");
   reads.effectAttempted ||= started || entries.some(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
   try {
     const found = await reads.read("Runtime directory", "inspect directory before deletion", async () => {
-      try { return await lstat(directory); }
+      try { return await files.lstat(directory); }
       catch (error) { if (isMissing(error)) return undefined; throw error; }
     });
     if (!found) return;
@@ -89,9 +92,12 @@ async function removeRuntimeDirectory(deps: Dependencies, reads: OwnerReads, del
     }
     await deps.attempts.appendCleanup(deletion, "deletion_started", { directory });
     reads.effectAttempted = true;
-    await rm(directory, { recursive: true, force: true });
+    if (!await reads.read("Runtime directory", "recheck directory ownership after deletion intent", () => deps.runtime.owns(directory))) {
+      throw new Error(`Refusing to delete ${directory}: its ownership changed after the deletion intent`);
+    }
+    await files.rm(directory, { recursive: true, force: true });
     await reads.read("Runtime directory", "read back directory deletion", async () => {
-      try { await lstat(directory); throw new Error(`Directory ${directory} still exists after deletion`); }
+      try { await files.lstat(directory); throw new Error(`Directory ${directory} still exists after deletion`); }
       catch (error) { if (!isMissing(error)) throw error; }
     });
   } catch (error) {

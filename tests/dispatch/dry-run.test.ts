@@ -53,5 +53,12 @@ test("dry run shares preflight failures and existing request handling", async ()
   assert.equal(real.nextAction.code, "stop_worker");
   assert.deepEqual(await dispatchOnce(deps, { dryRun: true }), real);
   deps.workspaces.leases = async () => { throw new Error("Unavailable"); };
-  assert.deepEqual(await dispatchOnce(deps, { dryRun: true }), await dispatchOnce(deps));
+  const dryFailure = await dispatchOnce(deps, { dryRun: true });
+  const realFailure = await dispatchOnce(deps);
+  assert.equal(dryFailure.reason, "owner_read_retryable");
+  // Each read has its own failure time; every other diagnostic and safety decision is shared.
+  const dryRead = dryFailure.observed.readFailure as Record<string, unknown>;
+  const realRead = realFailure.observed.readFailure as Record<string, unknown>;
+  assert.ok(Number.isFinite(Date.parse(dryRead.failedAt as string)));
+  assert.deepEqual({ ...dryFailure, observed: { readFailure: { ...dryRead, failedAt: realRead.failedAt } } }, realFailure);
 });

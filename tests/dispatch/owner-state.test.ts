@@ -119,13 +119,13 @@ test("finding 15: an attempt-log failure after acquiring a lease gives a structu
   assert.ok(outcome.attempt?.leaseId);
 });
 
-test("Phase 2 review finding 13: a failure while finalising gives a structured stopped result and is recorded", async () => {
+test("Phase 2 review finding 13: a failed read while finalising requires reconciliation and is recorded", async () => {
   const f = await fixture({ tasks: [task("final-a1")], scenario: "commit-result" });
   const outcome = await dispatchOnce({ ...f.deps, retention: async () => { throw new Error("injected retention read failure"); } });
-  assert.equal(outcome.reason, "stopped");
+  assert.equal(outcome.reason, "reconciliation_required");
   assert.equal(outcome.lease, "preserved");
   assert.match(outcome.detail ?? "", /injected retention read failure/);
-  assert.equal((await f.deps.attempts.forTask("final-a1"))[0]!.entries.at(-1)?.kind, "halted");
+  assert.equal((await f.deps.attempts.forTask("final-a1"))[0]!.entries.at(-1)?.kind, "owner_read_failed");
 });
 
 test("Phase 2 review finding 13: finish turns an unexpected failure into a structured result", async () => {

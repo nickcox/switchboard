@@ -217,9 +217,36 @@ export class AttemptStore {
       if (kind === "lease_return_started" && this.read(ref).entries.some(e => e.kind === "lease_return_started" && e.data.returnId === payload.returnId)) {
         throw new Error("Each lease return requires its own confirmation");
       }
+      if (confirmation.fact === "owner_read_reconciled") {
+        const record = this.read(ref);
+        const failure = record.entries.find(e => e.sequence === confirmation.scope.failureSequence && e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
+        const intent = [...record.entries].reverse().find(e => e.sequence < confirmation.scope.failureSequence && (e.kind === "lease_return_started" || e.kind === "integration_started"));
+        if (!failure || typeof payload.note !== "string" || !payload.note.trim() ||
+          confirmation.scope.returnId !== (intent?.kind === "lease_return_started" ? intent.data.returnId : undefined)) throw new Error("The confirmation does not name this failure and its effect");
+        if (record.entries.some(e => e.kind === "owner_read_reconciled" && e.data.failureSequence === confirmation.scope.failureSequence) ||
+          record.confirmations?.some(c => c.fact === "owner_read_reconciled" && c.scope.failureSequence === confirmation.scope.failureSequence)) {
+          throw new AttemptStoreError("attempt_changed", "The read failure was already reconciled");
+        }
+      }
       this.confirm(ref, confirmation, confirmedBy);
       this.insert(ref, kind, data);
       if (kind === "operator_resolved") this.closeAttempt(ref);
+    });
+  }
+
+  /** The successful owner read and its integration record must not be separated by a crash. */
+  async reconcileIntegration(ref: AttemptRef, failureSequence: number, targetBranch: string, commit: string): Promise<void> {
+    await this.database.transaction(() => {
+      const record = this.read(ref);
+      const failed = record.entries.find(e => e.sequence === failureSequence && e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
+      const intent = [...record.entries].reverse().find(e => e.sequence < failureSequence && e.kind === "integration_started");
+      if (!failed || intent?.data.targetBranch !== targetBranch || intent.data.commit !== commit) throw new Error("The reconciliation does not name this integration's failed read");
+      if (!record.entries.some(e => e.kind === "owner_read_reconciled" && e.data.failureSequence === failureSequence)) {
+        this.insert(ref, "owner_read_reconciled", { failureSequence, targetBranch, commit });
+      }
+      if (!record.entries.some(e => e.kind === "integrated" && e.data.targetBranch === targetBranch && e.data.commit === commit)) {
+        this.insert(ref, "integrated", { policy: "local-merge", targetBranch, commit });
+      }
     });
   }
 
@@ -272,6 +299,7 @@ export class AttemptStore {
       const archive = {
         ...identity(expected), summary, entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
         archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected),
+        ...(current.entries.some(e => e.kind === "owner_read_failed") ? { readFailures: current.entries.filter(e => e.kind === "owner_read_failed" || e.kind === "owner_read_reconciled") } : {}),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
         ...(reservation ? { reservation: { requestId: reservation.request_id, reservedAt: reservation.reserved_at } } : {}),
       };

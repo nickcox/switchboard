@@ -3,7 +3,8 @@ import type { Dependencies } from "./dependencies.ts";
 import { observeAttempt, type AttemptSelector } from "./observe.ts";
 import { assessAttempt } from "./assess.ts";
 import { checkCanConfirmLeaseReturned, checkCanConfirmStopped } from "./safety.ts";
-import { OwnerReads, readRefusal, unsettledReads } from "./owner-reads.ts";
+import { OwnerReadError, type ReadFailure } from "./failure.ts";
+import { effectBefore, OwnerReads, pendingReturn, readRefusal, unsettledReads } from "./owner-reads.ts";
 import { result, type DispatchResult } from "./result.ts";
 
 const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
@@ -38,8 +39,11 @@ async function confirmStopped(deps: Dependencies, options: { leaseId: string; co
   if (current) await reads.attempt(current, "recheck worker confirmation");
   const rechecked = current && checkCanConfirmStopped(assessAttempt(current).facts, options.confirmed);
   if (!rechecked || !rechecked.allowed) return result({ ...common, ok: false, reason: "refused", detail: rechecked ? rechecked.detail : "The attempt disappeared", nextAction: rechecked ? rechecked.nextAction : "inspect_attempt" });
+  reads.effectAttempted = true;
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) },
     { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(assessment.attempt.sessionId ? { sessionId: assessment.attempt.sessionId } : {}) } }, operator, current?.record.known ? current.record.value : undefined);
+  const confirmed = await observeAttempt(deps, { leaseId: options.leaseId });
+  if (confirmed) await reads.attempt(confirmed, "read back worker confirmation");
   return result({ ...common, ok: true, reason: "resolved", nextAction: "apply_task_outcome" });
 }
 
@@ -60,6 +64,8 @@ async function confirmLeaseReturned(deps: Dependencies, options: ({ leaseId: str
   const assessment = assessAttempt(observation);
   const attempt = observation.record.known ? observation.record.value : undefined;
   const summary = assessment.attempt;
+  const uncertainReturn = attempt && pendingReturn(attempt) && unsettledReads(attempt)[0];
+  if (uncertainReturn && assessment.leaseInOtherPool) throw new OwnerReadError(uncertainReturn.data as ReadFailure);
   // An unfinished attempt may have acquired a lease without recording its ID.
   const outputBranch = summary.outputBranch ?? `${deps.delivery.branchPrefix}${summary.taskId}/attempt-${summary.attempt}`;
   const listed = observation.leases.known ? observation.leases.value.find(l => l.leaseId === summary.leaseId || (l.holder === summary.taskId && l.branch === outputBranch)) : undefined;
@@ -73,11 +79,15 @@ async function confirmLeaseReturned(deps: Dependencies, options: ({ leaseId: str
   if (!current) return result({ ...common, ok: false, reason: "refused", detail: "The attempt disappeared", nextAction: "inspect_attempt" });
   await reads.attempt(current, "recheck lease confirmation");
   const rechecked = assessAttempt(current);
+  if (uncertainReturn && rechecked.leaseInOtherPool) throw new OwnerReadError(uncertainReturn.data as ReadFailure);
   const currentListed = current.leases.known && current.leases.value.some(l => l.leaseId === summary.leaseId || (l.holder === summary.taskId && l.branch === outputBranch));
   const fresh = checkCanConfirmLeaseReturned({ ...rechecked.facts, leaseHeld: currentListed });
   if (!fresh.allowed) return result({ ...common, ok: false, reason: "refused", detail: fresh.detail, nextAction: fresh.nextAction });
+  reads.effectAttempted = true;
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "lease_returned", ...(options.note ? { note: options.note } : {}) },
     { fact: "lease_returned", scope: { outputBranch, ...(summary.leaseId ? { leaseId: summary.leaseId } : {}) } }, operator, current.record.known ? current.record.value : undefined);
+  const confirmed = await observeAttempt(deps, selector);
+  if (confirmed) await reads.attempt(confirmed, "read back lease confirmation");
   return result({ ...common, ok: true, reason: "resolved", nextAction: "dispatch_again" });
 }
 
@@ -100,13 +110,16 @@ export async function resolveReadFailure(deps: Dependencies, options: AttemptSel
     const record = observation.record.known ? observation.record.value : undefined;
     const failure = record && unsettledReads(record).find(e => e.sequence === options.failureSequence);
     if (!record || !failure) return refuse("The sequence does not name an unsettled uncertain read failure in this attempt");
-    const intent = [...record.entries].reverse().find(e => e.kind === "lease_return_started" && e.sequence < failure.sequence);
+    const effect = effectBefore(record, failure.sequence);
+    const intent = effect?.kind === "lease_return_started" ? effect : undefined;
     // A claimed return cannot overrule a lease that Treehouse still lists or cannot observe.
     if (intent && options.outcome === "happened" && (assessment.leaseHeld || assessment.leaseInOtherPool || assessment.facts.unknown.length)) return refuse("Treehouse must confirm the lease is absent before recording that the return happened");
     const current = await observeAttempt(deps, options);
     if (!current) return refuse("The attempt disappeared");
     await reads.attempt(current, "recheck read reconciliation");
     const fresh = assessAttempt(current);
+    const currentRecord = current.record.known ? current.record.value : undefined;
+    if (!currentRecord || !unsettledReads(currentRecord).some(e => e.sequence === options.failureSequence)) return refuse("This failure was already reconciled");
     if (fresh.facts.possiblyRunning || fresh.facts.dispatcherRunning || current.taskWorkerMayBeRunning ||
       intent && options.outcome === "happened" && (fresh.leaseHeld || fresh.leaseInOtherPool || fresh.facts.unknown.length)) return refuse("The worker or lease changed while reconciling; inspect the owners again");
     await deps.attempts.appendConfirmed(record, "operator_resolved", { action: "owner_read_reconciled", note: options.note },

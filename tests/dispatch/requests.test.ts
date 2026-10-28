@@ -50,9 +50,10 @@ test("a request-record read failure refuses before selection or any effect", asy
   f.deps.workspaces.acquire = async () => { acquired = true; throw new Error("must not acquire"); };
   const deps = { ...f.deps, attempts: attemptsWith(f, { findByRequest: async () => { throw new Error("request read failed"); } }) };
   const outcome = await dispatchOnce(deps, { requestId: "unreadable" });
-  assert.equal(outcome.reason, "refused");
+  assert.equal(outcome.reason, "owner_read_retryable");
   assert.equal(outcome.stage, "preflight");
-  assert.match(outcome.detail ?? "", /Request records could not be read: request read failed/);
+  assert.match(outcome.detail ?? "", /request read failed/);
+  assert.equal((outcome.observed.readFailure as { diagnostics: { message: string } }).diagnostics.message, "request read failed");
   assert.equal(acquired, false);
   assert.deepEqual(f.deps.attempts.list(), []);
 });

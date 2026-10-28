@@ -669,7 +669,7 @@ test("finding 8: a not-retained attempt whose output is still not retained is re
   const f = await fixture({ tasks: [task("finish-a1")], acceptance: "independent_deliverable" });
   const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
   assert.equal(await state(f.deps), "not_retained");
-  assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "owner_read_retryable");
+  assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "refused");
   assert.equal(await listed(f, leaseId), true);
 });
 

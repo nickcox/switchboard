@@ -6,8 +6,8 @@ import { recordValidatedResult, resultDiscrepancy, validateResultFile } from "..
 import type { RetentionRequest, RetentionResult } from "../workspaces/retention.ts";
 import { branchHead, fastForward, isAncestor } from "../workspaces/integration.ts";
 import { WorkspaceError } from "../workspaces/provider.ts";
-import { OwnerReadError } from "./failure.ts";
-import { OwnerReads, readRefusal, unsettledReads } from "./owner-reads.ts";
+import { OwnerReadError, type ReadFailure } from "./failure.ts";
+import { effectBefore, OwnerReads, readRefusal, unsettledReads } from "./owner-reads.ts";
 import { resolvedBy } from "./attempt.ts";
 import type { Dependencies } from "./dependencies.ts";
 import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
@@ -34,20 +34,12 @@ const refused = (nextAction: NextAction, detail: string, extra: Omit<Partial<Dis
 async function locate(deps: OperationDependencies, leaseId: string): Promise<Located | DispatchResult> {
   const observation = await observeAttempt(deps, { leaseId });
   if (!observation) return refused("inspect_attempt", "No attempt in this context has this lease ID", { lease: "none" });
-  const failures = [
-    ["Treehouse leases", observation.leases], ["Git workspace pool", observation.pool],
-    ["Runtime records", observation.runtime], ["Task store", observation.task], ["Dispatcher heartbeat", observation.heartbeat],
-  ] as const;
-  let failed: OwnerReadError | undefined;
-  for (const [owner, value] of failures) if (!value.known) {
-    failed = await deps.reads.failure(owner, "inspect attempt", value.error ?? value.reason,
-      observation.record.known ? observation.record.value : undefined);
-  }
-  if (failed) throw failed;
+  await deps.reads.attempt(observation, "inspect attempt");
   const attempt = assessAttempt(observation);
   if (attempt.facts.unknown.length) return refused("inspect_attempt", attempt.facts.unknown.join("; "), { lease: "unknown" });
   const record = observation.record.known ? observation.record.value : undefined;
   if (!record) return refused("inspect_attempt", "The attempt could not be read from the attempt log", { lease: "unknown" });
+  deps.reads.record = record;
   return { attempt, record };
 }
 
@@ -92,7 +84,7 @@ async function returnLease(deps: OperationDependencies, record: AttemptRecord, a
 
 /** Completes the record of a return that an earlier run started, once the lease is no longer listed. */
 async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt: AttemptAssessment, by: "finish" | "discard", dryRun = false): Promise<boolean> {
-  if (attempt.facts.unknown.length || attempt.facts.possiblyRunning || attempt.leaseHeld || typeof attempt.task !== "object" || attempt.task.state === "in_flight") return false;
+  if (attempt.facts.unknown.length || attempt.facts.possiblyRunning || attempt.leaseHeld || attempt.leaseInOtherPool || typeof attempt.task !== "object" || attempt.task.state === "in_flight") return false;
   const started = record.entries.some(e => e.kind === "lease_return_started" && e.data.by === by && e.data.leaseId === attempt.attempt.leaseId);
   if (!started || record.entries.some(e => e.kind === "lease_returned")) return false;
   const intent = [...record.entries].reverse().find(e => e.kind === "lease_return_started" && e.data.by === by);
@@ -169,19 +161,22 @@ export async function discard(deps: Dependencies, options: { leaseId: string; no
 
 /** Only the target containing the exact intended commit can settle an interrupted integration. */
 async function reconcileIntegration(deps: OperationDependencies, record: AttemptRecord, dryRun = false): Promise<void> {
-  for (const failure of unsettledReads(record)) {
-    const intent = [...record.entries].reverse().find(e => e.sequence < failure.sequence && e.kind === "integration_started");
-    if (!intent || record.entries.some(e => e.kind === "lease_return_started" && e.sequence < failure.sequence)) continue;
+  const failures = [...unsettledReads(record), ...record.entries.filter(e => e.kind === "owner_read_failed" &&
+    record.confirmations?.some(c => c.fact === "owner_read_reconciled" && c.scope.failureSequence === e.sequence && c.scope.outcome === "happened"))];
+  for (const failure of failures) {
+    const intent = effectBefore(record, failure.sequence);
+    if (intent?.kind !== "integration_started") continue;
+    const confirmed = record.confirmations?.some(c => c.fact === "owner_read_reconciled" && c.scope.failureSequence === failure.sequence && c.scope.outcome === "happened");
+    if (confirmed && record.entries.some(e => e.kind === "integrated" && e.data.commit === intent.data.commit && e.data.targetBranch === intent.data.targetBranch)) continue;
     const target = intent.data.targetBranch as string;
     const commit = intent.data.commit as string;
     const git = { git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? {}, repository: deps.repository, ...gitReads(deps) };
     const head = await branchHead(git, target);
-    if (!head || !await isAncestor(git, commit, head) || dryRun) continue;
-    await deps.attempts.append(record, "owner_read_reconciled", { failureSequence: failure.sequence, targetBranch: target, commit });
-    const current = (await deps.reads.current())!;
-    if (!current.entries.some(e => e.kind === "integrated" && e.data.commit === commit && e.data.targetBranch === target)) {
-      await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: target, commit });
+    if (!head || !await isAncestor(git, commit, head) || dryRun) {
+      if (confirmed) throw new OwnerReadError(failure.data as ReadFailure);
+      continue;
     }
+    await deps.attempts.reconcileIntegration(record, failure.sequence, target, commit);
   }
 }
 

@@ -24,7 +24,7 @@ const acquireWith = (f: Fixture, acquire: Dependencies["workspaces"]["acquire"])
   ({ ...f.deps, workspaces: { recyclableRoots: () => f.deps.workspaces.recyclableRoots(), returnLease: (lease, options) => f.deps.workspaces.returnLease(lease, options), acquire, leases: () => f.deps.workspaces.leases(), pool: () => f.deps.workspaces.pool() } });
 
 const cases: Case[] = [
-  { name: "task store unreadable", reason: "refused", launches: 0,
+  { name: "task store unreadable", reason: "owner_read_retryable", launches: 0,
     inject: f => tasksWith(f, { ready: () => Promise.reject(new TaskStoreError("unreadable", "store offline")) }) },
   { name: "runtime records unreadable", reason: "refused", launches: 0,
     inject: f => ({ ...f.deps, runtime: { discover: () => Promise.reject(new Error("unreadable")) } as unknown as Dependencies["runtime"] }) },

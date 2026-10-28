@@ -73,6 +73,9 @@ export async function checkRetention(git: string, environment: Record<string, st
     else if (exists.exitCode === 1) reject(`Output branch ${reference.branch} does not exist (${reference.name})`);
     else if (exists.exitCode !== 0) unable("the output branch", exists);
     else {
+      const commit = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${reference.commit}^{commit}`]);
+      if (commit.timedOut || commit.truncated || commit.exitCode !== 0 && commit.exitCode !== 1) { unable("the result commit", commit); continue; }
+      if (commit.exitCode === 1) { reject(`Result commit ${reference.commit} does not exist (${reference.name})`); continue; }
       const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, ref]);
       if (contained.timedOut || contained.truncated) unable("whether the output branch contains the result commit", contained);
       else if (contained.exitCode === 1) reject(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);

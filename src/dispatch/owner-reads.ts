@@ -4,6 +4,10 @@ import type { AttemptObservation, ContextObservation, Observation } from "./obse
 import { classifyFailure, OwnerReadError, readDiagnostics, type ReadFailure } from "./failure.ts";
 import { result, type DispatchResult, type Stage } from "./result.ts";
 
+export function effectBefore(record: AttemptRecord, sequence: number): AttemptEntry | undefined {
+  return [...record.entries].reverse().find(e => e.sequence < sequence && (e.kind === "integration_started" || e.kind === "lease_return_started"));
+}
+
 export function unsettledReads(record: AttemptRecord): AttemptEntry[] {
   if (record.entries.some(e => e.kind === "lease_returned") || record.confirmations?.some(c => c.fact === "lease_returned")) return [];
   return record.entries.filter(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain" &&
@@ -37,13 +41,21 @@ export class OwnerReads {
 
   async failure(owner: string, step: string, error: unknown, record?: AttemptRecord, rejected = false): Promise<OwnerReadError> {
     record = await this.current().catch(() => undefined) ?? record;
+    const acquisitionPending = record !== undefined && record.entries.some(e => e.kind === "requested") &&
+      !record.entries.some(e => e.kind === "leased" || e.kind === "halted" && e.data.stage === "acquire" && e.data.reason !== "outcome_unknown");
+    const integrationPending = record?.entries.some(e => e.kind === "integration_started" &&
+      !record.entries.some(r => r.kind === "integrated" && r.data.commit === e.data.commit && r.data.targetBranch === e.data.targetBranch) &&
+      !record.confirmations?.some(c => c.fact === "owner_read_reconciled" && c.scope.outcome === "not_happened" && effectBefore(record, c.scope.failureSequence)?.sequence === e.sequence));
     const effectAttempted = this.effectAttempted || (!!record && (!!pendingReturn(record) ||
-      unsettledReads(record).length > 0 || record.entries.some(e => e.kind === "acquisition_started" && !record!.entries.some(r => r.kind === "leased") || e.kind === "integration_started" &&
-        !record!.entries.some(r => r.kind === "integrated" && r.data.commit === e.data.commit)))) ||
+      unsettledReads(record).length > 0 || acquisitionPending || integrationPending)) ||
       (!record && (this.operation === "finish" || this.operation === "discard"));
     const failure: ReadFailure = { owner, classification: classifyFailure(rejected && !effectAttempted ? { step: "rejection" } : { step: "read", effectAttempted }),
       operation: this.operation, step, failedAt: new Date().toISOString(), diagnostics: readDiagnostics(error) };
-    if (record) await this.deps.attempts.append(record, "owner_read_failed", failure);
+    const ref = record ?? this.record;
+    if (ref) {
+      try { await this.deps.attempts.append(ref, "owner_read_failed", failure); }
+      catch (error) { failure.diagnostics.message += `. The failure record could not be written: ${readDiagnostics(error).message}`; }
+    }
     return new OwnerReadError(failure);
   }
 
@@ -76,7 +88,7 @@ export class OwnerReads {
 
   /** A failed read after an effect or intent cannot authorise further effects on a later invocation. */
   async checkEffects(): Promise<void> {
-    const record = await this.current();
+    const record = await this.read("Attempt records", "check unsettled effects", () => this.current());
     const failed = record && unsettledReads(record)[0];
     if (failed) throw new OwnerReadError(failed.data as ReadFailure);
   }
