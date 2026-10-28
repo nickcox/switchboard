@@ -14,6 +14,7 @@ export const reasons = {
   held: "The attempt finished and the task is recorded as held. Its hold reason and the next action say why.",
   refused: "Nothing was changed. The detail says why the request could not go ahead.",
   stopped: "The attempt stopped after changing some state, which is preserved. The detail says where and why.",
+  task_definition_changed: "The task definition changed during acquisition. The attempt is held without launching and its lease is retained.",
   existing_request: "An attempt with this request ID already exists; its current state is reported instead.",
   resolved: "The operator's confirmation was recorded. The attempt no longer blocks dispatch.",
   delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",

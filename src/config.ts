@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AttemptStore } from "./attempts/store.ts";
+import type { RuntimeSettings } from "./attempts/specification.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
 import { githubBranchProtection } from "./infra/github.ts";
@@ -77,9 +78,32 @@ export const configSchema = z.strictObject({
 });
 export type Config = z.output<typeof configSchema>;
 
+const configurationSources = new WeakMap<Config, { path: string; raw: unknown }>();
 export async function loadConfig(path: string): Promise<Config> {
   const text = await readFile(path, "utf8");
-  return configSchema.parse(JSON.parse(text));
+  const raw: unknown = JSON.parse(text);
+  const config = configSchema.parse(raw);
+  configurationSources.set(config, { path, raw });
+  return config;
+}
+
+function configurationProvenance(config: Config, settings: RuntimeSettings): Record<string, string> {
+  const source = configurationSources.get(config);
+  const selector = (path: string): string => {
+    if (!source) return `configuration:${path}`;
+    let value: unknown = source.raw;
+    for (const part of path.split(".")) value = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined;
+    return value === undefined ? `default:${path}` : `${source.path}#${path}`;
+  };
+  return {
+    contextId: selector("contextId"), repository: selector("tasks.repo"), backingRepository: selector("workspaces.repository"),
+    baseRef: selector("delivery.baseRef"), outputBranch: `${selector("delivery.branchPrefix")} + task ID + attempt number`,
+    ...Object.fromEntries(Object.keys(settings).map(key => [`runtime.${key}`, key === "profile" ? "Switchboard Pi profile"
+      : key === "executable" ? "Switchboard process executable" : selector(`worker.${key === "entrypoint" ? "piEntrypoint" : key}`)])),
+    ...Object.fromEntries(["kind", "acceptance", "requiredEvidence", "requiredDeliverables"].map(key => [`delivery.default.${key}`, selector(`delivery.${key}`)])),
+    ...Object.fromEntries(Object.keys(config.delivery.byTaskKind).flatMap(kind => ["kind", "acceptance", "requiredEvidence", "requiredDeliverables"].map(key =>
+      [`delivery.byTaskKind.${kind}.${key}`, selector(`delivery.byTaskKind.${kind}.${key}`)]))),
+  };
 }
 
 export const databasePath = (config: Config) => config.databasePath ?? join(config.runtimeRoot, "switchboard.db");
@@ -102,18 +126,19 @@ export async function createDependencies(config: Config, progress?: (message: st
   const hostEnvironment = Object.fromEntries(Object.entries(process.env).flatMap(([k, v]) => (v === undefined ? [] : [[k, v]])));
   const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
   const runtime = new RuntimeRecords(config.runtimeRoot, tasks.database);
-  const worker = new PiWorker(runtime, {
-    executable: process.execPath, entrypoint: config.worker.piEntrypoint,
+  const runtimeSettings: RuntimeSettings = {
+    profile: "pi", executable: process.execPath, entrypoint: config.worker.piEntrypoint,
     provider: config.worker.provider, model: config.worker.model, shellTool: config.worker.shellTool, runMs: config.worker.runMs,
-    statsMs: config.worker.statsMs, keepAwake: config.keepAwake,
+    statsMs: config.worker.statsMs, requestMs: 5000, stopMs: 5000, requestPollMs: 1000,
     ...(config.worker.thinking === undefined ? {} : { thinking: config.worker.thinking }),
     ...(config.worker.maxCost === undefined ? {} : { maxCost: config.worker.maxCost }),
     ...(config.worker.maxTokens === undefined ? {} : { maxTokens: config.worker.maxTokens }),
-    environment: config.worker.environment ?? inherited([
-      "PATH", "HOME", "USER", "TMPDIR", "LANG",
-      "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec",
-    ]),
-  });
+  };
+  const workerEnvironment = structuredClone(config.worker.environment ?? inherited([
+    "PATH", "HOME", "USER", "TMPDIR", "LANG",
+    "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec",
+  ]));
+  const keepAwake = structuredClone(config.keepAwake);
   const workspaces = await TreehouseProvider.open({
     treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
     fetch: config.workspaces.fetch, environment: hostEnvironment,
@@ -125,9 +150,14 @@ export async function createDependencies(config: Config, progress?: (message: st
     workspaces,
     attempts: new AttemptStore(tasks.database, config.contextId),
     runtime,
-    launch: (input, signal, onRequest) => worker.execute(input, signal, {
-      ...(progress ? { onActivity: entry => progress(describeEntry(entry)) } : {}), ...(onRequest ? { onRequest } : {}),
-    }),
+    runtimeSettings, configurationProvenance: configurationProvenance(config, runtimeSettings),
+    launch: (input, signal, onRequest, settings) => {
+      if (!settings) throw new Error("Launching requires stored runtime settings");
+      const { profile: _, ...options } = settings;
+      return new PiWorker(runtime, { ...options, environment: workerEnvironment, keepAwake }).execute(input, signal, {
+        ...(progress ? { onActivity: entry => progress(describeEntry(entry)) } : {}), ...(onRequest ? { onRequest } : {}),
+      });
+    },
     retention: request => checkRetention(git, hostEnvironment, request),
     repository: config.workspaces.repository,
     policy: {

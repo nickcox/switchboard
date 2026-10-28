@@ -35,7 +35,7 @@ export class SqliteTaskStore implements TaskStore {
     if (!row) return undefined;
     return {
       id: String(row.id), title: String(row.title), body: String(row.body), repo: row.repo as string | null,
-      kind: row.kind as string | null, state: row.state as TaskState,
+      kind: row.kind as string | null, state: row.state as TaskState, definitionRevision: Number(row.definition_revision),
       held: row.hold_reason !== null,
       holdReason: row.hold_reason as string | null, blocked: Boolean(row.blocked), position: Number(row.position), holdRevision: Number(row.hold_revision),
       blockedBy: this.database.all("SELECT blocker FROM dependencies WHERE task = ? ORDER BY blocker", id).map(r => String(r.blocker)),
@@ -54,11 +54,10 @@ export class SqliteTaskStore implements TaskStore {
   async update(id: string, changes: TaskChanges): Promise<StoredTask> {
     return this.database.transaction(() => {
       this.require(id);
-      for (const key of ["title", "body", "repo", "kind"] as const) {
-        const value = changes[key];
-        if (value !== undefined) this.database.run(`UPDATE tasks SET ${key} = ? WHERE id = ?`,
-          key === "kind" && value === "task" ? null : (key === "repo" || key === "kind") && value === "" ? null : value, id);
-      }
+      const fields = (["title", "body", "repo", "kind"] as const).filter(key => changes[key] !== undefined);
+      if (fields.length) this.database.run(`UPDATE tasks SET ${fields.map(key => `${key} = ?`).join(", ")} WHERE id = ?`,
+        ...fields.map(key => key === "kind" && changes[key] === "task" ? null
+          : (key === "repo" || key === "kind") && changes[key] === "" ? null : changes[key]!), id);
       return this.require(id);
     });
   }

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { TaskStoreError } from "../../src/tasks/store.ts";
+import { specificationFor } from "../helpers.ts";
 
 const root = resolve(".investigation/tasks-unit");
 async function fixture(repo: string | null = "fixture") {
@@ -18,7 +19,7 @@ const rejected = (error: unknown) => error instanceof TaskStoreError && error.re
 
 async function start(store: SqliteTaskStore, id: string) {
   const attempts = new AttemptStore(store.database, "fixture");
-  const { ref } = await attempts.reserveAttempt({ taskId: id, requested: {}, maximum: 100 });
+  const { ref } = await attempts.reserveAttempt({ taskId: id, requested: {}, maximum: 100, specification: specificationFor });
   await attempts.append(ref, "leased", { leaseId: id, workspace: store.database.path, baseRef: "main", outputBranch: id, startingCommit: "a".repeat(40) });
   await attempts.startReservedTask(ref);
   return { attempts, ref };
@@ -139,21 +140,23 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
   await store.update("a", { body: "Operator's newer instructions" });
   await store.block("a", "b");
   await store.hold("b", "Operator hold");
-  const tasksBefore = await store.list();
-  const attemptBefore = attempts.read(ref);
+  const tasksBefore = (await store.list()).map(task => ({ ...task, definitionRevision: 1 }));
+  const { specification: _specification, ...attemptBefore } = attempts.read(ref);
   await store.database.transaction(() => {
     store.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
     store.database.run("UPDATE tasks SET started_body = 'Original instructions' WHERE id = 'a'");
-    for (const table of ["control_requests", "worker_activity", "worker_observations", "launches", "worker_claims"]) store.database.run(`DROP TABLE ${table}`);
+    for (const table of ["attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims"]) store.database.run(`DROP TABLE ${table}`);
     store.database.run("DROP INDEX worker_stop_per_attempt");
     store.database.run("ALTER TABLE confirmations DROP COLUMN note");
+    store.database.run("DROP TRIGGER task_definition_changed");
+    store.database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
     store.database.run("PRAGMA user_version = 2");
   });
   store.close();
   const reopened = await Promise.all([SqliteTaskStore.open({ path }), SqliteTaskStore.open({ path })]);
   try {
     for (const current of reopened) {
-      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 4);
+      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 5);
       assert.ok(current.database.all("PRAGMA table_info(tasks)").every(column => column.name !== "started_body"));
       assert.deepEqual(await current.list(), tasksBefore);
       assert.deepEqual(new AttemptStore(current.database, "fixture").read(ref), attemptBefore);
@@ -171,7 +174,7 @@ test("database durability, schema version, absolute canonical regular paths", as
   assert.equal(store.database.get("PRAGMA synchronous")?.synchronous, 2);
   assert.equal(store.database.get("PRAGMA fullfsync")?.fullfsync, 1);
   assert.equal(store.database.get("PRAGMA busy_timeout")?.timeout, 0);
-  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 4);
+  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 5);
   store.close();
   await assert.rejects(SqliteTaskStore.open({ path: "relative.db" }), /absolute/);
   await assert.rejects(SqliteTaskStore.open({ path: dir }), /regular file/);

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Database } from "../database.ts";
+import { attemptSpecificationSchema } from "../attempts/specification.ts";
 import type { RuntimeBinding, ChildExit, ThinkingLevel } from "./records.ts";
 import type { ActivityEntry } from "./activity.ts";
 import type { ControlRequest, RequestResult } from "./requests.ts";
@@ -35,6 +36,11 @@ export class RuntimeStore {
       if (database.get("SELECT 1 FROM launches WHERE context = ? AND task = ? AND attempt = ?", launch.context, launch.task, launch.attempt)) {
         if (binding) throw exists();
         return undefined;
+      }
+      if (binding) {
+        const row = database.get("SELECT specification FROM attempt_specifications WHERE context = ? AND task = ? AND attempt = ?", launch.context, launch.task, launch.attempt);
+        const specification = attemptSpecificationSchema.safeParse(row && JSON.parse(String(row.specification)));
+        if (!specification.success) throw new Error("The stored attempt specification is incomplete; this attempt cannot be launched");
       }
       const claimId = binding ? randomUUID() : undefined;
       if (claimId) database.run(`INSERT INTO worker_claims(id,context,task,attempt,owner_pid,owner_started_at,heartbeat_at)

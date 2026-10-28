@@ -21,8 +21,8 @@ if (stage === "after-lease") {
 } else if (stage === "after-launch") {
   const real = deps.launch;
   const log = config.worker.environment?.FAKE_PI_LOG;
-  deps.launch = async (input, signal) => {
-    const running = real(input, signal);
+  deps.launch = async (...args) => {
+    const running = real(...args);
     // Die once the worker has received its prompt, before its exit can be observed and recorded.
     while (!(log && existsSync(log) && readFileSync(log, "utf8").includes('"type":"prompt"'))) await sleep(5);
     die();

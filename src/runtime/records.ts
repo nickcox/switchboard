@@ -9,8 +9,9 @@ export { inside } from "../infra/storage.ts";
 import { workerInputSchema, type WorkerInput } from "./contracts.ts";
 import { RuntimeStore, type RuntimeAddress } from "./store.ts";
 
-export const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-export type ThinkingLevel = z.infer<typeof thinkingLevelSchema>;
+import { thinkingLevelSchema } from "./settings.ts";
+export { thinkingLevelSchema, type ThinkingLevel } from "./settings.ts";
+import type { ThinkingLevel } from "./settings.ts";
 export const bindingSchema = z.strictObject({
   version: z.literal(1), createdAt: z.iso.datetime(), input: workerInputSchema,
   sessionDirectory: z.string(), artefactDirectory: z.string(), resultPath: z.string(),

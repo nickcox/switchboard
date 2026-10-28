@@ -5,6 +5,23 @@ import type { WorkerInput } from "../src/runtime/contracts.ts";
 import { RuntimeRecords, type RuntimeRecord } from "../src/runtime/records.ts";
 import { Database } from "../src/database.ts";
 import { PiWorker, type PiWorkerOptions } from "../src/runtime/pi/worker.ts";
+import type { Task } from "../src/tasks/store.ts";
+import type { AttemptRef } from "../src/attempts/log.ts";
+import type { AttemptSpecification, RuntimeSettings } from "../src/attempts/specification.ts";
+
+export const runtimeSettings: RuntimeSettings = {
+  profile: "pi", executable: process.execPath, entrypoint: resolve(import.meta.dirname, "fixtures/pi-rpc.ts"),
+  provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 1000, runMs: 5000, stopMs: 600, statsMs: 300000, requestPollMs: 1000,
+};
+export function specificationFor(task: Task, ref: AttemptRef, overrides: Partial<AttemptSpecification> = {}): AttemptSpecification {
+  return {
+    version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
+    title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], repository: task.repo, kind: task.kind,
+    backingRepository: "/fixture", baseRef: "main", outputBranch: "output",
+    delivery: { kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] },
+    runtime: runtimeSettings, provenance: { configuration: "fixture" }, ...overrides,
+  };
+}
 
 /** Runtime-only fixtures still have a real attempt to which launch rows refer. */
 class FixtureRuntimeRecords extends RuntimeRecords {
@@ -20,7 +37,15 @@ class FixtureRuntimeRecords extends RuntimeRecords {
         const attempt = Number(database.get("SELECT COALESCE(MAX(number),0)+1 AS n FROM attempt_numbers WHERE context = ? AND task = ?", contextId, taskId)!.n);
         database.run("INSERT INTO attempt_numbers VALUES(?,?,?)", contextId, taskId, attempt);
         database.run("INSERT INTO attempts(context,task,number,reserved_at,closed) VALUES(?,?,?,?,1)", contextId, taskId, attempt, new Date().toISOString());
-        database.run("INSERT INTO attempt_entries VALUES(?,?,?,?,?)", contextId, taskId, attempt, 0, JSON.stringify({ kind: "leased", data: { leaseId } }));
+        database.run("INSERT INTO attempt_entries VALUES(?,?,?,?,?)", contextId, taskId, attempt, 0, JSON.stringify({ kind: "leased", data: {
+          leaseId, workspace: input.workspace, baseRef: input.delivery.baseRef, outputBranch: input.delivery.outputBranch,
+          startingCommit: input.delivery.startingCommit, backingRepository: "/fixture",
+        } }));
+        const { baseRef, outputBranch, startingCommit: _, ...delivery } = input.delivery;
+        const specification = specificationFor({ id: taskId, title: taskId, body: input.instructions, definitionRevision: 1,
+          repo: null, kind: null, state: "queued", held: false, holdReason: null, blocked: false }, { contextId, taskId, attempt },
+        { baseRef, outputBranch, delivery, acceptanceCriteria: input.acceptanceCriteria });
+        database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", contextId, taskId, attempt, JSON.stringify(specification));
       });
     } finally { database.close(); }
     return super.reserve(input, hook);

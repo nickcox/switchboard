@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory } from "../attempts/log.ts";
 import { AttemptStore, AttemptStoreError } from "../attempts/store.ts";
+import { attemptSpecificationSchema, workerInput, type RuntimeSettings } from "../attempts/specification.ts";
 import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
 import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
 import type { RuntimeRecord, RuntimeRecords } from "../runtime/records.ts";
@@ -28,7 +29,9 @@ export type Dependencies = {
   attempts: AttemptStore;
   maxAttempts?: number;
   runtime: RuntimeRecords;
-  launch: (input: WorkerInput, signal?: AbortSignal, onRequest?: WorkerHooks["onRequest"]) => Promise<PiRunReport>;
+  launch: (input: WorkerInput, signal?: AbortSignal, onRequest?: WorkerHooks["onRequest"], settings?: RuntimeSettings) => Promise<PiRunReport>;
+  runtimeSettings: RuntimeSettings;
+  configurationProvenance: Record<string, string>;
   retention: (request: RetentionRequest) => Promise<RetentionResult>;
   /** The repository whose refs the workspaces share, for retention checks. */
   repository: string;
@@ -191,9 +194,23 @@ export async function dispatchOnce(
     });
   }
 
+  // Copy configuration before reservation; neither later edits nor acquisition may change this attempt's inputs.
+  const configuration = structuredClone({ delivery: deps.delivery, runtime: deps.runtimeSettings, repository: deps.repository, provenance: deps.configurationProvenance });
+  const resolvedContract = structuredClone(contract);
   let ref: AttemptRef;
   try {
-    const reservation = await deps.attempts.reserveAttempt({ taskId, maximum: deps.maxAttempts ?? 1, repo: selected.repo, requested: {
+    const reservation = await deps.attempts.reserveAttempt({ taskId, maximum: deps.maxAttempts ?? 1, repo: selected.repo, definitionRevision: selected.definitionRevision,
+      specification: (task, ref) => ({
+        version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
+        title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], repository: task.repo, kind: task.kind,
+        backingRepository: configuration.repository, baseRef: configuration.delivery.baseRef,
+        outputBranch: `${configuration.delivery.branchPrefix}${task.id}/attempt-${ref.attempt}`,
+        delivery: resolvedContract, runtime: configuration.runtime, provenance: {
+          ...configuration.provenance,
+          ...Object.fromEntries(Object.keys(resolvedContract).map(key => [`delivery.${key}`,
+            configuration.provenance[`delivery.${task.kind === null ? "default" : `byTaskKind.${task.kind}`}.${key}`] ?? "unknown"])),
+        },
+      }), requested: {
       ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
     } });
     ref = reservation.ref;
@@ -224,10 +241,11 @@ export async function dispatchOnce(
 
     stage = "acquire";
     // Step 3: acquire a lease for the exact task ID on a unique output branch.
-    const outputBranch = `${deps.delivery.branchPrefix}${taskId}/attempt-${ref.attempt}`;
+    const specification = attemptSpecificationSchema.parse(deps.attempts.read(ref).specification);
+    const outputBranch = specification.outputBranch;
     let allocation: Allocation;
     try {
-      allocation = await deps.workspaces.acquire({ holder: taskId, baseRef: deps.delivery.baseRef, branch: outputBranch });
+      allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.baseRef, branch: outputBranch });
     } catch (error) {
       if (error instanceof WorkspaceError && error.reason === "rejected") return halt("acquire", "fix_configuration", `The workspace provider refused the lease: ${message(error)}`);
       // Inspect by holder and branch instead of acquiring again, and report whatever lease exists.
@@ -239,31 +257,31 @@ export async function dispatchOnce(
     }
     Object.assign(summary, { leaseId: allocation.leaseId, workspace: allocation.path, outputBranch, startingCommit: allocation.startingCommit });
     await deps.attempts.append(ref, "leased", {
-      leaseId: allocation.leaseId, workspace: allocation.path, baseRef: deps.delivery.baseRef, outputBranch, startingCommit: allocation.startingCommit,
-      pool: allocation.pool,
+      leaseId: allocation.leaseId, workspace: allocation.path, baseRef: specification.baseRef, outputBranch, startingCommit: allocation.startingCommit,
+      pool: allocation.pool, backingRepository: specification.backingRepository,
     });
     deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
 
     stage = "start";
     // Steps 4–5: readiness, task start and its entry are one transaction, after acquiring the lease.
-    let task: Task;
-    try { task = await deps.attempts.startReservedTask(ref); }
-    catch (error) { return halt("start", "return_unused_lease", `The task could not be started: ${message(error)}`); }
+    try { await deps.attempts.startReservedTask(ref); }
+    catch (error) {
+      if (error instanceof AttemptStoreError && error.reason === "task_definition_changed") {
+        return result({ ok: false, reason: "task_definition_changed", stage: "start", lease: "preserved", observed, attempt: summary,
+          detail: error.message, nextAction: "return_unused_lease" });
+      }
+      return halt("start", "return_unused_lease", `The task could not be started: ${message(error)}`);
+    }
 
     stage = "launch";
     // Steps 6–7: launch exactly one worker and observe it until its direct child exits.
-    const delivery: DeliveryContract = {
-      baseRef: deps.delivery.baseRef, startingCommit: allocation.startingCommit, outputBranch, kind: contract.kind,
-      acceptance: contract.acceptance, requiredEvidence: contract.requiredEvidence, requiredDeliverables: contract.requiredDeliverables,
-    };
-    const sessionId = randomUUID();
+    const stored = deps.attempts.read(ref);
+    const input = workerInput(attemptSpecificationSchema.parse(stored.specification), stored.allocation!, randomUUID());
+    const delivery = input.delivery;
+    const sessionId = input.identity.sessionId;
     summary.sessionId = sessionId;
     await deps.attempts.append(ref, "launched", { sessionId });
     deps.progress?.(`Session ${sessionId}`);
-    const input: WorkerInput = {
-      identity: { contextId: deps.contextId, taskId, leaseId: allocation.leaseId, sessionId },
-      workspace: allocation.path, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], delivery,
-    };
     let report: PiRunReport;
     // Each stop request or operator message the worker forwards is recorded with its sender (ADR-0005).
     let requests = Promise.resolve();
@@ -277,7 +295,7 @@ export async function dispatchOnce(
       });
     };
     const unrecorded: { id: string; kind: string; sender: string; error: string }[] = [];
-    try { report = await deps.launch(input, options.signal, onRequest); }
+    try { report = await deps.launch(input, options.signal, onRequest, specification.runtime); }
     catch (error) {
       // The runtime reserves its records before starting a worker, so a worker can exist only if they do. Without an
       // observed or confirmed exit, the error leaves the attempt unresolved, like any launch whose worker may be running.
@@ -320,7 +338,7 @@ async function finalise(
 ): Promise<DispatchResult> {
   const worker = workerView(report, notStarted);
   const retention = await deps.retention({
-    repository: deps.repository, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
+    repository: deps.attempts.read(ref).allocation!.backingRepository!, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
     ...(summary.resultCommit ? { resultCommit: summary.resultCommit } : {}),
     gitReferences: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "artefact" ? [w.path] : [])),

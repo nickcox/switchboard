@@ -32,6 +32,7 @@ const entrySchemas = {
     leaseId: nonempty, workspace: nonempty, baseRef: nonempty, outputBranch: nonempty, startingCommit: commit,
     /** The workspace pool the lease was acquired in. Absent in entries written before it was recorded. */
     pool: nonempty.optional(),
+    backingRepository: nonempty.optional(),
   }),
   task_started: z.strictObject({}),
   launched: z.strictObject({ sessionId: z.uuid() }),
@@ -106,7 +107,11 @@ export function parseAttemptEntry(value: unknown): AttemptEntry {
 }
 
 export type AttemptRef = { contextId: string; taskId: string; attempt: number };
-export type AttemptRecord = AttemptRef & { entries: AttemptEntry[]; confirmations?: import("./store.ts").ConfirmationRecord[] };
+export type AttemptRecord = AttemptRef & {
+  entries: AttemptEntry[]; confirmations?: import("./store.ts").ConfirmationRecord[];
+  specification?: import("./specification.ts").StoredSpecification;
+  allocation?: import("./specification.ts").AttemptAllocation;
+};
 
 const entryName = /^(\d{4,})(?:-([a-z_]+))?\.json$/;
 const readBatch = 32;

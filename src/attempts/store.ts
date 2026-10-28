@@ -3,6 +3,7 @@ import { requireRetainedStorage } from "../infra/storage.ts";
 import { z } from "zod";
 import { Database } from "../database.ts";
 import type { Task, TaskState } from "../tasks/store.ts";
+import { attemptSpecificationSchema, storedSpecificationSchema, type AttemptSpecification } from "./specification.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
 
 const nonempty = z.string().trim().min(1);
@@ -21,7 +22,7 @@ type ExpectedTask = Pick<Task, "state" | "holdReason" | "holdRevision">;
 const identity = (ref: AttemptRef): AttemptRef => ({ contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt });
 
 export class AttemptStoreError extends Error {
-  readonly reason: "not_ready" | "capacity" | "request_reserved" | "attempt_closed" | "task_changed" | "attempt_changed";
+  readonly reason: "not_ready" | "capacity" | "request_reserved" | "attempt_closed" | "task_changed" | "attempt_changed" | "task_definition_changed" | "specification_incomplete";
   constructor(reason: AttemptStoreError["reason"], message: string) { super(message); this.reason = reason; }
 }
 
@@ -60,6 +61,8 @@ export class AttemptStore {
 
   async reserveAttempt(options: {
     taskId: string; requested: EntryData<"requested">; maximum: number; repo?: string | null;
+    definitionRevision?: number;
+    specification?: (task: Task, ref: AttemptRef) => AttemptSpecification;
   }): Promise<{ created: boolean; ref: AttemptRef }> {
     z.number().int().positive().parse(options.maximum);
     return this.database.transaction(() => {
@@ -79,22 +82,47 @@ export class AttemptStore {
         this.database.get("SELECT 1 FROM attempts WHERE task = ? AND number IS NOT NULL AND closed = 0", options.taskId)) {
         throw new AttemptStoreError("not_ready", `Task ${options.taskId} is not available for an attempt`);
       }
+      if (options.definitionRevision !== undefined && task.definitionRevision !== options.definitionRevision) {
+        throw new AttemptStoreError("task_changed", "The task definition changed before reservation");
+      }
       const number = Number(this.database.get("SELECT coalesce(max(number), 0) + 1 AS n FROM attempt_numbers WHERE context = ? AND task = ?", this.contextId, options.taskId)!.n);
       const ref = { contextId: this.contextId, taskId: options.taskId, attempt: number };
       this.database.run("INSERT INTO attempt_numbers VALUES(?,?,?)", ref.contextId, ref.taskId, ref.attempt);
       this.database.run("INSERT INTO attempts(context,task,number,request_id,reserved_at) VALUES(?,?,?,?,?)",
         ref.contextId, ref.taskId, ref.attempt, requestId ?? null, new Date().toISOString());
       this.insert(ref, "requested", options.requested);
+      if (options.specification) {
+        const specification = attemptSpecificationSchema.parse(options.specification(task, ref));
+        if (specification.taskId !== task.id || specification.contextId !== ref.contextId || specification.definitionRevision !== task.definitionRevision ||
+          specification.title !== task.title || specification.instructions !== (task.body.trim() === "" ? task.title : task.body) ||
+          specification.repository !== task.repo || specification.kind !== task.kind) throw new Error("Specification differs from the reserved task");
+        this.database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, JSON.stringify(specification));
+      } else {
+        this.database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, JSON.stringify({
+          version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
+          title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], repository: task.repo, kind: task.kind,
+          provenance: { task: "task store", delivery: "unknown", runtime: "unknown" },
+        }));
+      }
       return { created: true, ref };
     });
   }
 
   async startReservedTask(ref: AttemptRef): Promise<Task> {
-    return this.database.transaction(() => {
+    const started = await this.database.transaction(() => {
       this.requireOpen(ref);
       const task = this.task(ref.taskId);
+      const record = this.read(ref);
+      const parsed = attemptSpecificationSchema.safeParse(record.specification);
+      if (!parsed.success) throw new AttemptStoreError("specification_incomplete", "The stored attempt specification is incomplete; resolve this attempt before dispatching again");
+      if (task && task.definitionRevision !== parsed.data.definitionRevision) {
+        if (task.state === "queued" && !task.held) this.writeOutcome(ref.taskId, "hold", "task_definition_changed");
+        this.insert(ref, "halted", { stage: "start", reason: "task_definition_changed", detail: "The task definition changed during acquisition; return the unused lease, then release the task and dispatch a new attempt" });
+        this.closeAttempt(ref);
+        return undefined;
+      }
       if (!task || task.state !== "queued" || task.held || task.blocked) throw new AttemptStoreError("not_ready", "The task stopped being ready");
-      const entries = this.read(ref).entries;
+      const entries = record.entries;
       if (!entries.some(e => e.kind === "leased") || entries.some(e => e.kind === "task_started")) {
         throw new AttemptStoreError("not_ready", "Starting requires a lease and an attempt that has not started");
       }
@@ -102,6 +130,8 @@ export class AttemptStore {
       this.insert(ref, "task_started", {});
       return this.task(ref.taskId)!;
     });
+    if (!started) throw new AttemptStoreError("task_definition_changed", "The task definition changed during acquisition; return the unused lease, then release the task and dispatch a new attempt");
+    return started;
   }
 
   async recordOutcome(ref: AttemptRef, outcome: Required<Pick<EntryData<"task_recorded">, "outcome" | "reason" | "category">>): Promise<{ task: Task; applied: boolean }> {
@@ -146,6 +176,7 @@ export class AttemptStore {
     if (["requested", "task_started", "task_recorded", "discarded", "output_accepted", "lease_return_started", "operator_resolved"].includes(kind)) throw new Error("Use the transactional task/attempt operation");
     await this.database.transaction(() => {
       this.requireAttempt(ref);
+      if (kind === "leased" && this.read(ref).entries.some(e => e.kind === "leased")) throw new Error("An attempt's allocation cannot be changed");
       if (kind === "lease_returned") {
         const value = data as EntryData<"lease_returned">;
         const intended = this.read(ref).entries.some(e => e.kind === "lease_return_started" && e.data.leaseId === value.leaseId && e.data.returnId === value.returnId && e.data.by === value.by);
@@ -194,7 +225,12 @@ export class AttemptStore {
       ref.contextId, ref.taskId, ref.attempt).map(row => parseAttemptEntry(JSON.parse(String(row.entry))));
     if (entries.length === 0 || entries[0]!.kind !== "requested" || entries.some((entry, sequence) => entry.sequence !== sequence ||
       (sequence > 0 && entry.kind === "requested") || entry.contextId !== ref.contextId || entry.taskId !== ref.taskId || entry.attempt !== ref.attempt)) throw new Error("Inconsistent attempt entries");
-    return { ...identity(ref), entries, confirmations: this.confirmations(ref) };
+    const row = this.database.get("SELECT specification FROM attempt_specifications WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
+    const allocation = entries.find(e => e.kind === "leased");
+    return { ...identity(ref), entries, confirmations: this.confirmations(ref),
+      ...(row ? { specification: storedSpecificationSchema.parse(JSON.parse(String(row.specification))) } : {}),
+      ...(allocation ? { allocation: allocation.data as EntryData<"leased"> } : {}),
+    };
   }
 
   list(): AttemptRecord[] {
@@ -219,6 +255,7 @@ export class AttemptStore {
       const archive = {
         ...identity(expected), summary, entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
         archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected),
+        ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
         ...(reservation.request_id === null ? {} : { reservation: { requestId: reservation.request_id, reservedAt: reservation.reserved_at } }),
       };
       const existing = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", expected.contextId, expected.taskId, expected.attempt);
@@ -281,7 +318,7 @@ export class AttemptStore {
     const row = this.database.get(`SELECT *, EXISTS(SELECT 1 FROM dependencies d JOIN tasks b ON b.id = d.blocker
       WHERE d.task = tasks.id AND b.state <> 'done') AS blocked FROM tasks WHERE id = ?`, id);
     return row ? { id: String(row.id), title: String(row.title), body: String(row.body), repo: row.repo as string | null,
-      kind: row.kind as string | null, state: row.state as TaskState, held: row.hold_reason !== null,
+      kind: row.kind as string | null, definitionRevision: Number(row.definition_revision), state: row.state as TaskState, held: row.hold_reason !== null,
       holdReason: row.hold_reason as string | null, holdRevision: Number(row.hold_revision), blocked: Boolean(row.blocked) } : undefined;
   }
   private expectTask(id: string, expected: ExpectedTask): Task {

@@ -13,6 +13,7 @@ import { TaskStoreError } from "../tasks/store.ts";
 import { AttemptLog, holdLabels, parseAttemptEntry, type AttemptEntry, type AttemptRecord, type OutcomeCategory } from "./log.ts";
 import { archiveSchema, reservationSchema, type ArchivedAttempt } from "./prune.ts";
 import { AttemptStore, type Confirmation, type ConfirmationRecord } from "./store.ts";
+import { specificationFromBinding } from "./specification.ts";
 
 const hasAttempts = (database: Database) => ["attempts", "attempt_numbers"].some(table =>
   database.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", table) && database.get(`SELECT 1 FROM ${table} LIMIT 1`));
@@ -143,6 +144,7 @@ async function writeSnapshot(config: Config, copy: Database, before: Awaited<Ret
         if (claimId) copy!.run("INSERT INTO worker_claims VALUES(?,?,?,?,?,?,?,?)", claimId, config.contextId, record.taskId, record.attempt, 0, at, at, at);
         copy!.run("INSERT INTO launches VALUES(?,?,?,?,?,?,?,?,?)", config.contextId, record.taskId, record.attempt, summary.leaseId,
           at, runtime ? "launch" : "fence", directory, runtime ? JSON.stringify(runtime.binding) : null, claimId);
+        if (runtime) copy!.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", config.contextId, record.taskId, record.attempt, JSON.stringify(specificationFromBinding(runtime.binding.input)));
         if (runtime?.exit) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "exit", runtime.exit.observedAt, JSON.stringify(runtime.exit.childExit));
         if (runtime?.start) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "session_start", runtime.start.observedAt, JSON.stringify(runtime.start.thinkingLevel));
       }
@@ -159,7 +161,11 @@ async function writeSnapshot(config: Config, copy: Database, before: Awaited<Ret
       }
     });
     for (const { record, confirmations } of before.records) {
-      assert.deepEqual(store.read(record), record, "Imported entries differ");
+      const imported = store.read(record);
+      const runtime = before.runtimeRecords.records.find(r => r.binding.input.identity.leaseId === summarise(record).leaseId);
+      const allocation = record.entries.find(e => e.kind === "leased")?.data;
+      assert.deepEqual(imported, { ...record, ...(allocation ? { allocation } : {}),
+        ...(runtime ? { specification: specificationFromBinding(runtime.binding.input) } : {}) }, "Imported entries differ");
       assert.deepEqual(store.confirmations(record), confirmations, "Imported confirmations differ");
     }
     const importedRuntime = await new RuntimeRecords(config.runtimeRoot, copy).discover(config.contextId);
@@ -214,8 +220,8 @@ export async function importAttempts(config: Config) {
     await source.vacuumInto(staging);
     copy = await Database.open(staging, config.databaseRetryMs);
     await writeSnapshot(config, copy, before);
-    // Version 3 drops the obsolete body snapshot; every current task field must still match.
-    const currentTasks = tasks.map(({ started_body: _startedBody, ...task }) => task);
+    // Migrations drop the obsolete body snapshot and initialise definition revisions; other fields must still match.
+    const currentTasks = tasks.map(({ started_body: _startedBody, ...task }) => ({ ...task, definition_revision: task.definition_revision ?? 1 }));
     assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), currentTasks, "Task fields changed in the copy");
     assert.deepEqual(copy.all("SELECT * FROM dependencies ORDER BY task, blocker"), dependencies, "Dependencies changed in the copy");
     await requireSettled(config);
@@ -284,6 +290,7 @@ export async function importRuntime(config: Config) {
         if (claimId) copy!.run("INSERT INTO worker_claims VALUES(?,?,?,?,?,?,?,?)", claimId, context, record.taskId, record.attempt, 0, at, at, at);
         copy!.run("INSERT INTO launches VALUES(?,?,?,?,?,?,?,?,?)", context, record.taskId, record.attempt, summary.leaseId,
           at, runtime ? "launch" : "fence", directory, runtime ? JSON.stringify(runtime.binding) : null, claimId);
+        if (runtime) copy!.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", context, record.taskId, record.attempt, JSON.stringify(specificationFromBinding(runtime.binding.input)));
         if (runtime?.exit) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "exit", runtime.exit.observedAt, JSON.stringify(runtime.exit.childExit));
         if (runtime?.start) copy!.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, "session_start", runtime.start.observedAt, JSON.stringify(runtime.start.thinkingLevel));
         if (runtime?.stop && !store.confirmations(record).some(c => c.fact === "worker_stopped")) {
@@ -303,7 +310,7 @@ export async function importRuntime(config: Config) {
       } : runtime.child };
     });
     assert.deepEqual(imported.map(({ storage: _storage, claimId: _claimId, ...record }) => record).sort(byDirectory), expected.sort(byDirectory), "Imported runtime records differ from the files");
-    assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), before.tasks.map(task => ({ ...task })), "Tasks changed in the copy");
+    assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), before.tasks.map(({ started_body: _startedBody, ...task }) => ({ ...task, definition_revision: task.definition_revision ?? 1 })), "Tasks changed in the copy");
     assert.deepEqual(copy.all("SELECT * FROM attempts ORDER BY context, task, number"), before.attempts, "Attempts changed in the copy");
     assert.deepEqual(copy.all("SELECT * FROM attempt_entries ORDER BY context, task, attempt, sequence"), before.entries, "Attempt entries changed in the copy");
     // Check again that nothing changed in the database or the files while the copy was built.

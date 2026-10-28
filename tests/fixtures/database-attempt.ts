@@ -1,12 +1,13 @@
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
+import { specificationFor } from "../helpers.ts";
 
 const [path, mode] = process.argv.slice(2);
 const tasks = await SqliteTaskStore.open({ path: path! });
 const attempts = new AttemptStore(tasks.database, "context");
 try {
   if (mode === "reserve") {
-    const reservation = await attempts.reserveAttempt({ taskId: "task", requested: { requestId: "request" }, maximum: 2 });
+    const reservation = await attempts.reserveAttempt({ taskId: "task", requested: { requestId: "request" }, maximum: 2, specification: specificationFor });
     if (reservation.created) {
       await attempts.append(reservation.ref, "leased", {
         leaseId: "lease", workspace: "/fixture", baseRef: "main", outputBranch: "output", startingCommit: "a".repeat(40),

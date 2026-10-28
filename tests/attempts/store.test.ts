@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
+import { specificationFor } from "../helpers.ts";
 
 const run = promisify(execFile);
 const childScript = resolve(import.meta.dirname, "../fixtures/database-attempt.ts");
@@ -24,7 +25,7 @@ async function fixture(retryMs?: number) {
 }
 const lease = { leaseId: "lease", workspace: "/fixture", baseRef: "main", outputBranch: "output", startingCommit: "a".repeat(40) };
 const held = { outcome: "hold" as const, reason: "Switchboard attempt 1 review required", category: "review_required" as const };
-const reserve = (attempts: AttemptStore, requestId = "request") => attempts.reserveAttempt({ taskId: "task", requested: { requestId }, maximum: 2 });
+const reserve = (attempts: AttemptStore, requestId = "request") => attempts.reserveAttempt({ taskId: "task", requested: { requestId }, maximum: 2, specification: specificationFor });
 
 async function lockedChild(path: string, mode: "hold" | "crash") {
   const child = spawn(process.execPath, [childScript, path, mode], { stdio: ["ignore", "pipe", "pipe"] });
@@ -95,9 +96,11 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const before = await tasks.list();
   try {
     await tasks.database.transaction(() => {
-      for (const table of ["control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) {
+      for (const table of ["attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) {
         tasks.database.run(`DROP TABLE ${table}`);
       }
+      tasks.database.run("DROP TRIGGER task_definition_changed");
+      tasks.database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
       tasks.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
       tasks.database.run("PRAGMA user_version = 1");
     });
@@ -105,7 +108,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const reopened = await SqliteTaskStore.open({ path });
   try {
     assert.deepEqual(await reopened.list(), before);
-    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 4);
+    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 5);
     assert.deepEqual(new AttemptStore(reopened.database, "context").list(), []);
   } finally { reopened.close(); }
 });

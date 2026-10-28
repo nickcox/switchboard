@@ -1,4 +1,5 @@
 import { readActivity } from "../runtime/activity.ts";
+import { attemptSpecificationSchema, type StoredSpecification, type AttemptAllocation } from "../attempts/specification.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Lease } from "../workspaces/provider.ts";
 import type { Dependencies } from "./dispatch.ts";
@@ -11,6 +12,9 @@ import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
 export type AttemptStatus = {
   taskDisagreement?: boolean;
+  specification?: StoredSpecification;
+  specificationComplete: boolean;
+  allocation?: AttemptAllocation;
   attempt: AttemptSummary;
   /** The attempt's state across every owner (Phase 2 PRD, attempt states). */
   state: AttemptState;
@@ -115,7 +119,11 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   const attempts: AttemptStatus[] = [];
   for (const { facts, ...assessment } of assessed) {
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
-    attempts.push({ ...assessment, changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning,
+    const record = records.find(r => r.taskId === assessment.attempt.taskId && r.attempt === assessment.attempt.attempt);
+    attempts.push({ ...assessment,
+      specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,
+      ...(record?.specification ? { specification: record.specification } : {}), ...(record?.allocation ? { allocation: record.allocation } : {}),
+      changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning,
       ...(assessment.state === "awaiting_finish" ? { nextAction: { code: "finish_attempt" as const,
         description: `The task is done with its lease retained. Once no worker process remains, return it with switchboard finish --lease ${assessment.attempt.leaseId} --no-processes` } } : {}),
       ...(facts.unknown.length ? { unknownOwners: facts.unknown } : {}),
@@ -166,6 +174,8 @@ export function describeStatus(value: StatusResult): string {
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
       : `lease ${a.attempt.leaseId} not held`;
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: ${a.state.replaceAll("_", " ")}; last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
+    if (!a.specificationComplete) lines.push("  Stored specification incomplete – this attempt cannot be launched; inspect and resolve it");
+    if (a.specification) lines.push(`  Specification: ${a.specification.title ?? "unknown title"}, revision ${a.specification.definitionRevision ?? "unknown"}; ${a.specification.runtime?.profile ?? "unknown profile"}`);
     if (a.unknownOwners) for (const reason of a.unknownOwners) lines.push(`  Unknown: ${reason}`);
     if (a.taskDisagreement) lines.push("  Task unchanged: a newer operator decision disagrees with the attempt outcome");
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;

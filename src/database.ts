@@ -4,6 +4,8 @@ import { dirname, isAbsolute } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { TaskStoreError } from "./tasks/store.ts";
+import { specificationFromBinding } from "./attempts/specification.ts";
+import { workerInputSchema } from "./runtime/contracts.ts";
 
 const busy = (error: unknown) => /database is locked|database is busy/.test(String(error));
 // SQLITE_IOERR_TRUNCATE. On Windows, opening can fail with it for a moment after another process exited without
@@ -56,7 +58,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 4) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 5) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -163,6 +165,30 @@ export class Database {
             WHEN OLD.result IS NOT NULL BEGIN SELECT RAISE(ABORT, 'Request results cannot be changed'); END;
           PRAGMA user_version = 4;
         `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 5) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 5) return;
+        db.exec(`
+          ALTER TABLE tasks ADD COLUMN definition_revision INTEGER NOT NULL DEFAULT 1 CHECK(definition_revision > 0);
+          CREATE TRIGGER task_definition_changed AFTER UPDATE OF title, body, repo, kind ON tasks
+            WHEN NEW.title IS NOT OLD.title OR NEW.body IS NOT OLD.body OR NEW.repo IS NOT OLD.repo OR NEW.kind IS NOT OLD.kind
+            BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END;
+          CREATE TABLE attempt_specifications (
+            context TEXT NOT NULL, task TEXT NOT NULL, attempt INTEGER NOT NULL,
+            specification TEXT NOT NULL CHECK(json_valid(specification)), PRIMARY KEY(context, task, attempt),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempts(context, task, number) ON DELETE CASCADE);
+          CREATE TRIGGER attempt_specifications_immutable BEFORE UPDATE ON attempt_specifications BEGIN
+            SELECT RAISE(ABORT, 'Attempt specifications cannot be changed');
+          END;
+          CREATE TRIGGER attempt_specifications_not_removed BEFORE DELETE ON attempt_specifications
+            WHEN EXISTS(SELECT 1 FROM attempts WHERE context = OLD.context AND task = OLD.task AND number = OLD.attempt)
+            BEGIN SELECT RAISE(ABORT, 'Attempt specifications cannot be removed while the attempt exists'); END;
+        `);
+        for (const row of result.all("SELECT context, task, attempt, binding FROM launches WHERE kind = 'launch'")) {
+          const input = workerInputSchema.parse(JSON.parse(String(row.binding)).input);
+          result.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", row.context!, row.task!, row.attempt!, JSON.stringify(specificationFromBinding(input)));
+        }
+        db.exec("PRAGMA user_version = 5");
       });
       return result;
     } catch (error) { db.close(); throw error; }
