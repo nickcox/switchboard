@@ -215,7 +215,10 @@ test("historical usage snapshots supply the latest cost, but missing launch or a
 });
 
 for (const limit of ["cost", "worker time", "deadline"] as const) {
-  test(`the owning dispatcher stops a running worker over the objective ${limit}`, async () => {
+  test(`the owning dispatcher stops a running worker over the objective ${limit}`, async t => {
+    const now = Date.now();
+    // Launch preparation must not spend the worker-time budget before the worker opens.
+    if (limit === "worker time") t.mock.timers.enable({ apis: ["Date"], now });
     const f = await fixture();
     try {
       const earlier = (await f.reserve("earlier")).ref;
@@ -245,14 +248,18 @@ for (const limit of ["cost", "worker time", "deadline"] as const) {
               if (limit === "deadline") await f.objectives.update("goal", { deadline: new Date(Date.now() + 100).toISOString() });
             },
             async waitForEnd(_ms, signal) {
-              const end = Date.now() + 3000;
-              while (!signal.aborted && Date.now() < end) await sleep(5);
+              const end = performance.now() + 3000;
+              while (!signal.aborted && performance.now() < end) await sleep(5);
               if (!signal.aborted) throw new Error("Objective budget never stopped the worker");
               throw new RuntimeFailure("interrupted", "Stopped");
             },
             async confirmEnd() { throw new Error("A stopped worker must not be accepted"); },
             async usage() {
-              if (limit === "worker time") return new Promise<{ cost: number; tokens: number }>(() => {});
+              if (limit === "worker time") {
+                // Cross the budget only with a running worker and an outstanding usage request.
+                t.mock.timers.setTime(now + 1000);
+                return new Promise<{ cost: number; tokens: number }>(() => {});
+              }
               if (limit === "deadline") throw new Error("Provider cannot report usage");
               return { cost: 1, tokens: 10 };
             },
@@ -277,6 +284,7 @@ for (const limit of ["cost", "worker time", "deadline"] as const) {
       const spending = objectiveBudget(f.tasks.database, "goal").spending;
       if (limit === "cost") assert.equal(spending.cost, 2, "the worker's own cost was below the objective limit; the total stopped it");
       else assert.equal(spending.cost, null, "failed usage snapshots never become zero");
+      if (limit === "worker time") assert.equal(spending.workerTimeMs, 2000, "the earlier attempt and the controlled running time are both counted");
     } finally { f.tasks.close(); }
   });
 }
