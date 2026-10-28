@@ -26,12 +26,13 @@ export type BudgetRefusal = {
 };
 
 /** No launch means no worker spending. A fence or an unobserved exit must not invent usage. */
-export function attemptSpending(database: Database, ref: AttemptRef, now = Date.now()): AttemptSpending {
+export function attemptSpending(database: Database, reference: AttemptRef, now = Date.now()): AttemptSpending {
+  const ref = { contextId: reference.contextId, taskId: reference.taskId, attempt: reference.attempt };
   const row = database.get("SELECT closed FROM attempts WHERE context = ? AND task = ? AND number = ?", ref.contextId, ref.taskId, ref.attempt);
   if (!row) {
     const archive = database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
     const saved = archive && JSON.parse(String(archive.summary));
-    return { ...ref, cost: null, workerTimeMs: null, ...saved?.spending, finished: true };
+    return { ...ref, cost: saved?.spending?.cost ?? null, workerTimeMs: saved?.spending?.workerTimeMs ?? null, finished: true };
   }
   const launch = database.get("SELECT * FROM launches WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
   if (!launch) {

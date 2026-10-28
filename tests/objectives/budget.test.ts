@@ -67,6 +67,8 @@ test("spending sums latest cost and worker time across tasks, attempts and conte
     const before = objectiveBudget(f.tasks.database, "goal", now);
     assert.deepEqual(before.spending, { cost: 5, observedCost: 5, workerTimeMs: 4000, observedWorkerTimeMs: 4000, unknown: [] });
     await f.attempts.archiveAttempt(f.attempts.read(first), {}, []);
+    const archive = JSON.parse(String(f.tasks.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", first.contextId, first.taskId, first.attempt)!.summary));
+    assert.deepEqual(archive.spending, { ...first, cost: 2, workerTimeMs: 1000, finished: true }, "accounting does not retain the pruned entry log");
     assert.equal(f.tasks.database.get("SELECT 1 FROM worker_usage WHERE directory = ?", directory), undefined);
     assert.deepEqual(objectiveBudget(f.tasks.database, "goal", now), before);
     assert.deepEqual(f.objectives.show("goal").spending.cost, 5);
@@ -213,7 +215,7 @@ test("historical usage snapshots supply the latest cost, but missing launch or a
 });
 
 for (const limit of ["cost", "worker time", "deadline"] as const) {
-  test(`the owning dispatcher stops a running worker over the objective ${limit}, even when usage fails`, async () => {
+  test(`the owning dispatcher stops a running worker over the objective ${limit}`, async () => {
     const f = await fixture();
     try {
       const earlier = (await f.reserve("earlier")).ref;
@@ -250,7 +252,8 @@ for (const limit of ["cost", "worker time", "deadline"] as const) {
             },
             async confirmEnd() { throw new Error("A stopped worker must not be accepted"); },
             async usage() {
-              if (limit !== "cost") throw new Error("Provider cannot report usage");
+              if (limit === "worker time") return new Promise<{ cost: number; tokens: number }>(() => {});
+              if (limit === "deadline") throw new Error("Provider cannot report usage");
               return { cost: 1, tokens: 10 };
             },
             async deliver() { return "accepted"; },

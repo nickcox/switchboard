@@ -177,7 +177,7 @@ export class WorkerSupervisor {
     const takeSnapshot = async (current: RuntimeSession) => {
       lastSnapshot = Date.now();
       try {
-        const usage = await bounded(current.usage(), this.options.requestMs, "usage_snapshot_timeout");
+        const usage = await bounded(current.usage(), this.options.requestMs, "usage_snapshot_timeout", signal);
         activity.write({ kind: "stats", tokens: usage.tokens, cost: usage.cost });
         const over = (this.options.maxCost !== undefined && usage.cost > this.options.maxCost) ||
           (this.options.maxTokens !== undefined && usage.tokens > this.options.maxTokens);
