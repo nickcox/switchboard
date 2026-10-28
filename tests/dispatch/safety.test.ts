@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AttemptFacts } from "../../src/dispatch/assess.ts";
-import { checkCanAcceptOutput, checkCanConfirmLeaseReturned, checkCanConfirmStopped, checkCanControl, checkCanDiscard, checkCanFinish, checkCanIntegrate, checkCanPrune, checkCanReturnLease, type Permission } from "../../src/dispatch/safety.ts";
+import { checkCanAcceptOutput, checkCanConfirmLeaseReturned, checkCanConfirmStopped, checkCanControl, checkCanDiscard, checkCanDispatch, checkCanFinish, checkCanIntegrate, checkCanPrune, checkCanRedispatch, checkCanReturnLease, type Permission } from "../../src/dispatch/safety.ts";
 
 const facts = (overrides: Partial<AttemptFacts> = {}): AttemptFacts => ({
   unknown: [], hasRecord: true, possiblyRunning: false, dispatcherRunning: false, leaseHeld: true, leaseInOtherPool: false,
@@ -23,6 +23,8 @@ const refusal = (permission: Permission, reason: string) => {
 
 type Check = { name: string; run: (facts: AttemptFacts) => Permission; base?: Partial<AttemptFacts>; needsRecord?: boolean; needsStopped?: boolean; needsLease?: boolean };
 const checks: Check[] = [
+  { name: "dispatch", run: checkCanDispatch },
+  { name: "redispatch", run: f => checkCanRedispatch(f, "task-a1") },
   { name: "finish", run: f => checkCanFinish(f, false), needsRecord: true, needsStopped: true, needsLease: true },
   { name: "accept output", run: f => checkCanAcceptOutput(f, true), needsRecord: true, needsStopped: true, needsLease: true },
   { name: "integrate", run: f => checkCanIntegrate(f, integration), needsRecord: true, needsStopped: true, needsLease: true },
@@ -59,6 +61,23 @@ for (const check of checks) {
     refusal(check.run(facts({ ...check.base, leaseInOtherPool: true })), "lease_in_other_pool");
   });
 }
+
+test("dispatch blocks possibly running workers across the context regardless of their dispatcher heartbeat", () => {
+  for (const dispatcherRunning of [false, true]) {
+    const input = facts({ possiblyRunning: true, dispatcherRunning });
+    for (const check of [checkCanDispatch(input), checkCanRedispatch(input, "task-a1")]) {
+      refusal(check, "possibly_running");
+      if (!check.allowed) assert.equal(check.nextAction, "stop_worker");
+    }
+  }
+  assert.deepEqual(checkCanDispatch(facts({ hasRecord: false, task: "missing" })), { allowed: true });
+});
+
+test("a stopped attempt blocks its own task only for an unknown pool lease or its latest unfinished dispatch", () => {
+  refusal(checkCanRedispatch(facts({ leaseInOtherPool: true }), "task-a1"), "lease_in_other_pool");
+  refusal(checkCanRedispatch(facts({ unfinished: true }), "task-a1"), "unfinished");
+  assert.deepEqual(checkCanRedispatch(facts({ open: true, unfinished: false }), "task-a1"), { allowed: true });
+});
 
 test("finishing uses outcome facts, never state labels or an editable hold's wording", () => {
   assert.deepEqual(checkCanFinish(facts({ task: done }), false), { allowed: true });
