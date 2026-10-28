@@ -14,6 +14,7 @@ export const attemptSpecificationSchema = z.strictObject({
   repository: nonempty.nullable(), backingRepository: nonempty, kind: nonempty.nullable(),
   baseRef: nonempty, outputBranch: nonempty, delivery: contractSchema, runtime: runtimeSettingsSchema,
   startingPoint: recordedStartingPointSchema.optional(),
+  handover: nonempty.optional(),
   /** Configuration selectors, or unknown for values that older bindings did not retain. */
   provenance: z.record(z.string(), nonempty),
 });
@@ -34,7 +35,7 @@ export function workerInput(specification: AttemptSpecification, allocation: Att
   }
   return {
     identity: { contextId: specification.contextId, taskId: specification.taskId, leaseId: allocation.leaseId, sessionId },
-    workspace: allocation.workspace, instructions: specification.instructions, acceptanceCriteria: specification.acceptanceCriteria,
+    workspace: allocation.workspace, instructions: specification.instructions + (specification.handover ? `\n\n${specification.handover}` : ""), acceptanceCriteria: specification.acceptanceCriteria,
     delivery: { ...specification.delivery, baseRef: specification.baseRef, outputBranch: specification.outputBranch, startingCommit: allocation.startingCommit },
   };
 }

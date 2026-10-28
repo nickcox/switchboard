@@ -6,17 +6,18 @@ import { observeAttempts } from "./observe.ts";
 import { result, type DispatchResult, type NextAction } from "./result.ts";
 import { checkCanDispatch, checkCanRedispatch, checkCanStartFrom } from "./safety.ts";
 import { specificationFactory } from "./specification.ts";
+import { handover } from "./handover.ts";
 
-/** Reservation only. Preparing a fresh workspace and handing over earlier findings are separate operations. */
+/** Reserve immutable starting inputs only. Acquisition and launch belong to dispatch. */
 export async function reserveFromAttempt(deps: Dependencies, options: {
-  taskId: string; startingPoint: StartingPoint; requestId: string;
+  taskId: string; startingPoint: StartingPoint; requestId: string; note?: string; dryRun?: boolean;
 }): Promise<DispatchResult> {
   const refuse = (reason: string, detail: string, nextAction: NextAction = "inspect_attempt") => result({
     ok: false, reason: reason === "request_input_mismatch" ? reason : "refused", stage: "select", lease: "none",
     observed: { reason }, detail, nextAction,
   });
   try {
-    const inputs = { taskId: options.taskId, startingPoint: options.startingPoint };
+    const inputs = { taskId: options.taskId, startingPoint: options.startingPoint, ...(options.note === undefined ? {} : { note: options.note }) };
     const existing = await deps.attempts.findByRequest(options.requestId, inputs);
     if (existing) return result({ ok: true, reason: "existing_request", stage: "select", lease: "none", observed: {},
       attempt: { contextId: existing.contextId, taskId: existing.taskId, attempt: existing.attempt, requestId: options.requestId }, nextAction: "inspect_attempt" });
@@ -56,13 +57,20 @@ export async function reserveFromAttempt(deps: Dependencies, options: {
     if (!task) return refuse("not_ready", "The task does not exist");
     const contract = task.kind === null ? deps.delivery.default : deps.delivery.byTaskKind[task.kind];
     if (!contract) return refuse("not_ready", "The task's kind has no configured delivery contract", "fix_configuration");
+    await deps.runtime.probeExclusiveCreation();
+    const previousResult = observation.runtime.known ? observation.runtime.value.find(r =>
+      r.binding.input.identity.leaseId === allocation.leaseId)?.validatedResult?.content : undefined;
+    const writtenHandover = await handover(task, record, output, previousResult, options.note);
+    const specification = specificationFactory(deps, contract);
     const reservation = await deps.attempts.reserveAttempt({
-      taskId: task.id, requestInputs: inputs, startingPoint: options.startingPoint,
+      taskId: task.id, requestInputs: inputs, startingPoint: options.startingPoint, dryRun: options.dryRun === true,
       startingPointEvidence: { records: observation.records.known ? observation.records.value : [], unknown: [], retainedCommit: output },
       maximum: deps.maxAttempts ?? 1, maximumPerTask: deps.maxAttemptsPerTask ?? 3, repo: task.repo, definitionRevision: task.definitionRevision,
       requested: { requestId: options.requestId, pool: observation.pool.known ? observation.pool.value : "unknown", contract: { name: task.kind ?? "default", ...contract } },
-      specification: specificationFactory(deps, contract),
+      specification: (task, ref) => ({ ...specification(task, ref), handover: writtenHandover }),
     });
+    if (options.dryRun) return result({ ok: true, reason: "dry_run", stage: "select", lease: "none", observed: {},
+      selection: { taskId: task.id, contract: { name: task.kind ?? "default", ...contract } }, nextAction: "none" });
     return result({ ok: true, reason: reservation.created ? "reserved" : "existing_request", stage: "select", lease: "none", observed: {},
       attempt: { ...reservation.ref, requestId: options.requestId }, nextAction: "inspect_attempt" });
   } catch (error) {

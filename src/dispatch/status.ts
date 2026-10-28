@@ -192,6 +192,7 @@ export function describeStatus(value: StatusResult): string {
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: ${a.state.replaceAll("_", " ")}; last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
     if (!a.specificationComplete) lines.push("  Stored specification incomplete – this attempt cannot be launched; inspect and resolve it");
     if (a.specification) lines.push(`  Specification: ${a.specification.title ?? "unknown title"}, revision ${a.specification.definitionRevision ?? "unknown"}; ${a.specification.runtime?.profile ?? "unknown profile"}`);
+    if (a.specification?.handover) lines.push(a.specification.handover);
     if (a.unknownOwners) for (const reason of a.unknownOwners) lines.push(`  Unknown: ${reason}`);
     if (a.latestReadFailure) {
       const f = a.latestReadFailure;

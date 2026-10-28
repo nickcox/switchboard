@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory } from "../attempts/log.ts";
 import { AttemptStoreError, type ArchivedRequest } from "../attempts/store.ts";
-import { attemptSpecificationSchema, workerInput } from "../attempts/specification.ts";
+import { attemptSpecificationSchema, workerInput, type StartingPoint } from "../attempts/specification.ts";
 import type { DeliveryContract, WorkerResult } from "../runtime/contracts.ts";
 import type { RunReport, WorkerHooks } from "../runtime/supervisor.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
@@ -16,6 +16,7 @@ import { assessAttempts, type AttemptAssessment } from "./assess.ts";
 import { checkCanDispatch, checkCanRedispatch } from "./safety.ts";
 import { OwnerReads, readRefusal } from "./owner-reads.ts";
 import { specificationFactory } from "./specification.ts";
+import { reserveFromAttempt } from "./reserve.ts";
 export type { ContractSpec, DeliveryConfiguration, Dependencies } from "./dependencies.ts";
 
 /** Owner state read before dispatch. Every field comes from its owner, not from memory. */
@@ -77,9 +78,11 @@ export async function inspect(deps: Dependencies, reads = new OwnerReads(deps, "
     inFlight, ready, possiblyRunning, leasesInOtherPools, openTasks, assessments };
 }
 
+type DispatchOptions = { taskId?: string; requestId?: string; startingPoint?: StartingPoint; note?: string; signal?: AbortSignal; dryRun?: boolean };
+
 /** Runs one dispatch: steps 1–8 of the Phase 1 PRD dispatch sequence. Never starts a second task. */
 export async function dispatchOnce(
-  deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean } = {},
+  deps: Dependencies, options: DispatchOptions = {},
 ): Promise<DispatchResult> {
   const reads = new OwnerReads(deps, "dispatch");
   return dispatchAttempt(deps, options, reads).catch(error => {
@@ -88,7 +91,7 @@ export async function dispatchOnce(
   });
 }
 
-async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean }, reads: OwnerReads): Promise<DispatchResult> {
+async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, reads: OwnerReads): Promise<DispatchResult> {
   try {
     const roots = await reads.read("Treehouse workspace roots", "check storage", () => deps.workspaces.recyclableRoots());
     await deps.runtime.checkStorage(roots);
@@ -97,6 +100,14 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
     const failed = readRefusal(error);
     return failed ? { ...failed, lease: "none" } : refusal("preflight", "fix_configuration", `Runtime storage is not retained: ${message(error)}`);
   }
+  if (options.startingPoint) {
+    if (!options.taskId) return refusal("select", "choose_another_task", "Starting from an earlier attempt requires an explicit task");
+    const requestId = options.requestId ?? randomUUID();
+    const reserved = await reserveFromAttempt(deps, { ...options, taskId: options.taskId, startingPoint: options.startingPoint, requestId });
+    if (reserved.reason !== "reserved") return reserved;
+    return executeReserved(deps, { ...options, requestId }, reads, reserved.attempt!, options.taskId, reserved.observed);
+  }
+  if (options.note !== undefined) return refusal("select", "choose_another_task", "A handover note requires a starting attempt");
   if (options.requestId !== undefined) {
     try {
       const existing = await deps.attempts.findByRequest(options.requestId, { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) });
@@ -180,6 +191,10 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
     if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", "inspect_attempt", error.message, { ...observed, reason: error.reason });
     return refusal("select", "fix_configuration", `The attempt store could not be written: ${message(error)}`, observed);
   }
+  return executeReserved(deps, options, reads, ref, taskId, observed);
+}
+
+async function executeReserved(deps: Dependencies, options: DispatchOptions, reads: OwnerReads, ref: AttemptRef, taskId: string, observed: Record<string, unknown>): Promise<DispatchResult> {
   reads.record = ref;
   const summary: AttemptSummary = { contextId: deps.contextId, taskId, attempt: ref.attempt, ...(options.requestId ? { requestId: options.requestId } : {}) };
   deps.progress?.(`Task ${taskId}, attempt ${ref.attempt}`);
@@ -209,7 +224,7 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
     const outputBranch = specification.outputBranch;
     let allocation: Allocation;
     try {
-      allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.baseRef, branch: outputBranch });
+      allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.startingPoint?.commit ?? specification.baseRef, branch: outputBranch });
     } catch (error) {
       if (error instanceof WorkspaceError && error.readFailure) throw await reads.failure(error.readFailure.owner, "read acquisition", error.readFailure.error);
       if (error instanceof WorkspaceError && error.reason === "unreadable") throw await reads.failure("Treehouse", "read acquisition", error);
@@ -227,6 +242,9 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
       pool: allocation.pool, backingRepository: allocation.backingRepository,
     });
     deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
+    if (specification.startingPoint && allocation.startingCommit !== specification.startingPoint.commit) {
+      return halt("acquire", "inspect_attempt", "The acquired workspace does not start at the recorded earlier output commit");
+    }
 
     stage = "start";
     // Steps 4–5: readiness, task start and its entry are one transaction, after acquiring the lease.
@@ -315,6 +333,7 @@ async function finalise(
   const roots = await reads.read("Treehouse workspace roots", "check retention", () => deps.workspaces.recyclableRoots());
   const retention = await reads.read("Git retention", "check retention", () => deps.retention({
     repository: stored.allocation!.backingRepository!, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
+    startingCommit: stored.allocation!.startingCommit,
     ...(summary.resultCommit ? { resultCommit: summary.resultCommit } : {}),
     gitReferences: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "artefact" ? [w.path] : [])),

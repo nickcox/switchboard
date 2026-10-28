@@ -99,6 +99,7 @@ export class AttemptStore {
     definitionRevision?: number;
     requestInputs?: RequestInputs;
     maximumPerTask?: number;
+    dryRun?: boolean;
     startingPoint?: StartingPoint;
     startingPointEvidence?: StartingPointEvidence;
     specification: (task: Task, ref: AttemptRef) => AttemptSpecification;
@@ -134,6 +135,7 @@ export class AttemptStore {
       }
       const number = Number(this.database.get("SELECT coalesce(max(number), 0) + 1 AS n FROM attempt_numbers WHERE context = ? AND task = ?", this.contextId, options.taskId)!.n);
       const ref = { contextId: this.contextId, taskId: options.taskId, attempt: number };
+      if (options.dryRun) return { created: false, ref };
       this.database.run("INSERT INTO attempt_numbers VALUES(?,?,?)", ref.contextId, ref.taskId, ref.attempt);
       this.database.run("INSERT INTO attempts(context,task,number,request_id,reserved_at) VALUES(?,?,?,?,?)",
         ref.contextId, ref.taskId, ref.attempt, null, new Date().toISOString());

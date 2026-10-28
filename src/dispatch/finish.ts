@@ -131,7 +131,7 @@ async function recheck(deps: OperationDependencies, attempt: AttemptAssessment, 
   if (report.outcome !== "completed") return `The worker reported ${report.outcome}, not completed work; use --accept-output to accept its committed output instead`;
   const delivery = runtime.binding.input.delivery;
   const retention = await readRetention(deps, {
-    repository: deps.repository, workspace: runtime.binding.input.workspace, outputBranch: delivery.outputBranch,
+    repository: deps.repository, workspace: runtime.binding.input.workspace, outputBranch: delivery.outputBranch, startingCommit: delivery.startingCommit,
     gitReferences: report.workReferences.flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: report.workReferences.flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
     recyclableRoots: await deps.reads.read("Treehouse workspace roots", "check retention", () => deps.workspaces.recyclableRoots()),

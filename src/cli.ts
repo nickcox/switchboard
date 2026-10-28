@@ -19,7 +19,7 @@ const usage = `Usage:
   switchboard --version
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
   switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
-  switchboard dispatch --once [--dry-run] [--task <id>] [--request-id <id>] [--json] [--config <path>]
+  switchboard dispatch --once [--dry-run] [--task <id> [--from-attempt <n> [--note <text> | --note-file <path>]]] [--request-id <id>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
@@ -88,6 +88,7 @@ async function main(argv: string[]): Promise<number> {
     args: argv, allowPositionals: true, strict: true,
     options: {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
+      "from-attempt": { type: "string" }, "note-file": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
       lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, "read-failure": { type: "string" }, "effect-outcome": { type: "string" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" }, "older-than": { type: "string" },
@@ -107,7 +108,7 @@ async function main(argv: string[]): Promise<number> {
   // An option that a command does not use is refused, so that, for example, `stop --dry-run` cannot send a real stop.
   const selectors = ["lease", "task", "attempt"];
   const allowed: Record<string, string[]> = {
-    dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
+    dispatch: ["once", "dry-run", "task", "request-id", "from-attempt", "note", "note-file"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
     watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
     prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
   };
@@ -120,6 +121,16 @@ async function main(argv: string[]): Promise<number> {
     console.error("dispatch requires --once: Phase 1 dispatches exactly one task per invocation.\n\n" + usage);
     return 2;
   }
+  const fromAttempt = values["from-attempt"] === undefined ? undefined : Number(values["from-attempt"]);
+  if (command === "dispatch" && (
+    (fromAttempt !== undefined && (!values.task || !Number.isSafeInteger(fromAttempt) || fromAttempt <= 0)) ||
+    ((values.note !== undefined || values["note-file"] !== undefined) && fromAttempt === undefined) ||
+    (values.note !== undefined && values["note-file"] !== undefined)
+  )) {
+    console.error("--from-attempt requires --task and a positive integer; use at most one of --note and --note-file with it.");
+    return 2;
+  }
+  const note = values["note-file"] === undefined ? values.note : await readFile(resolve(values["note-file"]), "utf8");
   const olderThan = Number(values["older-than"]);
   if (command === "prune" && (!Number.isFinite(olderThan) || olderThan <= 0)) {
     console.error("prune requires --older-than <days>, a positive number of days.");
@@ -247,6 +258,8 @@ async function main(argv: string[]): Promise<number> {
     const value = await dispatchOnce(deps, {
       ...(values.task ? { taskId: values.task } : {}), ...(values["request-id"] ? { requestId: values["request-id"] } : {}), signal: controller.signal,
       dryRun: values["dry-run"] === true,
+      ...(fromAttempt === undefined ? {} : { startingPoint: { taskId: values.task!, attempt: fromAttempt } }),
+      ...(note === undefined ? {} : { note }),
     });
     console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
     return value.ok ? 0 : 1;

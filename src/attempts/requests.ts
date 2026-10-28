@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { startingPointSchema, type StartingPoint } from "./specification.ts";
 import type { Database } from "../database.ts";
 
-export type RequestInputs = { taskId?: string; startingPoint?: StartingPoint };
+export type RequestInputs = { taskId?: string; startingPoint?: StartingPoint; note?: string };
 
 /** Only caller inputs belong here – selected tasks and resolved configuration are not explicit inputs. */
 export function requestFingerprint(inputs: RequestInputs): string {
   return createHash("sha256").update(JSON.stringify({ taskId: inputs.taskId ?? null,
     ...(inputs.startingPoint ? { startingPoint: startingPointSchema.parse(inputs.startingPoint) } : {}),
+    ...(inputs.note === undefined ? {} : { note: inputs.note }),
   })).digest("hex");
 }
 

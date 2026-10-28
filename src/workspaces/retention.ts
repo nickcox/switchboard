@@ -10,6 +10,8 @@ export type RetentionRequest = {
   outputBranch: string;
   /** The exact result commit for code deliverables; omitted when the deliverable is not code. */
   resultCommit?: string;
+  /** A code attempt must add commits beyond its own allocation, not just inherit earlier output. */
+  startingCommit?: string;
   /** Check only recorded commits on retained branches, without requiring an old workspace to still exist. */
   commitsOnly?: boolean;
   /** Every reported Git deliverable, checked by its own branch and exact commit. */
@@ -88,6 +90,12 @@ export async function checkRetention(git: string, environment: Record<string, st
   if (request.commitsOnly) {
     if (!references.length || request.artefacts.length) reject("Commit-only retention requires Git references and no artefacts");
     return { retained: findings.length === 0, findings, notes, ...(readFailures.length ? { readFailures, ...(definiteRejection ? { definiteRejection } : {}) } : {}) };
+  }
+
+  if (!request.scratchWorkspace && request.startingCommit) {
+    const commits = await run(request.workspace, ["rev-list", "--count", `${request.startingCommit}..HEAD`]);
+    if (commits.exitCode !== 0 || commits.timedOut || commits.truncated) unable("for commits beyond the starting commit", commits);
+    else if (commits.stdout.trim() === "0") reject("The attempt has no commits beyond its starting commit");
   }
 
   // Commits reachable from the workspace's HEAD but from no local branch become unreachable when it is recycled.

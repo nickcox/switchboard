@@ -48,6 +48,8 @@ export async function watch(
   const find = async () => (await deps.runtime.discover(deps.contextId)).find(r => r.binding.input.identity.leaseId === options.leaseId);
   let record = await find();
   if (!record) return { found: false, finished: false };
+  const attempt = (await deps.attempts.forTask(record.binding.input.identity.taskId)).find(a => a.allocation?.leaseId === options.leaseId);
+  if (attempt?.specification?.handover) options.print({ v: 1, ts: attempt.entries[0]!.recordedAt, kind: "note", text: attempt.specification.handover });
   let printed = 0;
   for (;;) {
     const entries = await readActivity(record);
