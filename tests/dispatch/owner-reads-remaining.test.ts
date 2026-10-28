@@ -61,6 +61,19 @@ for (const owner of ["records", "runtime", "leases", "pool", "task"] as const) {
   });
 }
 
+test("dispatch keeps every failed preflight command when no attempt exists to record them", async () => {
+  const f = await fixture({ tasks: [task("reads-a1")] });
+  const workspaces = clone(f.deps.workspaces);
+  workspaces.leases = async () => { throw failure(); };
+  workspaces.pool = async () => { throw failure(); };
+  const first = await dispatchOnce({ ...f.deps, workspaces });
+  assert.equal(first.reason, "owner_read_retryable");
+  const failures = first.observed.readFailures as Record<string, unknown>[];
+  assert.equal(failures.length, 2);
+  for (const failed of failures) checkDiagnostic(failed, "owner_read", "dispatch");
+  assert.deepEqual(f.deps.attempts.list(), []);
+});
+
 for (const method of ["ready", "inFlight"] as const) {
   test(`dispatch: task ${method} failure is retryable before reservation`, async () => {
     const f = await fixture({ tasks: [task("reads-a1")] });
@@ -247,5 +260,30 @@ for (const point of ["before", "intent", "effect"] as const) {
     assert.deepEqual(f.deps.attempts.pendingDeletions(), []);
     const archive = await f.deps.attempts.findByRequest("cleanup");
     assert.ok(archive && "archived" in archive && archive.summary.cleanup);
+    const confirmed = f.deps.attempts.cleanupEntries(deletion).find(e => e.kind === "deletion_confirmed")!;
+    assert.ok(confirmed);
+    if (point !== "before") assert.ok((confirmed.data.failureSequences as number[]).includes(failed.sequence));
+  });
+}
+
+for (const owner of ["records", "runtime", "leases", "pool", "task"] as const) {
+  test(`prune: ${owner} read after an archive requires reconciliation and keeps remaining records`, async () => {
+    const f = await settled();
+    await f.tasks.add({ id: "reads-b1", title: "Second", repo: "fixture" });
+    const second = (await f.deps.attempts.reserveAttempt({ taskId: "reads-b1", requested: {}, maximum: 1, specification: specificationFor })).ref;
+    await f.deps.attempts.append(second, "halted", { stage: "acquire", reason: "rejected" });
+    let archived = false, pending = true;
+    const deps = inject(f.deps, owner, () => {
+      if (archived && pending) { pending = false; throw failure(); }
+    });
+    deps.attempts.archiveAttempt = async (...args) => { await f.deps.attempts.archiveAttempt(...args); archived = true; };
+    const first = await prune(deps, { olderThan: 0.000000001 });
+    assert.equal(first.reason, "reconciliation_required", first.detail ?? "");
+    assert.equal((first.observed.removed as unknown[]).length, 1);
+    assert.equal(f.deps.attempts.list().length, 1);
+    checkDiagnostic(f.deps.attempts.read(second).entries.at(-1)!.data, "effect_uncertain", "prune");
+    assert.equal((await prune(f.deps, { olderThan: 0.000000001 })).reason, "reconciliation_required");
+    assert.equal((await prune(f.deps, { olderThan: 0.000000001, dryRun: true })).reason, "reconciliation_required");
+    assert.equal(f.deps.attempts.list().length, 1);
   });
 }

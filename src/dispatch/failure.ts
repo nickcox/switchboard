@@ -43,8 +43,10 @@ export function readDiagnostics(error: unknown): ReadFailure["diagnostics"] {
 
 export class OwnerReadError extends Error {
   readonly failure: ReadFailure;
-  constructor(failure: ReadFailure) {
+  readonly failures: ReadFailure[];
+  constructor(failure: ReadFailure, failures = [failure]) {
     super(`${failure.owner} could not be read`);
     this.failure = failure;
+    this.failures = failures;
   }
 }

@@ -6,12 +6,12 @@ import { test } from "node:test";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
 import { finish } from "../../src/dispatch/finish.ts";
 import { OwnerReads, unsettledReads } from "../../src/dispatch/owner-reads.ts";
-import { resolveReadFailure } from "../../src/dispatch/resolve.ts";
+import { resolveLeaseReturned, resolveReadFailure } from "../../src/dispatch/resolve.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { describeCommand } from "../../src/infra/command.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import { WorkspaceError } from "../../src/workspaces/provider.ts";
-import { fixture, task } from "./fixture.ts";
+import { attemptsWith, fixture, task } from "./fixture.ts";
 
 const failure = () => new WorkspaceError("unreadable", "Injected reconciliation read", describeCommand({
   exitCode: 23, stdout: "read output", stderr: "read error", timedOut: false, truncated: false,
@@ -114,6 +114,20 @@ test("read reconciliation refuses while the worker may be running, including a f
   assert.equal((await f.deps.attempts.findByLease(f.leaseId))!.confirmations!.filter(c => c.fact === "owner_read_reconciled").length, 0);
 });
 
+test("a failed diagnostic write does not hide the failed owner's command output", async () => {
+  const f = await fixture({ tasks: [task("reconcile-a1")], scenario: "commit-result" });
+  const leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+  const workspaces = clone(f.deps.workspaces);
+  workspaces.leases = async () => { throw failure(); };
+  const attempts = attemptsWith(f, { append: async () => { throw new Error("Ledger temporarily unavailable"); } });
+  const first = await finish({ ...f.deps, workspaces, attempts }, { leaseId, noProcesses: true });
+  assert.equal(first.reason, "owner_read_retryable");
+  const recorded = first.observed.readFailure as { diagnostics: { message: string; command: { stdout: string } } };
+  assert.equal(recorded.diagnostics.command.stdout, "read output");
+  assert.match(recorded.diagnostics.message, /Ledger temporarily unavailable/);
+  assert.equal((await f.deps.workspaces.leases()).length, 1);
+});
+
 test("a failed owner read during operator reconciliation refuses again and keeps the new failure", async () => {
   const f = await uncertainReturn();
   const workspaces = clone(f.deps.workspaces);
@@ -180,4 +194,43 @@ exec '${onPath("git")}' "$@"
   assert.equal((await f.tasks.read("reconcile-a1"))!.state, "done");
   assert.equal((await readFile(effects, "utf8")).trim(), "integrated");
   assert.notEqual((await status(deps)).attempts[0]!.nextAction.code, "reconcile_owner");
+});
+
+test("a changed pool cannot settle an uncertain return through finish or legacy resolve", async () => {
+  const f = await uncertainReturn();
+  f.run(["remote", "add", "origin", "https://example.invalid/changed.git"]);
+  assert.equal((await f.deps.workspaces.leases()).length, 0);
+  assert.equal((await finish(f.deps, { leaseId: f.leaseId, noProcesses: true })).reason, "reconciliation_required");
+  assert.equal((await resolveLeaseReturned(f.deps, { leaseId: f.leaseId })).reason, "reconciliation_required");
+  const record = (await f.deps.attempts.findByLease(f.leaseId))!;
+  assert.equal(record.entries.some(e => e.kind === "lease_returned"), false);
+  assert.equal(record.confirmations!.some(c => c.fact === "lease_returned"), false);
+  f.run(["remote", "remove", "origin"]);
+  assert.equal((await f.deps.workspaces.leases()).length, 1);
+});
+
+test("neither a successful read of an unrelated commit nor a claimed integration authorises repeating it", async () => {
+  const f = await fixture({ tasks: [task("reconcile-a1")], scenario: "commit-result" });
+  const dispatched = await dispatchOnce(f.deps);
+  const leaseId = dispatched.attempt!.leaseId!, commit = dispatched.attempt!.resultCommit!;
+  const from = f.run(["rev-parse", "main"]);
+  f.run(["branch", "target", "main"]);
+  const record = (await f.deps.attempts.findByLease(leaseId))!;
+  await f.deps.attempts.append(record, "integration_started", { targetBranch: "target", from, commit });
+  f.run(["update-ref", "refs/heads/target", commit, from]);
+  const reads = new OwnerReads(f.deps, "finish", leaseId);
+  reads.effectAttempted = true;
+  await reads.failure("Git", "read branch target", failure());
+  // A later external rewind means reading the branch no longer proves the earlier integration.
+  f.run(["update-ref", "refs/heads/target", from, commit]);
+  const deps = { ...f.deps, policy: { git: onPath("git"), repository: f.deps.repository, environment: f.environment, baseRef: "main",
+    globalFile: join(f.dir, "no-global-policy"), context: { kind: "local-merge" as const, targetBranch: "target" } } };
+  assert.equal((await finish(deps, { leaseId, noProcesses: false })).reason, "reconciliation_required");
+  const failed = unsettledReads((await f.deps.attempts.findByLease(leaseId))!)[0]!;
+  assert.equal((await resolveReadFailure(deps, { leaseId, failureSequence: failed.sequence, outcome: "happened", note: "Integration happened before the external rewind" })).reason, "resolved");
+  assert.equal((await finish(deps, { leaseId, noProcesses: false })).reason, "reconciliation_required");
+  assert.equal(f.run(["rev-parse", "target"]), from, "no repeated fast-forward after a claimed integration");
+  f.run(["update-ref", "refs/heads/target", commit, from]);
+  assert.equal((await finish(deps, { leaseId, noProcesses: false })).reason, "finished");
+  assert.equal((await f.deps.attempts.findByLease(leaseId))!.entries.filter(e => e.kind === "integrated").length, 1);
 });

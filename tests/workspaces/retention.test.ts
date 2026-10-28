@@ -57,6 +57,15 @@ test("a missing output branch or one without the result commit is not retained",
   assert.notEqual(base, commit);
 });
 
+test("a definitively absent reported commit is a rejection, not a transient owner read", async () => {
+  const f = fixture();
+  f.commitWork();
+  const result = await f.check({ resultCommit: "f".repeat(40) });
+  assert.equal(result.retained, false);
+  assert.match(result.findings.join(), /Result commit .* does not exist/);
+  assert.equal(result.readFailures, undefined);
+});
+
 test("commits on no branch are not retained", async () => {
   const f = fixture();
   f.run(["checkout", "-q", "--detach"], f.workspace);

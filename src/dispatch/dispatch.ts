@@ -104,6 +104,7 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
       if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
         ok: false, reason: "request_input_mismatch", stage: "preflight", lease: "none", observed: {}, detail: error.message, nextAction: "inspect_attempt",
       });
+      if (error instanceof AttemptStoreError) return refusal("preflight", "inspect_attempt", error.message, { reason: error.reason });
       return { ...readRefusal(await reads.failure("Attempt records", "read request record", error))!, lease: "none" };
     }
   }
@@ -226,8 +227,8 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
       if (error instanceof WorkspaceError && error.reason === "rejected") return halt("acquire", "fix_configuration", `The workspace provider refused the lease: ${message(error)}`);
       // Inspect by holder and branch instead of acquiring again, and report whatever lease exists.
       const found = (await reads.read("Treehouse leases", "inspect acquisition outcome", () => deps.workspaces.leases())).filter(l => l.holder === taskId && l.branch === outputBranch);
-      const lease = found === undefined ? "unknown" : found.length > 0 ? "preserved" : "none";
-      if (found?.[0]) Object.assign(summary, { leaseId: found[0].leaseId, workspace: found[0].path, outputBranch });
+      const lease = found.length > 0 ? "preserved" : "none";
+      if (found[0]) Object.assign(summary, { leaseId: found[0].leaseId, workspace: found[0].path, outputBranch });
       const stopped = await halt("acquire", "inspect_attempt", `The lease outcome is unknown or unexpected: ${message(error)}`, "outcome_unknown");
       return { ...stopped, lease, attempt: summary };
     }
@@ -276,8 +277,8 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
       // The runtime reserves its records before starting a worker, so a worker can exist only if they do. Without an
       // observed or confirmed exit, the error leaves the attempt unresolved, like any launch whose worker may be running.
       const records = await reads.read("Runtime records", "inspect launch outcome", () => deps.runtime.discover(deps.contextId));
-      const runtime = records?.find(r => r.binding.input.identity.leaseId === allocation.leaseId);
-      if (records === undefined || runtime?.child.status === "unknown") {
+      const runtime = records.find(r => r.binding.input.identity.leaseId === allocation.leaseId);
+      if (runtime?.child.status === "unknown") {
         if (runtime) await deps.attempts.append(ref, "worker_finished", { status: "unresolved", runtimeDirectory: runtime.directory, reason: message(error).slice(0, 500) });
         return result({ ok: false, reason: "stopped", stage: "launch", lease: "preserved", observed, attempt: summary, worker: { status: "unresolved" }, detail: `Launching failed after the worker may have started, so it may still be running: ${message(error)}`, nextAction: "stop_worker" });
       }
@@ -333,9 +334,12 @@ async function finalise(
     // For a non-code contract the workspace is scratch; reported deliverables are still checked.
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   }));
-  if (!retention.definiteRejection) for (const failure of retention.readFailures ?? []) {
-    throw await reads.failure("Git retention", "check retention", Object.assign(new Error(failure.message), { detail: failure.detail }));
+  let failedRead;
+  for (const failure of retention.readFailures ?? []) {
+    const failed = await reads.failure("Git retention", "check retention", Object.assign(new Error(failure.message), { detail: failure.detail }), undefined, retention.definiteRejection);
+    if (failed.failure.classification !== "rejected") failedRead = failed;
   }
+  if (failedRead) throw failedRead;
   await deps.attempts.append(ref, "retention_checked", { retained: retention.retained, findings: retention.findings, notes: retention.notes });
 
   const outcome = decide(report, delivery, retention);

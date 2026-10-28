@@ -190,7 +190,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
   });
   await reconcileIntegration(deps, record, options.dryRun);
-  record.entries = (await deps.reads.current())!.entries;
+  record.entries = (await deps.reads.read("Attempt records", "read integration reconciliation", () => deps.reads.current()))!.entries;
   await deps.reads.checkEffects();
   const accepted = [...(record.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
   const accepting = options.acceptOutput || accepted !== undefined;

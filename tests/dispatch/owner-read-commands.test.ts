@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
+import type { ReadFailure } from "../../src/dispatch/failure.ts";
 import { discard, finish } from "../../src/dispatch/finish.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { onPath } from "../../src/infra/executables.ts";
@@ -116,5 +117,33 @@ for (const operation of ["finish", "discard"] as const) {
     assert.equal(failure.diagnostics.command?.stdout, "pool output\n");
     assert.equal(failure.diagnostics.command?.stderr, "pool error\n");
     assert.equal((await run()).reason, operation === "finish" ? "finished" : "discarded");
+  });
+}
+
+for (const point of ["pool-preflight", "repository-intent", "workspace-effect", "treehouse-effect"] as const) {
+  test(`dispatch: real adapter ${point} failure retains command output and never acquires twice`, shimOptions, async () => {
+    const f = await fixture({ tasks: [task("commands-a1")] });
+    const git = join(f.dir, "git-dispatch-failure"), treehouse = join(f.dir, "treehouse-dispatch-failure");
+    const acquisitions = join(f.dir, "acquisitions"), listing = join(f.dir, "listed");
+    const condition = point === "pool-preflight" ? '[ "$1" = remote ]' : point === "repository-intent"
+      ? '[ "$1" = rev-parse ] && [ "$2" = --show-toplevel ]' : point === "workspace-effect" ? '[ "$1" = branch ]' : 'false';
+    writeFileSync(git, `#!/bin/sh\nif ${condition}; then echo 'dispatch output'; echo 'dispatch error' >&2; exit 23; fi\nexec '${onPath("git")}' "$@"\n`, { mode: 0o755 });
+    writeFileSync(treehouse, `#!/bin/sh\nif [ "$3" = get ]; then echo acquire >> '${acquisitions}'; fi\nif [ '${point}' = treehouse-effect ] && [ "$3" = status ]; then if [ -f '${listing}' ]; then echo 'dispatch output'; echo 'dispatch error' >&2; exit 23; fi; touch '${listing}'; fi\nexec '${onPath("treehouse")}' "$@"\n`, { mode: 0o755 });
+    const workspaces = TreehouseProvider.connect({ treehouse, git, repository: f.deps.repository, poolRoot: join(f.dir, "pool"), environment: f.environment });
+    const first = await dispatchOnce({ ...f.deps, workspaces }, { requestId: "faulted-command" });
+    assert.equal(first.reason, point === "pool-preflight" ? "owner_read_retryable" : "reconciliation_required", first.detail ?? "");
+    const failure = first.observed.readFailure as ReadFailure;
+    assert.equal(failure.diagnostics.command?.exitCode, 23);
+    assert.equal(failure.diagnostics.command?.stdout, "dispatch output\n");
+    assert.equal(failure.diagnostics.command?.stderr, "dispatch error\n");
+    assert.equal(failure.owner, point === "pool-preflight" ? "Git workspace pool" : point === "repository-intent" ? "Git repository" : point === "workspace-effect" ? "Git workspace" : "Treehouse leases");
+    const acquired = point === "workspace-effect" || point === "treehouse-effect";
+    assert.equal((await f.deps.workspaces.leases()).length, acquired ? 1 : 0);
+    if (point === "pool-preflight") assert.deepEqual(f.deps.attempts.list(), []);
+    else {
+      assert.equal((await dispatchOnce(f.deps, { requestId: "faulted-command" })).reason, "existing_request");
+      assert.equal(f.deps.attempts.list().length, 1);
+    }
+    if (acquired) assert.equal(readFileSync(acquisitions, "utf8"), "acquire\n");
   });
 }

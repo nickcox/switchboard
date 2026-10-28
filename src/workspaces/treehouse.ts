@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { CommandError, describeCommand, runCommand } from "../infra/command.ts";
-import { inside } from "../runtime/records.ts";
+import { inside, isMissing } from "../runtime/records.ts";
 import { WorkspaceError, type Allocation, type Lease, type LeaseIdentity, type WorkspaceProvider } from "./provider.ts";
 
 /**
@@ -66,7 +66,9 @@ export class TreehouseProvider implements WorkspaceProvider {
     const holder = argument.parse(request.holder);
     const baseRef = argument.parse(request.baseRef);
     const branch = argument.parse(request.branch);
-    const pool = await this.pool();
+    const pool = await this.pool().catch(error => {
+      throw new WorkspaceError("unreadable", "Git workspace pool could not be read before acquisition", undefined, { owner: "Git workspace pool", error });
+    });
     const args = ["get", "--lease", "--json", "--lease-holder", holder, "--base", baseRef, "--branch", branch];
     const result = await this.treehouse([...args, ...(this.options.fetch ? [] : ["--no-fetch"])]);
     if (result.timedOut || result.exitCode === null) {
@@ -142,10 +144,17 @@ export class TreehouseProvider implements WorkspaceProvider {
     const unexpected = (message: string) => new WorkspaceError("unexpected_state", `${message} (lease ${acquired.lease_id})`);
     if (acquired.lease_holder !== holder) throw unexpected("Lease holder does not match the task");
     if (!isAbsolute(acquired.path)) throw unexpected("Workspace path is not absolute");
-    const path = await realpath(acquired.path).catch(() => { throw unexpected("Workspace path does not exist"); });
-    const pool = await realpath(this.options.poolRoot);
+    const path = await realpath(acquired.path).catch(error => {
+      if (isMissing(error)) throw unexpected("Workspace path does not exist");
+      throw new WorkspaceError("unreadable", "Workspace path could not be read", undefined, { owner: "Treehouse workspace path", error });
+    });
+    const pool = await realpath(this.options.poolRoot).catch(error => {
+      throw new WorkspaceError("unreadable", "Workspace pool path could not be read", undefined, { owner: "Treehouse workspace pool", error });
+    });
     if (path !== acquired.path || !inside(pool, path) || path === pool) throw unexpected("Workspace is not a canonical path in the pool");
-    const listed = (await this.leases()).find(lease => lease.leaseId === acquired.lease_id);
+    const listed = (await this.leases().catch(error => {
+      throw new WorkspaceError("unreadable", "Treehouse leases could not be read after acquisition", undefined, { owner: "Treehouse leases", error });
+    })).find(lease => lease.leaseId === acquired.lease_id);
     if (!listed || listed.path !== path || listed.holder !== holder) throw unexpected("Lease is not listed as acquired");
     const read = (args: string[]) => this.git(path, args).catch(error => {
       throw new WorkspaceError("unreadable", `git ${args.join(" ")} could not be read in the workspace`, undefined, { owner: "Git workspace", error });

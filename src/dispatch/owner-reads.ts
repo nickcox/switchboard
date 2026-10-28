@@ -68,9 +68,9 @@ export class OwnerReads {
   }
 
   async observations(values: readonly (readonly [string, Observation<unknown>])[], step: string, record?: AttemptRecord): Promise<void> {
-    let failed: OwnerReadError | undefined;
-    for (const [owner, value] of values) if (!value.known) failed = await this.failure(owner, step, value.error ?? value.reason, record);
-    if (failed) throw failed;
+    const failures: ReadFailure[] = [];
+    for (const [owner, value] of values) if (!value.known) failures.push((await this.failure(owner, step, value.error ?? value.reason, record)).failure);
+    if (failures.length) throw new OwnerReadError(failures.at(-1)!, failures);
   }
 
   async attempt(observation: AttemptObservation, step: string): Promise<void> {
@@ -82,8 +82,8 @@ export class OwnerReads {
 
   async context(observation: ContextObservation, step: string): Promise<void> {
     await this.observations([["Attempt records", observation.records], ["Runtime records", observation.runtime],
-      ["Treehouse leases", observation.leases], ["Git workspace pool", observation.pool]], step);
-    for (const attempt of observation.attempts) await this.observations([["Task store", attempt.task], ["Dispatcher heartbeat", attempt.heartbeat]], step);
+      ["Treehouse leases", observation.leases], ["Git workspace pool", observation.pool],
+      ...observation.attempts.flatMap(a => [["Task store", a.task], ["Dispatcher heartbeat", a.heartbeat]] as const)], step);
   }
 
   /** A failed read after an effect or intent cannot authorise further effects on a later invocation. */
@@ -99,7 +99,7 @@ export function readRefusal(error: unknown, stage?: Stage): DispatchResult | und
   const failure = error.failure;
   const uncertain = failure.classification === "effect_uncertain";
   return result({ ok: false, reason: uncertain ? "reconciliation_required" : "owner_read_retryable", stage: stage ?? (failure.operation === "discard" ? "finish" : failure.operation === "dispatch" ? "preflight" : failure.operation), lease: "unknown",
-    observed: { readFailure: failure }, detail: `${failure.owner} could not be read during ${failure.operation} (${failure.step}): ${failure.diagnostics.message}. ${uncertain
+    observed: { readFailure: failure, ...(error.failures.length > 1 ? { readFailures: error.failures } : {}) }, detail: `${failure.owner} could not be read during ${failure.operation} (${failure.step}): ${failure.diagnostics.message}. ${uncertain
       ? "An effect was attempted or its intent was recorded – inspect the owner and reconcile the outcome; do not repeat the effect"
       : `No effect was attempted – this read can be tried again by running ${failure.operation} again`}`,
     nextAction: uncertain ? "reconcile_owner" : "retry_owner_read" });

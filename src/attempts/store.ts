@@ -320,14 +320,14 @@ export class AttemptStore {
   }
 
   /** Cleanup evidence survives archiving, when the live attempt entries no longer exist. */
-  cleanupEntries(deletion: PendingDeletion): { kind: string; data: Record<string, unknown> }[] {
+  cleanupEntries(deletion: PendingDeletion): { sequence: number; kind: string; data: Record<string, unknown> }[] {
     this.checkContext(deletion);
     const row = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", deletion.contextId, deletion.taskId, deletion.attempt);
     const archive = row ? JSON.parse(String(row.summary)) : {};
     return archive.cleanup?.[deletion.directory] ?? [];
   }
 
-  async appendCleanup(deletion: PendingDeletion, kind: "deletion_started" | "owner_read_failed", data: Record<string, unknown>): Promise<void> {
+  async appendCleanup(deletion: PendingDeletion, kind: "deletion_started" | "deletion_confirmed" | "owner_read_failed", data: Record<string, unknown>): Promise<void> {
     this.checkContext(deletion);
     await this.database.transaction(() => {
       const row = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", deletion.contextId, deletion.taskId, deletion.attempt);

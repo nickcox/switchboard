@@ -1,6 +1,6 @@
 import { lstat, rm } from "node:fs/promises";
 import type { PendingDeletion } from "../attempts/store.ts";
-import { OwnerReadError } from "./failure.ts";
+import { OwnerReadError, readDiagnostics } from "./failure.ts";
 import { OwnerReads, readRefusal } from "./owner-reads.ts";
 import { isMissing } from "../runtime/records.ts";
 import type { Dependencies } from "./dispatch.ts";
@@ -36,9 +36,10 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
         if (permission.reason !== "too_recent") skipped.push({ taskId, attempt: number, reason: permission.reason });
         continue;
       }
+      reads.record = { contextId: deps.contextId, taskId, attempt: number };
+      await reads.checkEffects();
       if (!options.dryRun) {
         // External owners are checked again; archiveAttempt also checks the records in its transaction.
-        reads.record = { contextId: deps.contextId, taskId, attempt: number };
         const current = await observeAttempt(deps, { taskId, attempt: number });
         if (!current) { skipped.push({ taskId, attempt: number, reason: "unknown" }); continue; }
         await reads.attempt(current, "recheck before archive");
@@ -55,7 +56,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
       }
       removed.push({ taskId, attempt: number, archive: deps.attempts.database.path });
     }
-    if (!options.dryRun) for (const deletion of deps.attempts.pendingDeletions()) {
+    if (!options.dryRun) for (const deletion of await reads.read("Attempt cleanup records", "list pending directory deletions", () => deps.attempts.pendingDeletions())) {
       reads.record = undefined;
       await removeRuntimeDirectory(deps, reads, deletion, files);
       await deps.attempts.completeDeletion(deletion);
@@ -64,7 +65,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
   } catch (error) {
     const failed = readRefusal(error);
     if (failed) return { ...failed, observed: { ...failed.observed, removed, skipped } };
-    return report(false, changed ? "stopped" : "refused", `${error instanceof Error ? error.message : String(error)}. Run prune again after checking the records`);
+    return report(false, changed || reads.effectAttempted ? "stopped" : "refused", `${error instanceof Error ? error.message : String(error)}. Run prune again after checking the records`);
   }
 }
 
@@ -74,15 +75,20 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
  */
 async function removeRuntimeDirectory(deps: Dependencies, reads: OwnerReads, deletion: PendingDeletion, files: { lstat: typeof lstat; rm: typeof rm }): Promise<void> {
   const { directory } = deletion;
-  const entries = deps.attempts.cleanupEntries(deletion);
-  const started = entries.some(e => e.kind === "deletion_started");
-  reads.effectAttempted ||= started || entries.some(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
   try {
+    const entries = await reads.read("Attempt cleanup records", "read directory deletion evidence", () => deps.attempts.cleanupEntries(deletion));
+    const started = entries.some(e => e.kind === "deletion_started");
+    reads.effectAttempted ||= started || entries.some(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
+    const confirm = async () => {
+      if (!entries.some(e => e.kind === "deletion_confirmed")) await deps.attempts.appendCleanup(deletion, "deletion_confirmed", {
+        directory, failureSequences: entries.filter(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain").map(e => e.sequence),
+      });
+    };
     const found = await reads.read("Runtime directory", "inspect directory before deletion", async () => {
       try { return await files.lstat(directory); }
       catch (error) { if (isMissing(error)) return undefined; throw error; }
     });
-    if (!found) return;
+    if (!found) { await confirm(); return; }
     if (!found.isDirectory() || found.isSymbolicLink() || !await reads.read("Runtime directory", "check directory ownership", () => deps.runtime.owns(directory))) {
       throw new Error(`Refusing to delete ${directory}: it is not a directory inside the runtime root`);
     }
@@ -100,8 +106,12 @@ async function removeRuntimeDirectory(deps: Dependencies, reads: OwnerReads, del
       try { await files.lstat(directory); throw new Error(`Directory ${directory} still exists after deletion`); }
       catch (error) { if (!isMissing(error)) throw error; }
     });
+    await confirm();
   } catch (error) {
-    if (error instanceof OwnerReadError) await deps.attempts.appendCleanup(deletion, "owner_read_failed", error.failure);
+    if (error instanceof OwnerReadError) {
+      try { await deps.attempts.appendCleanup(deletion, "owner_read_failed", error.failure); }
+      catch (recordingError) { error.failure.diagnostics.message += `. The cleanup failure record could not be written: ${readDiagnostics(recordingError).message}`; }
+    }
     throw error;
   }
 }
