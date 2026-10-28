@@ -103,7 +103,7 @@ async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt
 async function readRetention(deps: OperationDependencies, request: RetentionRequest): Promise<RetentionResult> {
   const retention = await deps.reads.read("Git retention", "check retention", () => deps.retention(request));
   const failures = retention.readFailures ?? [];
-  const rejected = retention.findings.some(finding => !failures.some(failure => finding.startsWith(`${failure.message}:`)));
+  const rejected = retention.definiteRejection === true;
   let failed: OwnerReadError | undefined;
   for (const failure of failures) {
     const error = await deps.reads.failure("Git retention", "check retention", Object.assign(new Error(failure.message), { detail: failure.detail }), undefined, rejected);

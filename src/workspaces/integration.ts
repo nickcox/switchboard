@@ -18,12 +18,12 @@ async function git(options: Git, args: string[], cwd = options.repository) {
  */
 async function checkoutOf(options: Git, branch: string): Promise<string | undefined> {
   return read(options, "list target worktrees", async () => {
-  const listed = await git(options, ["worktree", "list", "--porcelain", "-z"]);
-  if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new CommandError("The repository's worktrees could not be listed", listed);
-  // Each record is a run of NUL-terminated lines, ended by an empty line.
-  const records = listed.stdout.split("\0\0").filter(record => record !== "").map(record => record.split("\0").filter(line => line !== ""));
-  if (records.length === 0 || records.some(lines => !lines[0]?.startsWith("worktree "))) throw new CommandError("The repository's worktree list is not in the expected format", listed);
-  return records.find(lines => lines.includes(`branch refs/heads/${branch}`))?.[0]!.slice("worktree ".length);
+    const listed = await git(options, ["worktree", "list", "--porcelain", "-z"]);
+    if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new CommandError("The repository's worktrees could not be listed", listed);
+    // Each record is a run of NUL-terminated lines, ended by an empty line.
+    const records = listed.stdout.split("\0\0").filter(record => record !== "").map(record => record.split("\0").filter(line => line !== ""));
+    if (records.length === 0 || records.some(lines => !lines[0]?.startsWith("worktree "))) throw new CommandError("The repository's worktree list is not in the expected format", listed);
+    return records.find(lines => lines.includes(`branch refs/heads/${branch}`))?.[0]!.slice("worktree ".length);
   });
 }
 

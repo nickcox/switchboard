@@ -30,6 +30,8 @@ export type RetentionResult = {
   retained: boolean;
   /** Failed read commands, distinct from definite findings such as a dirty workspace. */
   readFailures?: { message: string; detail: string }[];
+  /** A successful read also proved missing output or unretained workspace contents. */
+  definiteRejection?: boolean;
   /** Reasons the work is not retained. Empty when `retained` is true. */
   findings: string[];
   /** Ignored files present in the workspace. Returning the workspace may remove some of them. */
@@ -48,7 +50,9 @@ export async function checkRetention(git: string, environment: Record<string, st
   const findings: string[] = [];
   const readFailures: { message: string; detail: string }[] = [];
   const notes: string[] = [];
-  const workspaceFinding = (text: string) => (request.scratchWorkspace ? notes.push(`Scratch workspace: ${text}`) : findings.push(text));
+  let definiteRejection = false;
+  const reject = (text: string) => { definiteRejection = true; findings.push(text); };
+  const workspaceFinding = (text: string) => (request.scratchWorkspace ? notes.push(`Scratch workspace: ${text}`) : reject(text));
   // A command that cannot even start (for example a missing workspace) is a check that could not run.
   const run = (cwd: string, args: string[]) => runCommand(git, args, { cwd, env: environment, timeoutMs: gitTimeoutMs })
     .catch((error: unknown) => error instanceof CommandError ? JSON.parse(error.detail) as Awaited<ReturnType<typeof runCommand>>
@@ -66,12 +70,12 @@ export async function checkRetention(git: string, environment: Record<string, st
     const ref = `refs/heads/${reference.branch}`;
     const exists = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
     if (exists.timedOut || exists.truncated) unable("the output branch", exists);
-    else if (exists.exitCode === 1) findings.push(`Output branch ${reference.branch} does not exist (${reference.name})`);
+    else if (exists.exitCode === 1) reject(`Output branch ${reference.branch} does not exist (${reference.name})`);
     else if (exists.exitCode !== 0) unable("the output branch", exists);
     else {
       const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, ref]);
       if (contained.timedOut || contained.truncated) unable("whether the output branch contains the result commit", contained);
-      else if (contained.exitCode === 1) findings.push(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
+      else if (contained.exitCode === 1) reject(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
       else if (contained.exitCode !== 0) unable("whether the output branch contains the result commit", contained);
     }
   }
@@ -158,5 +162,5 @@ export async function checkRetention(git: string, environment: Record<string, st
     await checkPath(artefact, new Set());
   }
 
-  return { retained: findings.length === 0, findings, notes, ...(readFailures.length ? { readFailures } : {}) };
+  return { retained: findings.length === 0, findings, notes, ...(readFailures.length ? { readFailures, ...(definiteRejection ? { definiteRejection } : {}) } : {}) };
 }
