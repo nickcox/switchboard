@@ -35,10 +35,10 @@ Inputs: the [architecture's notes for later phases](../../architecture.md#notes-
 
 ## Pi Durable checkpoint
 
-**Ownership boundary provisionally selected.** The [comparison report](pi-durable-orchestration-report.md), its follow-up experiments, the scripted [supervisor experiment](pi-durable-supervisor-experiment.md) and two authorised real-model runs ([model trial](pi-durable-supervisor-model-trial-report.md)) lead to the boundary [ADR-0003](../../adr/0003-pi-durable-for-durable-orchestration.md) provisionally selects:
+**Ownership boundary.** The [comparison report](pi-durable-orchestration-report.md), its follow-up experiments, the scripted [supervisor experiment](pi-durable-supervisor-experiment.md) and two authorised real-model runs ([model trial](pi-durable-supervisor-model-trial-report.md)) lead to the following:
 
 - **Attempts run in Switchboard's operations,** reading each owner's current state at every step, with the position-free step runner under [Shared mechanisms](#shared-mechanisms). No step before the supervisor depends on an engine.
-- **The supervisor's continuity uses Pi Durable:** its conversation, queued inputs and interrupted reasoning and tool work, in a separate store owned by one host, on a SQLite connection the host opens with `synchronous = FULL` and `fullfsync` ([ADR-0007](../../adr/0007-one-sqlite-database.md)). Production adoption, before step 11, still needs ADR-0003's remaining checks: real-model reasoning beyond the two trial runs, partly streamed model turns, supervisor upgrades, storage and platform qualification, and comparison with rebuilding the supervisor's state from Switchboard's records and plain notes.
+- **The supervisor's continuity is rebuilt from Switchboard's records,** not kept by Pi Durable: Switchboard now records the objective, its tasks, attempts, checks, reviews, questions, budget and who did what, and a supervisor that restarts from a briefing of those records cannot act on stale observations, which a resumed transcript can (the supervisor model trial's stale-approval run). The supervisor is a general-purpose agent with skills, described under [The supervisor](#the-supervisor). Pi Durable remains an option if rebuilding proves insufficient.
 - **Running each attempt as a Durable task is not selected.** It can be compared again for Phase 4's background dispatcher if it would remove a material amount of coordination code.
 
 The fourth comparison in ADR-0005 deferred Durable for Phase 3 under four limits. This revision changes the second: the supervisor can ask for a new attempt that starts from an earlier attempt's kept output, within its permissions and budget. That is the supervisor's decision, not Switchboard retrying on its own, but the comparison report must cover it before [Starting from an earlier attempt](#starting-from-an-earlier-attempt) is implemented. The limits are now:
@@ -191,9 +191,28 @@ A question still open when its worker finishes stays open, and its answer goes i
 
 ## The supervisor
 
-The supervisor is an agent that works on one objective, using Switchboard's operations as its tools, with its own caller identity and the objective's permissions. It runs in the execution host the [Pi Durable checkpoint](#pi-durable-checkpoint) chooses. Its lasting state is the objective record and Switchboard's existing records, plus notes it keeps; it adds no second record of attempts or tasks.
+The supervisor is a general-purpose coding agent working on one objective, not a Switchboard process. A small set of skills describes its routine, and a restricted set of tools lets it act on Switchboard as the supervisor for that objective, with the objective's permissions and the limits under [Caller identity, permissions and budget](#caller-identity-permissions-and-budget). Pi is the first host; Claude Code is a second host on the same Switchboard operations and skills.
 
-After a restart it reads the objective, its tasks, attempts and open questions, and continues. It never starts a worker for an attempt whose worker may still be running. Each time a person intervenes in an objective is recorded, so the verification record can report interventions per completed objective.
+**What Switchboard provides,** shared by every host:
+
+- **Supervisor operations.** One restricted interface (a command, for example `switchboard supervise <operation> --objective <id>`) that always acts as the supervisor for the named objective and offers only the operations it needs: the briefing and notes, creating and changing the objective's tasks, dispatching, starting from an earlier attempt, requesting a review, finishing without returning a lease, answering workers' questions, steering and stopping its own workers, asking the person a question, and completing the objective.
+- **A briefing.** One call that summarises the objective's current state from Switchboard's records: its criteria and their status, its tasks and attempts, checks and reviews, open questions, budget and spending, and the supervisor's notes. A new session reads it first, so the supervisor always starts from current facts rather than an old transcript.
+- **Notes.** An append-only record in the database where the supervisor keeps what it wants to remember between sessions.
+- **Waiting for events.** `wait --objective <id>` returns the next event that needs the supervisor's attention (a worker finished, a worker asked a question, a hold or failure was recorded, a review was recorded, the budget or deadline was reached, the person answered), each with a stable ID, and returns at once if one is already pending. The position the supervisor has handled up to is kept in the database, so a new session never handles an event twice.
+- **Detached dispatch.** A dispatch can start in its own process, so a worker's life is not tied to the agent session that asked for it.
+- **Questions to the person.** The supervisor can record a question for the person, shown by `status` and `objective show` and answered with a command; the answer arrives as an event.
+
+**Hosts.**
+
+- **Pi:** a small Switchboard extension registers the supervisor operations as tools bound to the objective, runs `wait` in its own background code and delivers each event to the agent with `pi.sendUserMessage()`, and the session runs with `--tools` limited to those tools, so it has no shell, editing or file-writing tools.
+- **Claude Code:** the same skills, with the restricted command allowed and other shell commands denied in its settings, and `wait` run with its background tasks.
+- **Deployment rule:** an agent with an unrestricted shell or database access is not a supervisor in this sense, because it could act as the person or bypass Switchboard entirely; Switchboard's limits hold only through the restricted interface.
+
+**Continuity.** Switchboard keeps no conversation state for the supervisor. After any interruption (a crash, a usage limit, a closed terminal), a new agent session reads the briefing and notes and continues; stable request IDs make a repeated tool call safe, and it never starts a worker for an attempt whose worker may still be running. Pi Durable is not used in Phase 3 ([ADR-0003](../../adr/0003-pi-durable-for-durable-orchestration.md)).
+
+**Before building it,** a small test in Pi confirms that a session started with only extension tools has no shell, that `pi.sendUserMessage()` starts a turn when Pi is idle, how it is delivered during a turn, and that the extension's background code keeps running across turns.
+
+Each time a person intervenes in an objective is recorded, so the verification record can report interventions per completed objective. The supervisor's own model usage is recorded against the objective's budget where the host reports it.
 
 ## When the target branch has moved
 
@@ -323,7 +342,7 @@ Each step is implemented, tested and recorded in the verification record before 
 8. **Checks, review and repair.** Complete. Checks are advisory for a person's `finish`; the supervisor's acceptance requires passing checks and a passing review of the exact commit.
 9. **Objectives**, and **caller identity, permissions and budget.** Complete.
 10. **Questions from workers.** Complete.
-11. **The supervisor**, once ADR-0003's remaining checks, listed under [Pi Durable checkpoint](#pi-durable-checkpoint), have passed.
+11. **The supervisor.** First the Pi test under [The supervisor](#the-supervisor); then the supervisor operations, briefing, notes, `wait`, detached dispatch and questions to the person; then the Pi extension and skills; then Claude Code as a second host.
 
 `finish --rebase` can be implemented at any point after step 4.
 
@@ -338,6 +357,6 @@ Each step is implemented, tested and recorded in the verification record before 
 7. Configured checks run at the exact output commit. The supervisor's acceptance is refused unless the checks and a review passed for that commit, and a later commit needs both again.
 8. The supervisor's caller identity cannot be supplied in request arguments. Changing its own permissions, budget or criteria, acting on tasks outside its objective, returning a lease, and any operation a person removed from its permissions are each refused inside Switchboard, with a test for each.
 9. A worker's question reaches the supervisor, and the answer reaches the worker. An open question survives its worker finishing and appears in the next attempt's handover.
-10. A real run: a person gives the supervisor one objective with at least two dependent tasks. The supervisor dispatches them one at a time, answers a worker's question, has a result checked and reviewed, starts a repair after a failed review, accepts the result, starts the dependent task and completes the objective with its statement. A test restarts the supervisor while a worker runs and shows that it continues without starting that worker again. The verification record reports the number of times a person intervened.
+10. A real run in Pi: a person gives the supervisor one objective with at least two dependent tasks. The supervisor dispatches them one at a time, answers a worker's question, has a result checked and reviewed, starts a repair after a failed review, accepts the result, starts the dependent task and completes the objective with its statement. The test ends the Pi session while a worker runs and starts a new one, which continues from the briefing without starting that worker again. The supervisor session has no shell, editing or file-writing tools. The verification record reports the number of times a person intervened.
 11. Under `local-merge`, `finish` on an attempt whose target branch has moved refuses with its specific reason and changes nothing. `finish --rebase` integrates a cleanly rebased output branch and records the original, rebased and target commits; it refuses without changing the branch on a conflict, on a dirty workspace, or when the branch has commits other than the attempt's own; and it is refused without the operator's approval.
 12. The suite passes on macOS, and in CI on Linux and Windows.

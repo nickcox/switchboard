@@ -1,6 +1,6 @@
 # ADR-0003: Pi Durable for the supervisor and later durable orchestration
 
-Status: narrow supervisor continuity boundary provisionally selected after the comparative prototype and scripted supervisor trials. Production adoption remains conditional on the acceptance checks below. This does not approve a production dependency or a chargeable trial. Revised on 28 October 2026 (under review): the supervisor is Phase 3, with the revised Phase 3 PRD. The original review used Pi Durable 1.3.0 on 18 October 2026; the investigation now tests released 1.4.0.
+Status: narrow supervisor continuity boundary provisionally selected after the comparative prototype and scripted supervisor trials, then **set aside for Phase 3 on 28 October 2026 (under review)**: the Phase 3 supervisor is a general-purpose agent with skills whose continuity is rebuilt from Switchboard's records (see [Phase 3 revision](#phase-3-revision)). The evidence below is kept; Pi Durable remains an option if rebuilding proves insufficient or for later mailbox and scheduling work.
 
 ## Context
 
@@ -72,6 +72,17 @@ The [investigation record](../../investigations/durable-orchestration/README.md)
 | Alternative and completion | Plain-note reconstruction has not been compared under the same requirements. New attempts from retained output and end-to-end objective completion remain separate application work and trials |
 
 A separately authorised small real-model trial should test whether the supervisor actually inspects current facts and respects refusals using the same restricted tools and disposable owners. Production dependencies, expanded tool authority and real external workers stay out of that trial. Chargeable calls require explicit approval of its scope and budget. Passing it would not waive the other adoption gates or approve phase reordering.
+
+
+## Phase 3 revision
+
+On 28 October 2026 (under review) the Phase 3 supervisor was changed to a general-purpose coding agent (Pi first, then Claude Code) with skills and a restricted set of Switchboard tools, as the [Phase 3 PRD](../phases/03-supervisor/PRD.md#the-supervisor) describes. Pi Durable is not used for it, for three reasons:
+
+- **The records now hold the state.** Since this ADR was written, Switchboard records objectives, task criteria, immutable attempt specifications, validated results, checks, reviews, worker questions, request records, budgets and who did what. What remains for the supervisor alone is its conversation and its notes; notes are kept in Switchboard's database.
+- **Rebuilding avoids stale observations.** In the model trial's stale-approval run, the resumed model acted on an observation from before the crash without looking again; only Switchboard's current-authority check stopped it. A supervisor that starts each session from a briefing of current records does not carry such observations forward.
+- **A general agent supplies the loop.** Tool calls, context management, waiting (Claude Code's background tasks, or a Pi extension that delivers events with `pi.sendUserMessage()`) and restart handling come from the host agent. Switchboard adds a restricted interface, a briefing, notes, `wait` and detached dispatch.
+
+The integration checks above remain the requirements if Pi Durable is adopted later.
 
 ## Source refresh
 

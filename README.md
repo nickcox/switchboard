@@ -125,7 +125,7 @@ npm run switchboard -- dispatch --once --config ./switchboard.json
 
 - [One SQLite database owns tasks and records](docs/adr/0007-one-sqlite-database.md) (tasks, attempts and runtime records implemented).
 - [Treehouse owns workspace leases](docs/adr/0002-treehouse-owns-workspace-leases.md).
-- [Pi Durable is provisionally selected for supervisor continuity, subject to adoption checks](docs/adr/0003-pi-durable-for-durable-orchestration.md).
+- [Pi Durable was provisionally selected for supervisor continuity, then set aside for Phase 3, whose supervisor rebuilds its state from Switchboard's records](docs/adr/0003-pi-durable-for-durable-orchestration.md).
 - [TypeScript/Node.js and required host platforms](docs/adr/0004-typescript-and-node-for-switchboard-cli.md).
 - [Pi RPC subprocess and result file](docs/adr/0005-pi-rpc-worker-and-result-file.md).
 - [Switchboard attempt log](docs/adr/0006-switchboard-attempt-log.md).
