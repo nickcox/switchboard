@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { TaskStoreError } from "./tasks/store.ts";
 import { specificationFromBinding } from "./attempts/specification.ts";
 import { workerInputSchema } from "./runtime/contracts.ts";
+import { migrateRequestRecords } from "./attempts/requests.ts";
 
 const busy = (error: unknown) => /database is locked|database is busy/.test(String(error));
 // SQLITE_IOERR_TRUNCATE. On Windows, opening can fail with it for a moment after another process exited without
@@ -58,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 5) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 6) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -189,6 +190,20 @@ export class Database {
           result.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", row.context!, row.task!, row.attempt!, JSON.stringify(specificationFromBinding(input)));
         }
         db.exec("PRAGMA user_version = 5");
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 6) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 6) return;
+        db.exec(`
+          CREATE TABLE request_records (
+            context TEXT NOT NULL, request_id TEXT NOT NULL, task TEXT NOT NULL REFERENCES tasks(id), attempt INTEGER,
+            reserved_at TEXT NOT NULL, encoding_version INTEGER NOT NULL CHECK(encoding_version IN (0,1)), fingerprint TEXT,
+            archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)), PRIMARY KEY(context, request_id),
+            FOREIGN KEY(context, task, attempt) REFERENCES attempt_numbers(context, task, number),
+            CHECK((encoding_version = 0 AND fingerprint IS NULL) OR (encoding_version = 1 AND fingerprint IS NOT NULL)),
+            CHECK(archived = 0 OR attempt IS NOT NULL));
+        `);
+        migrateRequestRecords(result);
+        db.exec("PRAGMA user_version = 6");
       });
       return result;
     } catch (error) { db.close(); throw error; }

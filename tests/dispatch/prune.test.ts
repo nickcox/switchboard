@@ -17,15 +17,20 @@ async function settled() {
   return { ...f, ref };
 }
 
-test("prune archives finished attempts in the database, releases their reservation and never reuses numbers", async () => {
+test("prune archives finished attempts, keeps their request records and never reuses numbers", async () => {
   const f = await settled();
   const result = await prune(f.deps, { olderThan: 0.000000001 });
   assert.equal(result.reason, "pruned", JSON.stringify(result));
   assert.equal((result.observed.removed as unknown[]).length, 1);
   assert.deepEqual(f.deps.attempts.list(), []);
-  assert.equal(await f.deps.attempts.findByRequest("request"), undefined);
+  const original = await f.deps.attempts.findByRequest("request");
+  assert.ok(original && "archived" in original);
+  assert.equal(original.attempt, 1);
   assert.equal(Number(f.tasks.database.get("SELECT count(*) AS n FROM archived_attempts")!.n), 1);
-  const next = await f.deps.attempts.reserveAttempt({ taskId: "prune-a1", requested: { requestId: "request" }, maximum: 1, specification: specificationFor });
+  const replay = await dispatchOnce(f.deps, { taskId: "prune-a1", requestId: "request" });
+  assert.equal(replay.reason, "existing_request");
+  assert.deepEqual(replay.attempt, { ...f.ref, requestId: "request" });
+  const next = await f.deps.attempts.reserveAttempt({ taskId: "prune-a1", requested: { requestId: "new-request" }, maximum: 1, specification: specificationFor });
   assert.equal(next.ref.attempt, 2);
 });
 

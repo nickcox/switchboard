@@ -4,6 +4,7 @@ import { z } from "zod";
 import { Database } from "../database.ts";
 import type { Task, TaskState } from "../tasks/store.ts";
 import { attemptSpecificationSchema, storedSpecificationSchema, type AttemptSpecification } from "./specification.ts";
+import { requestFingerprint, type RequestInputs } from "./requests.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
 
 const nonempty = z.string().trim().min(1);
@@ -18,11 +19,12 @@ const confirmationSchema = z.discriminatedUnion("fact", [
 export type Confirmation = z.infer<typeof confirmationSchema>;
 export type ConfirmationRecord = AttemptRef & Confirmation & { confirmedBy: string; confirmedAt: string };
 export type PendingDeletion = AttemptRef & { directory: string };
+export type ArchivedRequest = AttemptRef & { archived: true; summary: Record<string, unknown> };
 type ExpectedTask = Pick<Task, "state" | "holdReason" | "holdRevision">;
 const identity = (ref: AttemptRef): AttemptRef => ({ contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt });
 
 export class AttemptStoreError extends Error {
-  readonly reason: "not_ready" | "capacity" | "request_reserved" | "attempt_closed" | "task_changed" | "attempt_changed" | "task_definition_changed" | "specification_incomplete";
+  readonly reason: "not_ready" | "capacity" | "request_reserved" | "request_input_mismatch" | "attempt_closed" | "task_changed" | "attempt_changed" | "task_definition_changed" | "specification_incomplete";
   constructor(reason: AttemptStoreError["reason"], message: string) { super(message); this.reason = reason; }
 }
 
@@ -54,14 +56,34 @@ export class AttemptStore {
   activeCount(): number {
     return Number(this.database.get("SELECT count(*) AS n FROM attempts WHERE context = ? AND number IS NOT NULL AND closed = 0", this.contextId)!.n);
   }
-  async findByRequest(requestId: string): Promise<AttemptRecord | undefined> {
-    const row = this.database.get("SELECT task, number FROM attempts WHERE context = ? AND request_id = ?", this.contextId, requestId);
-    return row && row.number !== null ? this.read({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.number) }) : undefined;
+  async findByRequest(requestId: string, inputs?: RequestInputs): Promise<AttemptRecord | ArchivedRequest | undefined> {
+    const row = this.request(requestId, inputs);
+    if (!row) return undefined;
+    if (row.attempt === null) throw new AttemptStoreError("request_reserved", "The request ID was imported without an attempt");
+    const ref = { contextId: this.contextId, taskId: String(row.task), attempt: Number(row.attempt) };
+    if (!row.archived) return this.read(ref);
+    const archive = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
+    if (!archive) throw new Error("The request record's archived attempt is missing");
+    return { ...ref, archived: true, summary: JSON.parse(String(archive.summary)) };
+  }
+
+  private request(requestId: string, inputs?: RequestInputs) {
+    nonempty.parse(requestId);
+    const row = this.database.get("SELECT * FROM request_records WHERE context = ? AND request_id = ?", this.contextId, requestId);
+    if (row && inputs) {
+      if ((row.encoding_version === 1 && row.fingerprint !== requestFingerprint(inputs)) ||
+        (row.encoding_version === 0 && inputs.taskId !== undefined && inputs.taskId !== row.task)) {
+        throw new AttemptStoreError("request_input_mismatch", "The request ID has already been used with different explicit inputs");
+      }
+      if (row.encoding_version === 0) throw new AttemptStoreError("request_reserved", "The historical request ID is reserved, but its explicit inputs were not retained; inspect its original attempt");
+    }
+    return row;
   }
 
   async reserveAttempt(options: {
     taskId: string; requested: EntryData<"requested">; maximum: number; repo?: string | null;
     definitionRevision?: number;
+    requestInputs?: RequestInputs;
     specification: (task: Task, ref: AttemptRef) => AttemptSpecification;
   }): Promise<{ created: boolean; ref: AttemptRef }> {
     z.number().int().positive().parse(options.maximum);
@@ -69,10 +91,10 @@ export class AttemptStore {
       const requestId = options.requested.requestId;
       if (requestId !== undefined) {
         nonempty.parse(requestId);
-        const existing = this.database.get("SELECT task, number FROM attempts WHERE context = ? AND request_id = ?", this.contextId, requestId);
+        const existing = this.request(requestId, options.requestInputs ?? { taskId: options.taskId });
         if (existing) {
-          if (existing.number === null) throw new AttemptStoreError("request_reserved", "The request ID was imported without an attempt");
-          return { created: false, ref: { contextId: this.contextId, taskId: String(existing.task), attempt: Number(existing.number) } };
+          if (existing.attempt === null) throw new AttemptStoreError("request_reserved", "The request ID was imported without an attempt");
+          return { created: false, ref: { contextId: this.contextId, taskId: String(existing.task), attempt: Number(existing.attempt) } };
         }
       }
       const count = this.activeCount();
@@ -89,7 +111,9 @@ export class AttemptStore {
       const ref = { contextId: this.contextId, taskId: options.taskId, attempt: number };
       this.database.run("INSERT INTO attempt_numbers VALUES(?,?,?)", ref.contextId, ref.taskId, ref.attempt);
       this.database.run("INSERT INTO attempts(context,task,number,request_id,reserved_at) VALUES(?,?,?,?,?)",
-        ref.contextId, ref.taskId, ref.attempt, requestId ?? null, new Date().toISOString());
+        ref.contextId, ref.taskId, ref.attempt, null, new Date().toISOString());
+      if (requestId !== undefined) this.database.run("INSERT INTO request_records VALUES(?,?,?,?,?,?,?,0)", ref.contextId, requestId, ref.taskId, ref.attempt,
+        new Date().toISOString(), 1, requestFingerprint(options.requestInputs ?? { taskId: options.taskId }));
       this.insert(ref, "requested", options.requested);
       const specification = attemptSpecificationSchema.parse(options.specification(task, ref));
       if (specification.taskId !== task.id || specification.contextId !== ref.contextId || specification.definitionRevision !== task.definitionRevision ||
@@ -242,13 +266,13 @@ export class AttemptStore {
       }
       const row = this.requireAttempt(expected);
       if (!row.closed) throw new AttemptStoreError("attempt_changed", "An open attempt cannot be archived");
-      const reservation = this.database.get("SELECT request_id, reserved_at FROM attempts WHERE context = ? AND task = ? AND number = ?",
-        expected.contextId, expected.taskId, expected.attempt)!;
+      const reservation = this.database.get("SELECT request_id, reserved_at FROM request_records WHERE context = ? AND task = ? AND attempt = ?",
+        expected.contextId, expected.taskId, expected.attempt);
       const archive = {
         ...identity(expected), summary, entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
         archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
-        ...(reservation.request_id === null ? {} : { reservation: { requestId: reservation.request_id, reservedAt: reservation.reserved_at } }),
+        ...(reservation ? { reservation: { requestId: reservation.request_id, reservedAt: reservation.reserved_at } } : {}),
       };
       const existing = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", expected.contextId, expected.taskId, expected.attempt);
       if (existing) {
@@ -256,6 +280,7 @@ export class AttemptStore {
         if (previous.finishedAt !== archive.finishedAt) throw new AttemptStoreError("attempt_changed", "The attempt changed after its earlier archive");
       } else this.database.run("INSERT INTO archived_attempts VALUES(?,?,?,?)", expected.contextId, expected.taskId, expected.attempt, JSON.stringify(archive));
       for (const directory of new Set(directories)) this.database.run("INSERT INTO pending_attempt_deletions VALUES(?,?,?,?)", expected.contextId, expected.taskId, expected.attempt, directory);
+      this.database.run("UPDATE request_records SET archived = 1 WHERE context = ? AND task = ? AND attempt = ?", expected.contextId, expected.taskId, expected.attempt);
       this.database.run("DELETE FROM attempts WHERE context = ? AND task = ? AND number = ?", expected.contextId, expected.taskId, expected.attempt);
     });
   }

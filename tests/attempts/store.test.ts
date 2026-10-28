@@ -96,7 +96,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const before = await tasks.list();
   try {
     await tasks.database.transaction(() => {
-      for (const table of ["attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) {
+      for (const table of ["request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) {
         tasks.database.run(`DROP TABLE ${table}`);
       }
       tasks.database.run("DROP TRIGGER task_definition_changed");
@@ -108,7 +108,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const reopened = await SqliteTaskStore.open({ path });
   try {
     assert.deepEqual(await reopened.list(), before);
-    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 5);
+    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 6);
     assert.deepEqual(new AttemptStore(reopened.database, "context").list(), []);
   } finally { reopened.close(); }
 });
@@ -235,19 +235,19 @@ test("database constraints enforce request, attempt and entry uniqueness and ent
     await reserve(attempts);
     for (const statement of [
       "INSERT INTO attempt_numbers VALUES('context','task',1)",
-      "INSERT INTO attempts(context,task,number,request_id,reserved_at) VALUES('context','task',NULL,'request','now')",
+      "INSERT INTO request_records VALUES('context','request','task',NULL,'now',0,NULL,0)",
       "INSERT INTO attempt_entries SELECT * FROM attempt_entries",
       "UPDATE attempt_entries SET entry = '{}'",
       "INSERT INTO attempt_entries VALUES('context','task',99,0,'{}')",
     ]) await assert.rejects(db.transaction(() => db.run(statement)));
     // A reservation without an attempt is representable, and has the same request-ID uniqueness constraint.
-    await db.transaction(() => db.run("INSERT INTO attempts(context,task,request_id,reserved_at) VALUES('context','task','orphan','now')"));
+    await db.transaction(() => db.run("INSERT INTO request_records VALUES('context','orphan','task',NULL,'now',0,NULL,0)"));
     await assert.rejects(reserve(attempts, "orphan"), { reason: "request_reserved" });
     assert.equal(attempts.list().length, 1);
   } finally { tasks.close(); }
 });
 
-test("archive removes the attempt and reservation atomically, retains its number and resumes pending deletion", async () => {
+test("archive removes the attempt, keeps its request and number and resumes pending deletion", async () => {
   const { directory, path, tasks, attempts } = await fixture();
   try {
     const { ref } = await reserve(attempts);
@@ -266,7 +266,9 @@ test("archive removes the attempt and reservation atomically, retains its number
       assert.deepEqual(store.pendingDeletions(), [{ ...ref, directory: join(directory, "runtime") }]);
       await store.completeDeletion(store.pendingDeletions()[0]!);
       assert.deepEqual(store.pendingDeletions(), []);
-      assert.equal((await reserve(store)).ref.attempt, 2);
+      assert.deepEqual(await reserve(store), { created: false, ref });
+      assert.equal((await store.findByRequest("request"))?.attempt, 1);
+      assert.equal((await reserve(store, "new-request")).ref.attempt, 2);
     } finally { reopened.close(); }
   } finally { tasks.close(); }
 });

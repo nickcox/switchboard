@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory } from "../attempts/log.ts";
-import { AttemptStore, AttemptStoreError } from "../attempts/store.ts";
+import { AttemptStore, AttemptStoreError, type ArchivedRequest } from "../attempts/store.ts";
 import { attemptSpecificationSchema, workerInput, type RuntimeSettings } from "../attempts/specification.ts";
 import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
 import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
@@ -141,8 +141,16 @@ export async function dispatchOnce(
     return refusal("preflight", "fix_configuration", `Runtime storage is not retained: ${message(error)}`);
   }
   if (options.requestId !== undefined) {
-    const existing = await deps.attempts.findByRequest(options.requestId).catch(() => undefined);
-    if (existing) return existingRequest(deps, existing);
+    try {
+      const existing = await deps.attempts.findByRequest(options.requestId, { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) });
+      if (existing) return existingRequest(deps, existing, options.requestId);
+    } catch (error) {
+      if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
+        ok: false, reason: "request_input_mismatch", stage: "preflight", lease: "none", observed: {}, detail: error.message, nextAction: "inspect_attempt",
+      });
+      return refusal("preflight", "fix_configuration", `Request records could not be read: ${message(error)}`,
+        error instanceof AttemptStoreError ? { reason: error.reason } : {});
+    }
   }
   const state = await inspect(deps);
   if (isFailure(state)) return state.failed;
@@ -199,7 +207,7 @@ export async function dispatchOnce(
   const resolvedContract = structuredClone(contract);
   let ref: AttemptRef;
   try {
-    const reservation = await deps.attempts.reserveAttempt({ taskId, maximum: deps.maxAttempts ?? 1, repo: selected.repo, definitionRevision: selected.definitionRevision,
+    const reservation = await deps.attempts.reserveAttempt({ taskId, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, repo: selected.repo, definitionRevision: selected.definitionRevision,
       specification: (task, ref) => ({
         version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
         title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], repository: task.repo, kind: task.kind,
@@ -216,8 +224,15 @@ export async function dispatchOnce(
       ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
     } });
     ref = reservation.ref;
-    if (!reservation.created) return existingRequest(deps, deps.attempts.read(ref));
+    if (!reservation.created) {
+      const existing = await deps.attempts.findByRequest(options.requestId!);
+      if (!existing) throw new Error("The reserved request record is missing");
+      return existingRequest(deps, existing, options.requestId);
+    }
   } catch (error) {
+    if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
+      ok: false, reason: "request_input_mismatch", stage: "select", lease: "none", observed, detail: error.message, nextAction: "inspect_attempt",
+    });
     if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", "inspect_attempt", error.message, { ...observed, reason: error.reason });
     return refusal("select", "fix_configuration", `The attempt store could not be written: ${message(error)}`, observed);
   }
@@ -379,7 +394,12 @@ function decide(report: PiRunReport | undefined, delivery: DeliveryContract, ret
 }
 
 /** Reports an existing attempt from each owner's current state, as `status` does, not from the log alone. */
-async function existingRequest(deps: Dependencies, attempt: AttemptRecord): Promise<DispatchResult> {
+async function existingRequest(deps: Dependencies, attempt: AttemptRecord | ArchivedRequest, requestId?: string): Promise<DispatchResult> {
+  if ("archived" in attempt) return result({
+    ok: false, reason: "existing_request", lease: "none",
+    attempt: { contextId: attempt.contextId, taskId: attempt.taskId, attempt: attempt.attempt, ...(requestId === undefined ? {} : { requestId }) },
+    observed: { archived: true, archive: attempt.summary }, nextAction: "inspect_attempt",
+  });
   const summary = summarise(attempt);
   const task = await deps.tasks.read(attempt.taskId).catch(() => undefined);
   const state = await inspect(deps);

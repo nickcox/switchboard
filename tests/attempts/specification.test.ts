@@ -24,6 +24,7 @@ test("version 4 bindings migrate once without borrowing missing facts from the c
   });
   await f.tasks.update("snapshot-a1", { title: "Today's title", body: "Today's instructions", kind: "unconfigured" });
   await f.tasks.database.transaction(() => {
+    f.tasks.database.run("DROP TABLE request_records");
     f.tasks.database.run("DROP TABLE attempt_specifications");
     f.tasks.database.run("DROP TRIGGER task_definition_changed");
     f.tasks.database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
@@ -34,7 +35,7 @@ test("version 4 bindings migrate once without borrowing missing facts from the c
   const reopened = await Promise.all([Database.open(path), Database.open(path)]);
   try {
     for (const database of reopened) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 5);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 6);
       assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);
       assert.equal(database.get("SELECT definition_revision FROM tasks WHERE id = 'snapshot-a1'")!.definition_revision, 1);
       const attempts = new AttemptStore(database, f.deps.contextId);

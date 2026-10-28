@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { migrateRequestRecords } from "./requests.ts";
 import { readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { databasePath, type Config } from "../config.ts";
@@ -159,6 +160,7 @@ async function writeSnapshot(config: Config, copy: Database, before: Awaited<Ret
         // A crash before the old prune renamed the attempt can leave both records. Keep both until a later prune.
         copy!.run("INSERT INTO archived_attempts VALUES(?,?,?,?)", config.contextId, archive.taskId, archive.attempt, JSON.stringify(archive));
       }
+      migrateRequestRecords(copy);
     });
     for (const { record, confirmations } of before.records) {
       const imported = store.read(record);
