@@ -1,6 +1,6 @@
 # Phase 3: A supervisor that completes one objective
 
-Status: agreed on 21 October 2026 as "Multiple workers and runtimes"; implementation steps 1 to 5 are complete. **Revised on 28 October 2026, under review:** an agent supervisor that completes one objective comes before concurrency, a second runtime and the pull-request policy, which move to Phase 4, and correctness fixes from a whole-project review come first. Requirements, not a description of existing behaviour.
+Status: agreed on 21 October 2026 as "Multiple workers and runtimes"; implementation steps 1 to 6 are complete. **Revised on 28 October 2026, under review:** an agent supervisor that completes one objective comes before concurrency, a second runtime and the pull-request policy, which move to Phase 4, and correctness fixes from a whole-project review come first. Requirements, not a description of existing behaviour.
 
 ## Objective and scope
 
@@ -318,7 +318,7 @@ Each step is implemented, tested and recorded in the verification record before 
 3. **Accepting output separately from returning the workspace.** Complete.
 4. **Correctness fixes.** Complete.
 5. **When an owner cannot be read.** Complete.
-6. **Acceptance criteria as data.**
+6. **Acceptance criteria as data.** Complete.
 7. **Starting from an earlier attempt.** Tests first cover crashes while the new attempt is reserved and its branch and workspace prepared, and refusal when the earlier attempt's worker might be running, its output is not retained or its state is unknown.
 8. **Checks, review and repair.** Needs steps 6 and 7.
 9. **Objectives**, and **caller identity, permissions and budget.**
