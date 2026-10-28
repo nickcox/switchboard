@@ -1,3 +1,4 @@
+import { ObjectiveStore, type ObjectiveBrief } from "../objectives/store.ts";
 import { describeChecks, type CheckResult } from "../attempts/checks.ts";
 import { describeReviews, type ReviewRecord } from "../attempts/reviews.ts";
 import { describeCriteriaReport } from "../runtime/criteria-report.ts";
@@ -113,6 +114,7 @@ export type StatusResult = {
   /** Imported tasks can be in flight with no attempt, runtime record or lease accounting for them. */
   orphanedInFlight: string[];
   attempts: AttemptStatus[];
+  objectives: ObjectiveBrief[];
   /** The context's resolved finalisation policy, or why it could not be resolved. Absent when none is configured. */
   policy?: { resolved: ResolvedPolicy } | { error: string };
   detail?: string;
@@ -132,6 +134,9 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   let ready: string[] = [], inFlight: string[] = [];
   try { ready = await deps.tasks.ready(); inFlight = await deps.tasks.inFlight(); }
   catch (error) { errors.push(`The task store could not be read: ${error instanceof Error ? error.message : String(error)}`); }
+  let objectives: ObjectiveBrief[] = [];
+  try { objectives = new ObjectiveStore(deps.attempts.database, "status").list("open"); }
+  catch (error) { errors.push(`The objectives could not be read: ${error instanceof Error ? error.message : String(error)}`); }
   const attempts: AttemptStatus[] = [];
   for (const { facts, ...assessment } of assessed) {
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
@@ -164,7 +169,7 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   // A policy that cannot be resolved needs fixing before any attempt can be finished.
   const attention = attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
   return {
-    version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts,
+    version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts, objectives,
     ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
     nextAction: action(errors.length ? "fix_configuration" : overall(attempts, unaccounted)),
   };
@@ -191,6 +196,7 @@ export function describeStatus(value: StatusResult): string {
   const lines = [`${value.reason === "clear" ? "Clear" : value.reason === "attention" ? "Needs attention" : "Unknown: owner state could not be read"}`];
   if (value.detail) lines.push(`Detail: ${value.detail}`);
   lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`);
+  for (const objective of value.objectives) lines.push(`Objective ${objective.id}: ${objective.request.replace(/\s+/g, " ").slice(0, 120)}; ${objective.doneTaskCount}/${objective.taskCount} tasks done`);
   for (const a of value.attempts) {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;
     const where = a.attempt.workspace ?? "an unknown path";

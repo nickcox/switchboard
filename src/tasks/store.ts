@@ -14,7 +14,8 @@ export type Task = {
   holdReason: string | null;
   body: string;
   acceptanceCriteria: string[];
-  /** Increased only when the task's title, body, repository, kind or criteria change. */
+  objectiveId: string | null;
+  /** Increased only when the task's title, body, repository, kind, criteria or objective change. */
   definitionRevision: number;
   /** Used to compare a finalisation plan with later operator holds. */
   holdRevision?: number;

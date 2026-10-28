@@ -19,6 +19,7 @@ import { createReview } from "./dispatch/review.ts";
 const usage = `Usage:
   switchboard --version
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
+  switchboard objective <add|show|list|update|complete|abandon|reopen> [id] [options] [--json]
   switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
   switchboard dispatch --once [--dry-run] [--task <id> [--from-attempt <n> [--note <text> | --note-file <path>]]] [--request-id <id>] [--json] [--config <path>]
   switchboard review --task <id> [--attempt <n>] [--json] [--config <path>]
@@ -85,6 +86,7 @@ async function main(argv: string[]): Promise<number> {
   }
   const taskArgs = [...argv.slice(0, commandIndex), ...argv.slice(commandIndex + 1)];
   if (argv[commandIndex] === "task") return taskCommand(taskArgs);
+  if (argv[commandIndex] === "objective") return (await import("./objectives/cli.ts")).objectiveCommand(taskArgs);
   if (argv[commandIndex] === "import") return (await import("./tasks/import.ts")).importCommand(taskArgs);
   const { values, positionals } = parseArgs({
     args: argv, allowPositionals: true, strict: true,

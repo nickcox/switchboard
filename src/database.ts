@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 9) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 10) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -250,6 +250,35 @@ export class Database {
             SELECT RAISE(ABORT, 'Review targets cannot be removed');
           END;
           PRAGMA user_version = 9;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 10) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 10) return;
+        db.exec(`
+          CREATE TABLE objectives (
+            id TEXT PRIMARY KEY, request TEXT NOT NULL,
+            acceptance_criteria TEXT NOT NULL CHECK(json_valid(acceptance_criteria) AND json_type(acceptance_criteria) = 'array'),
+            scope TEXT NOT NULL, constraints TEXT NOT NULL,
+            permissions TEXT NOT NULL CHECK(json_valid(permissions)), budget TEXT NOT NULL CHECK(json_valid(budget)), deadline TEXT,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
+            state TEXT NOT NULL CHECK(state IN ('open','completed','abandoned')),
+            completion_statements TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(completion_statements)));
+          CREATE TABLE objective_changes (
+            objective TEXT NOT NULL REFERENCES objectives(id), sequence INTEGER NOT NULL,
+            action TEXT NOT NULL, changed_by TEXT NOT NULL, changed_at TEXT NOT NULL,
+            changes TEXT NOT NULL CHECK(json_valid(changes)), PRIMARY KEY(objective, sequence));
+          CREATE TRIGGER objective_changes_immutable BEFORE UPDATE ON objective_changes BEGIN
+            SELECT RAISE(ABORT, 'Objective changes cannot be changed'); END;
+          CREATE TRIGGER objective_changes_not_removed BEFORE DELETE ON objective_changes BEGIN
+            SELECT RAISE(ABORT, 'Objective changes cannot be removed'); END;
+          ALTER TABLE tasks ADD COLUMN objective_id TEXT REFERENCES objectives(id);
+          CREATE INDEX tasks_by_objective ON tasks(objective_id);
+          DROP TRIGGER task_definition_changed;
+          CREATE TRIGGER task_definition_changed AFTER UPDATE OF title, body, repo, kind, acceptance_criteria, objective_id ON tasks
+            WHEN NEW.title IS NOT OLD.title OR NEW.body IS NOT OLD.body OR NEW.repo IS NOT OLD.repo OR NEW.kind IS NOT OLD.kind
+              OR NEW.acceptance_criteria IS NOT OLD.acceptance_criteria OR NEW.objective_id IS NOT OLD.objective_id
+            BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END;
+          PRAGMA user_version = 10;
         `);
       });
       return result;

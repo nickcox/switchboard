@@ -217,13 +217,17 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
     store.database.run("DROP TRIGGER task_definition_changed");
     store.database.run("ALTER TABLE tasks DROP COLUMN acceptance_criteria");
     store.database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
+    store.database.run("DROP INDEX tasks_by_objective");
+    store.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+    store.database.run("DROP TABLE objective_changes");
+    store.database.run("DROP TABLE objectives");
     store.database.run("PRAGMA user_version = 2");
   });
   store.close();
   const reopened = await Promise.all([SqliteTaskStore.open({ path }), SqliteTaskStore.open({ path })]);
   try {
     for (const current of reopened) {
-      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 9);
+      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 10);
       assert.ok(current.database.all("PRAGMA table_info(tasks)").every(column => column.name !== "started_body"));
       assert.deepEqual(await current.list(), tasksBefore);
       assert.deepEqual(new AttemptStore(current.database, "fixture").read(ref), attemptBefore);
@@ -272,7 +276,7 @@ test("database durability, schema version, absolute canonical regular paths", as
   assert.equal(store.database.get("PRAGMA synchronous")?.synchronous, 2);
   assert.equal(store.database.get("PRAGMA fullfsync")?.fullfsync, 1);
   assert.equal(store.database.get("PRAGMA busy_timeout")?.timeout, 0);
-  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 9);
+  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 10);
   store.close();
   await assert.rejects(SqliteTaskStore.open({ path: "relative.db" }), /absolute/);
   await assert.rejects(SqliteTaskStore.open({ path: dir }), /regular file/);

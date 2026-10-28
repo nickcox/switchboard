@@ -152,6 +152,10 @@ test("a staging failure does not migrate the original schema, and the next run b
     database.run("DROP TRIGGER task_definition_changed");
     database.run("ALTER TABLE tasks DROP COLUMN acceptance_criteria");
     database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
+    database.run("DROP INDEX tasks_by_objective");
+    database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+    database.run("DROP TABLE objective_changes");
+    database.run("DROP TABLE objectives");
     database.run("PRAGMA user_version = 1");
   });
   database.close();

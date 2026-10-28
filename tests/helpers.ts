@@ -16,7 +16,7 @@ export const runtimeSettings: RuntimeSettings = {
 export function specificationFor(task: Task, ref: AttemptRef, overrides: Partial<AttemptSpecification> = {}): AttemptSpecification {
   return {
     version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
-    title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: task.acceptanceCriteria, repository: task.repo, kind: task.kind,
+    title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: task.acceptanceCriteria, repository: task.repo, kind: task.kind, objectiveId: task.objectiveId,
     backingRepository: "/fixture", baseRef: "main", outputBranch: "output",
     delivery: { kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] },
     runtime: runtimeSettings, provenance: { configuration: "fixture" }, ...overrides,
@@ -43,7 +43,7 @@ class FixtureRuntimeRecords extends RuntimeRecords {
         } }));
         const { baseRef, outputBranch, startingCommit: _, ...delivery } = input.delivery;
         const specification = specificationFor({ id: taskId, title: taskId, body: input.instructions, acceptanceCriteria: input.acceptanceCriteria, definitionRevision: 1,
-          repo: null, kind: null, state: "queued", held: false, holdReason: null, blocked: false }, { contextId, taskId, attempt },
+          repo: null, kind: null, objectiveId: null, state: "queued", held: false, holdReason: null, blocked: false }, { contextId, taskId, attempt },
         { baseRef, outputBranch, delivery, acceptanceCriteria: input.acceptanceCriteria });
         database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", contextId, taskId, attempt, JSON.stringify(specification));
       });

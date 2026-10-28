@@ -13,17 +13,19 @@ export async function taskCommand(argv: string[]): Promise<number> {
     title: { type: "string" }, body: { type: "string" }, "body-file": { type: "string" },
     criterion: { type: "string", multiple: true }, "criteria-file": { type: "string" },
     repo: { type: "string" }, kind: { type: "string" }, reason: { type: "string" },
+    objective: { type: "string" }, "clear-objective": { type: "boolean" },
     by: { type: "string" }, note: { type: "string" }, state: { type: "string" },
   } });
   const [command, id, title] = positionals;
   const allowed: Record<string, string[]> = {
-    add: ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"], show: [], list: ["state", "repo"], ready: ["repo"],
-    "convert-criteria": [], update: ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"], hold: ["reason"], release: [], block: ["by"], unblock: ["by"], done: ["note"], reopen: [],
+    add: ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file", "objective", "clear-objective"], show: [], list: ["state", "repo"], ready: ["repo"],
+    "convert-criteria": [], update: ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file", "objective", "clear-objective"], hold: ["reason"], release: [], block: ["by"], unblock: ["by"], done: ["note"], reopen: [],
   };
   const invalid = !command || !allowed[command] || Object.keys(values).some(key => !["json", "config", "help", ...allowed[command]!].includes(key))
     || positionals.length !== (command === "add" && title !== undefined ? 3 : ["list", "ready", "convert-criteria"].includes(command) ? 1 : 2)
     || (command === "add" && title === undefined && values.title === undefined)
     || (command === "hold" && !values.reason) || (["block", "unblock"].includes(command) && !values.by)
+    || (values.objective !== undefined && values["clear-objective"] === true)
     || (values.criterion !== undefined && values["criteria-file"] !== undefined)
     || (values.body !== undefined && values["body-file"] !== undefined)
     || (values.state !== undefined && !["queued", "in_flight", "done"].includes(values.state));
@@ -37,6 +39,8 @@ export async function taskCommand(argv: string[]): Promise<number> {
     const changes: TaskChanges = {};
     for (const key of ["title", "body", "kind"] as const) if (values[key] !== undefined) changes[key] = values[key];
     if (values.repo !== undefined) changes.repo = values.repo;
+    if (values.objective !== undefined) changes.objectiveId = values.objective;
+    if (values["clear-objective"]) changes.objectiveId = null;
     if (values["body-file"] !== undefined) changes.body = await readFile(resolve(values["body-file"]), "utf8");
     if (values.criterion !== undefined) changes.acceptanceCriteria = values.criterion;
     if (values["criteria-file"] !== undefined) changes.acceptanceCriteria = (await readFile(resolve(values["criteria-file"]), "utf8"))

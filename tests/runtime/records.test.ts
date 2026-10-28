@@ -93,6 +93,10 @@ test("schema 6 observations survive migration and can gain a validated result", 
       database.run(`CREATE TRIGGER task_definition_changed AFTER UPDATE OF title, body, repo, kind ON tasks
         WHEN NEW.title IS NOT OLD.title OR NEW.body IS NOT OLD.body OR NEW.repo IS NOT OLD.repo OR NEW.kind IS NOT OLD.kind
         BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END`);
+      database.run("DROP INDEX tasks_by_objective");
+      database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+      database.run("DROP TABLE objective_changes");
+      database.run("DROP TABLE objectives");
       database.run("PRAGMA user_version = 6");
     });
   });

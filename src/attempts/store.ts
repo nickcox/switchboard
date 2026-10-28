@@ -162,7 +162,8 @@ export class AttemptStore {
       }
       if (specification.taskId !== task.id || specification.contextId !== ref.contextId || specification.definitionRevision !== task.definitionRevision ||
         specification.title !== task.title || specification.instructions !== (task.body.trim() === "" ? task.title : task.body) ||
-        specification.repository !== task.repo || specification.kind !== task.kind) throw new Error("Specification differs from the reserved task");
+        specification.repository !== task.repo || specification.kind !== task.kind ||
+        specification.objectiveId !== undefined && specification.objectiveId !== task.objectiveId) throw new Error("Specification differs from the reserved task");
       this.database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, JSON.stringify(specification));
       return { created: true, ref };
     });
@@ -343,7 +344,7 @@ export class AttemptStore {
         expected.contextId, expected.taskId, expected.attempt);
       const archive = {
         ...identity(expected), summary, entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
-        archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected),
+        archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected), acceptedCommits: this.acceptedCommits(expected),
         ...(current.entries.some(e => e.kind === "owner_read_failed") ? { readFailures: current.entries.filter(e => e.kind === "owner_read_failed" || e.kind === "owner_read_reconciled") } : {}),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
         ...(current.entries.some(entry => entry.kind === "review_recorded") ? { reviews: current.entries.filter(entry => entry.kind === "review_recorded").map(entry => entry.data) } : {}),
@@ -415,9 +416,13 @@ export class AttemptStore {
         "Report completed when the review is complete, including when criteria are not met. Switchboard derives a passed verdict only when every criterion is met.",
         `Reviewed instructions:\n${specification.instructions}`,
       ].join("\n\n");
-      this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,acceptance_criteria,position)
-        VALUES(?,?,?,?, 'review',?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
-        taskId, `Review ${target.taskId} attempt ${target.attempt}`, instructions, specification.repository, JSON.stringify(specification.acceptanceCriteria));
+      const objectiveId = this.task(target.taskId)!.objectiveId;
+      if (objectiveId !== null && this.database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") {
+        throw new Error(`Objective ${objectiveId} must be reopened before adding a review task`);
+      }
+      this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,acceptance_criteria,objective_id,position)
+        VALUES(?,?,?,?, 'review',?,?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
+        taskId, `Review ${target.taskId} attempt ${target.attempt}`, instructions, specification.repository, JSON.stringify(specification.acceptanceCriteria), objectiveId);
       this.database.run("INSERT INTO review_tasks VALUES(?,?,?,?,?,?,?)", taskId, this.contextId, target.taskId, target.attempt, JSON.stringify(target),
         JSON.stringify(specification.acceptanceCriteria), specification.backingRepository);
       return this.task(taskId)!;
@@ -480,6 +485,18 @@ export class AttemptStore {
     const validated = parseValidatedResult(JSON.parse(String(result.value)), binding);
     const output = validated.content.workReferences.find(w => w.kind === "git" && w.branch === binding.input.delivery.outputBranch);
     return output?.kind === "git" ? output.commit : undefined;
+  }
+
+  /** Commits explicitly accepted, integrated, or recorded done under the attempt's delivery contract. */
+  acceptedCommits(ref: AttemptRef): string[] {
+    const record = this.read(ref);
+    const commits = record.entries.flatMap(entry => entry.kind === "integrated" ? [String(entry.data.commit)]
+      : entry.kind === "output_accepted" && record.confirmations?.some(c => c.fact === "output_accepted" && c.scope.commit === entry.data.commit) ? [String(entry.data.commit)] : []);
+    if (record.entries.some(entry => entry.kind === "task_recorded" && entry.data.outcome === "done" && entry.data.applied !== false)) {
+      const commit = this.startingPointCommit(ref);
+      if (commit) commits.push(commit);
+    }
+    return [...new Set(commits)];
   }
 
   private checkStartingPoint(taskId: string, point: StartingPoint, evidence?: StartingPointEvidence) {
@@ -548,7 +565,7 @@ export class AttemptStore {
     const row = this.database.get(`SELECT *, EXISTS(SELECT 1 FROM dependencies d JOIN tasks b ON b.id = d.blocker
       WHERE d.task = tasks.id AND b.state <> 'done') AS blocked FROM tasks WHERE id = ?`, id);
     return row ? { id: String(row.id), title: String(row.title), body: String(row.body), acceptanceCriteria: JSON.parse(String(row.acceptance_criteria)) as string[], repo: row.repo as string | null,
-      kind: row.kind as string | null, definitionRevision: Number(row.definition_revision), state: row.state as TaskState, held: row.hold_reason !== null,
+      kind: row.kind as string | null, objectiveId: row.objective_id as string | null, definitionRevision: Number(row.definition_revision), state: row.state as TaskState, held: row.hold_reason !== null,
       holdReason: row.hold_reason as string | null, holdRevision: Number(row.hold_revision), blocked: Boolean(row.blocked) } : undefined;
   }
   private expectTask(id: string, expected: ExpectedTask): Task {

@@ -3,8 +3,8 @@ import { acceptanceCriteriaSchema, criteriaSection } from "./criteria.ts";
 import { TaskStoreError, type Task, type TaskState, type TaskStore } from "./store.ts";
 
 export type StoredTask = Task & { position: number; blockedBy: string[]; holdRevision: number };
-export type NewTask = { id: string; title: string; body?: string; repo?: string | null; kind?: string | null; acceptanceCriteria?: string[] };
-export type TaskChanges = Partial<Pick<Task, "title" | "body" | "repo" | "kind" | "acceptanceCriteria">>;
+export type NewTask = { id: string; title: string; body?: string; repo?: string | null; kind?: string | null; acceptanceCriteria?: string[]; objectiveId?: string | null };
+export type TaskChanges = Partial<Pick<Task, "title" | "body" | "repo" | "kind" | "acceptanceCriteria" | "objectiveId">>;
 const reject = (message: string): never => { throw new TaskStoreError("rejected", message); };
 const validCriteria = (criteria: string[]) => {
   if (!acceptanceCriteriaSchema.safeParse(criteria).success) reject("Each criterion must be a nonempty single line");
@@ -41,7 +41,7 @@ export class SqliteTaskStore implements TaskStore {
     return {
       id: String(row.id), title: String(row.title), body: String(row.body), repo: row.repo as string | null,
       kind: row.kind as string | null, state: row.state as TaskState, definitionRevision: Number(row.definition_revision),
-      acceptanceCriteria: acceptanceCriteriaSchema.parse(JSON.parse(String(row.acceptance_criteria))),
+      acceptanceCriteria: acceptanceCriteriaSchema.parse(JSON.parse(String(row.acceptance_criteria))), objectiveId: row.objective_id as string | null,
       held: row.hold_reason !== null,
       holdReason: row.hold_reason as string | null, blocked: Boolean(row.blocked), position: Number(row.position), holdRevision: Number(row.hold_revision),
       blockedBy: this.database.all("SELECT blocker FROM dependencies WHERE task = ? ORDER BY blocker", id).map(r => String(r.blocker)),
@@ -52,17 +52,22 @@ export class SqliteTaskStore implements TaskStore {
     return this.database.transaction(() => {
       if (!/^[a-zA-Z0-9._-]+$/.test(task.id)) reject("Task ID must contain only letters, digits, ., _ and -");
       if (this.readNow(task.id)) reject(`Task ${task.id} already exists`);
-      this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,acceptance_criteria,position) VALUES(?,?,?,?,?,?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
-        task.id, task.title, task.body ?? "", task.repo === undefined ? this.repo : task.repo || null, task.kind === "task" ? null : task.kind || null, JSON.stringify(validCriteria(task.acceptanceCriteria ?? [])));
+      this.checkObjective(task.objectiveId ?? null);
+      this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,acceptance_criteria,objective_id,position) VALUES(?,?,?,?,?,?,?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
+        task.id, task.title, task.body ?? "", task.repo === undefined ? this.repo : task.repo || null, task.kind === "task" ? null : task.kind || null, JSON.stringify(validCriteria(task.acceptanceCriteria ?? [])), task.objectiveId ?? null);
       return this.require(task.id);
     });
   }
   async update(id: string, changes: TaskChanges): Promise<StoredTask> {
     return this.database.transaction(() => {
-      this.require(id);
+      const task = this.require(id);
+      if (changes.objectiveId !== undefined && changes.objectiveId !== task.objectiveId) {
+        this.checkObjective(task.objectiveId);
+        this.checkObjective(changes.objectiveId);
+      }
       if (changes.acceptanceCriteria !== undefined) validCriteria(changes.acceptanceCriteria);
-      const fields = (["title", "body", "repo", "kind", "acceptanceCriteria"] as const).filter(key => changes[key] !== undefined);
-      if (fields.length) this.database.run(`UPDATE tasks SET ${fields.map(key => `${key === "acceptanceCriteria" ? "acceptance_criteria" : key} = ?`).join(", ")} WHERE id = ?`,
+      const fields = (["title", "body", "repo", "kind", "acceptanceCriteria", "objectiveId"] as const).filter(key => changes[key] !== undefined);
+      if (fields.length) this.database.run(`UPDATE tasks SET ${fields.map(key => `${key === "acceptanceCriteria" ? "acceptance_criteria" : key === "objectiveId" ? "objective_id" : key} = ?`).join(", ")} WHERE id = ?`,
         ...fields.map(key => key === "acceptanceCriteria" ? JSON.stringify(changes[key]) : key === "kind" && changes[key] === "task" ? null
           : (key === "repo" || key === "kind") && changes[key] === "" ? null : changes[key]!), id);
       return this.require(id);
@@ -114,6 +119,11 @@ export class SqliteTaskStore implements TaskStore {
   private writeDone(id: string, note: string) {
     const task = this.require(id);
     this.database.run("UPDATE tasks SET state = 'done', hold_reason = NULL, body = ? WHERE id = ?", note && !task.body.includes(note) ? `${task.body}\n\n${note}` : task.body, id);
+  }
+  private checkObjective(id: string | null) {
+    if (id === null) return;
+    const row = this.database.get("SELECT state FROM objectives WHERE id = ?", id) ?? reject(`Objective ${id} does not exist`);
+    if (row.state !== "open") reject(`Objective ${id} is ${row.state}; reopen it before changing its tasks`);
   }
   private async change(id: string, apply: () => unknown): Promise<StoredTask> {
     return this.database.transaction(() => { this.require(id); apply(); return this.require(id); });

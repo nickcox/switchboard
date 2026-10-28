@@ -12,6 +12,8 @@ export const attemptSpecificationSchema = z.strictObject({
   version: z.literal(1), taskId: nonempty, contextId: nonempty,
   definitionRevision: z.number().int().positive(), title: z.string(), instructions: z.string(), acceptanceCriteria: z.array(nonempty),
   repository: nonempty.nullable(), backingRepository: nonempty, kind: nonempty.nullable(),
+  /** Absent in specifications recorded before objectives existed. */
+  objectiveId: nonempty.nullable().optional(),
   baseRef: nonempty, outputBranch: nonempty, delivery: contractSchema, runtime: runtimeSettingsSchema,
   startingPoint: recordedStartingPointSchema.optional(),
   reviewTarget: reviewTargetSchema.optional(),

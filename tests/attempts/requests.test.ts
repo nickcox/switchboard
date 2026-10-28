@@ -26,6 +26,10 @@ async function historical(change: (database: Database) => void) {
       tasks.database.run(`CREATE TRIGGER task_definition_changed AFTER UPDATE OF title, body, repo, kind ON tasks
         WHEN NEW.title IS NOT OLD.title OR NEW.body IS NOT OLD.body OR NEW.repo IS NOT OLD.repo OR NEW.kind IS NOT OLD.kind
         BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END`);
+      tasks.database.run("DROP INDEX tasks_by_objective");
+      tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+      tasks.database.run("DROP TABLE objective_changes");
+      tasks.database.run("DROP TABLE objectives");
       tasks.database.run("PRAGMA user_version = 5");
       change(tasks.database);
     });
