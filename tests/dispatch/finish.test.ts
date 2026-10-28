@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
 import { discard, finish } from "../../src/dispatch/finish.ts";
@@ -230,6 +230,103 @@ test("finish integrates the worker's exact result commit, not a later branch hea
   assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned"]);
   assert.equal(f.run(["rev-parse", "main"]), commit);
 });
+
+test("dispatch finalisation uses the recorded report, not a changed file or launch report", async () => {
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result", acceptance: "independent_deliverable" });
+  const launch = f.deps.launch;
+  let recorded;
+  f.deps.launch = async (...args) => {
+    const report = await launch(...args);
+    const runtime = (await f.runtime.discover("fixture-context"))[0]!;
+    recorded = runtime.validatedResult!.content;
+    writeFileSync(runtime.binding.resultPath, JSON.stringify({ ...recorded, summary: "Changed file" }));
+    report.result = { ...recorded, summary: "Changed launch report", workReferences: [] };
+    return report;
+  };
+  const outcome = await dispatchOnce(f.deps);
+  assert.equal(outcome.reason, "done", outcome.detail ?? "");
+  assert.equal(outcome.worker?.summary, recorded!.summary);
+  assert.match(outcome.resultDiscrepancy ?? "", /differs/);
+  assert.equal(outcome.attempt?.resultCommit, f.run(["rev-parse", outcome.attempt!.outputBranch!]));
+});
+
+test("recorded results keep the exact report and commit after the file is changed", async () => {
+  const { f, leaseId, branch, workspace } = await reviewed();
+  const runtime = (await f.runtime.discover("fixture-context"))[0]!;
+  const recorded = runtime.validatedResult!;
+  assert.equal(recorded.validationVersion, 1);
+  assert.equal(recorded.sourcePath, runtime.binding.resultPath);
+  assert.equal(recorded.digest, createHash("sha256").update(readFileSync(recorded.sourcePath)).digest("hex"));
+  assert.ok(Number.isFinite(Date.parse(recorded.validatedAt)));
+  const commit = f.run(["rev-parse", branch]);
+  writeFileSync(join(workspace, "later.txt"), "not the recorded work\n");
+  execFileSync(onPath("git"), ["-C", workspace, "add", "later.txt"], { env: f.environment });
+  execFileSync(onPath("git"), ["-C", workspace, "commit", "-q", "--no-gpg-sign", "-m", "Later"], { env: f.environment });
+  const changed = structuredClone(recorded.content);
+  changed.summary = "Replacement report";
+  changed.workReferences = [{ kind: "git", name: "output", branch, commit: f.run(["rev-parse", branch]) }];
+  writeFileSync(recorded.sourcePath, JSON.stringify(changed));
+  const deps = { ...f.deps, policy: localMerge(f) };
+  const view = await status(deps);
+  assert.deepEqual(view.attempts[0]!.validatedResult, recorded);
+  assert.match(view.attempts[0]!.resultDiscrepancy ?? "", /differs/);
+  assert.match(describeStatus(view), /Result discrepancy/);
+  const retained: string[] = [];
+  const outcome = await finish({ ...deps, retention: async request => {
+    retained.push(...(request.gitReferences ?? []).map(ref => ref.commit));
+    return deps.retention(request);
+  } }, { leaseId, noProcesses: true });
+  assert.equal(outcome.reason, "finished", outcome.detail ?? "");
+  assert.match(outcome.resultDiscrepancy ?? "", /differs/);
+  assert.ok(retained.length > 0);
+  assert.ok(retained.every(value => value === commit));
+  assert.equal(f.run(["rev-parse", "main"]), commit);
+  assert.deepEqual((await f.runtime.discover("fixture-context"))[0]!.validatedResult, recorded);
+});
+
+for (const change of ["missing", "invalid"] as const) {
+  test(`A result file that is ${change} cannot replace a recorded result or block its retention`, async () => {
+    const { f, leaseId } = await reviewed();
+    const runtime = (await f.runtime.discover("fixture-context"))[0]!;
+    if (change === "missing") rmSync(runtime.binding.resultPath);
+    else writeFileSync(runtime.binding.resultPath, "not JSON");
+    const outcome = await finish(f.deps, { leaseId, noProcesses: true });
+    assert.equal(outcome.reason, "finished", outcome.detail ?? "");
+    assert.match(outcome.resultDiscrepancy ?? "", /cannot be compared/);
+  });
+}
+
+for (const valid of [true, false]) {
+  test(`an older attempt validates its file once before finishing (${valid ? "valid" : "invalid"})`, async () => {
+    const { f, leaseId } = await reviewed();
+    const runtime = (await f.runtime.discover("fixture-context"))[0]!;
+    await f.tasks.database.transaction(() => {
+      f.tasks.database.run("DELETE FROM worker_observations WHERE directory = ? AND kind = 'validated_result'", runtime.directory);
+    });
+    if (!valid) {
+      const changed = structuredClone(runtime.validatedResult!.content);
+      changed.identity.sessionId = randomUUID();
+      writeFileSync(runtime.binding.resultPath, JSON.stringify(changed));
+    }
+    const plan = await finish(f.deps, { leaseId, noProcesses: false, dryRun: true });
+    assert.equal(plan.reason, valid ? "planned" : "refused", plan.detail ?? "");
+    assert.equal((await f.runtime.discover("fixture-context"))[0]!.validatedResult, undefined);
+    let checked = false;
+    const outcome = await finish({ ...f.deps, retention: async request => {
+      assert.ok((await f.runtime.discover("fixture-context"))[0]!.validatedResult, "Record must precede retention");
+      checked = true;
+      return f.deps.retention(request);
+    } }, { leaseId, noProcesses: false });
+    assert.equal(outcome.reason, valid ? "finished" : "refused", outcome.detail ?? "");
+    assert.equal(checked, valid);
+    if (valid) {
+      const recorded = (await f.runtime.discover("fixture-context"))[0]!.validatedResult!;
+      writeFileSync(runtime.binding.resultPath, "{}");
+      assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "finished");
+      assert.deepEqual((await f.runtime.discover("fixture-context"))[0]!.validatedResult, recorded);
+    }
+  });
+}
 
 test("accept-output can explicitly accept a newer commit after earlier output was integrated", async () => {
   const { f, leaseId, branch, workspace } = await failedOutput();

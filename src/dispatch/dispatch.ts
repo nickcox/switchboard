@@ -328,6 +328,12 @@ export async function dispatchOnce(
     }
     await requests;
     if (unrecorded.length > 0) observed.unrecordedRequests = unrecorded;
+    if (report.result && report.childExit) {
+      const runtime = (await deps.runtime.discover(deps.contextId, { leaseId: allocation.leaseId }))[0];
+      if (!runtime?.validatedResult) throw new Error("The validated worker result was not recorded");
+      report.result = runtime.validatedResult.content;
+      if (runtime.resultDiscrepancy) observed.resultDiscrepancy = runtime.resultDiscrepancy;
+    }
     const resultCommit = codeCommit(report.result, outputBranch);
     if (resultCommit) summary.resultCommit = resultCommit;
     await deps.attempts.append(ref, "worker_finished", {
@@ -373,6 +379,7 @@ async function finalise(
   });
   return result({
     ok: outcome.done, reason: outcome.done ? "done" : "held", stage: "finalise", lease: "preserved", observed, attempt: summary, worker, retention,
+    ...(typeof observed.resultDiscrepancy === "string" ? { resultDiscrepancy: observed.resultDiscrepancy } : {}),
     task: { id: recorded.id, state: recorded.state, held: recorded.held, holdReason: recorded.holdReason },
     ...(!applied ? { detail: "The attempt outcome was recorded, but a newer operator decision left the task unchanged" } : outcome.done ? {} : { detail: holdReason }),
     nextAction: outcome.done ? "finish_attempt" : outcome.category === "review_required" ? "review_then_finish" : "inspect_attempt",

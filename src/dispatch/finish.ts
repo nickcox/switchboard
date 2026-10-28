@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AttemptRecord } from "../attempts/log.ts";
 import { onPath } from "../infra/executables.ts";
-import { validateWorkerResult } from "../runtime/contracts.ts";
-import { readJsonFile } from "../runtime/records.ts";
+import { recordValidatedResult, resultDiscrepancy, validateResultFile } from "../runtime/validated-result.ts";
 import type { RetentionResult } from "../workspaces/retention.ts";
 import { branchHead, fastForward, isAncestor } from "../workspaces/integration.ts";
 import { WorkspaceError } from "../workspaces/provider.ts";
@@ -82,12 +81,14 @@ async function completeReturn(deps: Dependencies, record: AttemptRecord, attempt
 }
 
 /** Runs the retention check again from the worker's recorded result, as dispatch did when the attempt finished. */
-async function recheck(deps: Dependencies, attempt: AttemptAssessment): Promise<(RetentionResult & { outputCommit?: string }) | string> {
+async function recheck(deps: Dependencies, attempt: AttemptAssessment, dryRun = false): Promise<(RetentionResult & { outputCommit?: string }) | string> {
   const runtime = (await deps.runtime.discover(deps.contextId, { leaseId: attempt.attempt.leaseId! })).find(r => r.binding.input.identity.leaseId === attempt.attempt.leaseId);
   if (!runtime) return "The attempt has no runtime records, so its worker's result cannot be checked";
-  let report;
-  try { report = validateWorkerResult(await readJsonFile(runtime.binding.resultPath), runtime.binding.input); }
+  let validated;
+  try { validated = runtime.validatedResult ?? await (dryRun ? validateResultFile(runtime.binding) : recordValidatedResult(runtime)); }
   catch (error) { return `The worker's result cannot be read: ${error instanceof Error ? error.message : String(error)}`; }
+  const report = validated.content;
+  const discrepancy = await resultDiscrepancy(validated);
   if (report.outcome !== "completed") return `The worker reported ${report.outcome}, not completed work; use --accept-output to accept its committed output instead`;
   const delivery = runtime.binding.input.delivery;
   const retention = await deps.retention({
@@ -99,7 +100,8 @@ async function recheck(deps: Dependencies, attempt: AttemptAssessment): Promise<
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   });
   const output = report.workReferences.find(w => w.kind === "git" && w.branch === delivery.outputBranch);
-  return { ...retention, ...(output?.kind === "git" ? { outputCommit: output.commit } : {}) };
+  return { ...retention, notes: [...retention.notes, ...(discrepancy ? [discrepancy] : [])],
+    ...(output?.kind === "git" ? { outputCommit: output.commit } : {}) };
 }
 
 /**
@@ -123,7 +125,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
   const { attempt, record } = located;
-  const base = { attempt: attempt.attempt };
+  const base = { attempt: attempt.attempt, ...(attempt.resultDiscrepancy ? { resultDiscrepancy: attempt.resultDiscrepancy } : {}) };
   if (await completeReturn(deps, record, attempt, "finish", options.dryRun)) return result({
     ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: {}, ...base,
     ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
@@ -153,7 +155,7 @@ async function finishAttempt(deps: Dependencies, options: { leaseId: string; noP
   const check = (): Promise<(RetentionResult & { outputCommit?: string }) | string> => acceptedCommit ? deps.retention({
     repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch: attempt.attempt.outputBranch!,
     resultCommit: acceptedCommit, artefacts: [],
-  }) : recheck(deps, attempt);
+  }) : recheck(deps, attempt, options.dryRun);
   const retention = await check();
   if (typeof retention === "string") return refused("inspect_attempt", retention, base);
   const integrationPermission = checkCanIntegrate(attempt.facts, { accepting, retained: retention.retained, fastForward: true });

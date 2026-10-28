@@ -12,6 +12,8 @@ import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
 export type AttemptStatus = {
   taskDisagreement?: boolean;
+  validatedResult?: RuntimeRecord["validatedResult"];
+  resultDiscrepancy?: string;
   specification?: StoredSpecification;
   specificationComplete: boolean;
   allocation?: AttemptAllocation;
@@ -122,6 +124,7 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const record = records.find(r => r.taskId === assessment.attempt.taskId && r.attempt === assessment.attempt.attempt);
     attempts.push({ ...assessment,
       specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,
+      ...(worker?.validatedResult ? { validatedResult: worker.validatedResult } : {}),
       ...(record?.specification ? { specification: record.specification } : {}), ...(record?.allocation ? { allocation: record.allocation } : {}),
       changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning,
       ...(assessment.state === "awaiting_finish" ? { nextAction: { code: "finish_attempt" as const,
@@ -137,7 +140,7 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   const policy = deps.policy === undefined ? undefined
     : await resolvePolicy(deps.policy).then(resolved => ({ resolved }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   // A policy that cannot be resolved needs fixing before any attempt can be finished.
-  const attention = attempts.some(a => a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt") || unaccounted || (policy !== undefined && "error" in policy);
+  const attention = attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
   return {
     version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts,
     ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
@@ -177,6 +180,7 @@ export function describeStatus(value: StatusResult): string {
     if (!a.specificationComplete) lines.push("  Stored specification incomplete – this attempt cannot be launched; inspect and resolve it");
     if (a.specification) lines.push(`  Specification: ${a.specification.title ?? "unknown title"}, revision ${a.specification.definitionRevision ?? "unknown"}; ${a.specification.runtime?.profile ?? "unknown profile"}`);
     if (a.unknownOwners) for (const reason of a.unknownOwners) lines.push(`  Unknown: ${reason}`);
+    if (a.resultDiscrepancy) lines.push(`  Result discrepancy: ${a.resultDiscrepancy}`);
     if (a.taskDisagreement) lines.push("  Task unchanged: a newer operator decision disagrees with the attempt outcome");
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;
     if (a.activity?.lastActivity) {

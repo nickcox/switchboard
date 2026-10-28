@@ -1,10 +1,11 @@
 import { bounded, RuntimeFailure } from "./async.ts";
-import { validateWorkerResult, type WorkerInput, type WorkerResult } from "./contracts.ts";
+import type { WorkerInput, WorkerResult } from "./contracts.ts";
+import { recordValidatedResult } from "./validated-result.ts";
 import { ActivityWriter, shorten, type ActivityEntry, type Payload } from "./activity.ts";
 import { startHeartbeat } from "./heartbeat.ts";
 import { startKeepAwake, type KeepAwake } from "./keep-awake.ts";
 import { claimRequest, recordResult, unclaimedRequests, type ControlRequest, type RequestResult } from "./requests.ts";
-import { readJsonFile, RuntimeRecords, type ChildExit, type RuntimeBinding, type RuntimeRecord, type ThinkingLevel } from "./records.ts";
+import { RuntimeRecords, type ChildExit, type RuntimeBinding, type RuntimeRecord, type ThinkingLevel } from "./records.ts";
 
 /**
  * Supervision shared by every runtime (Phase 3 PRD, second runtime): the runtime directory and dispatcher heartbeat,
@@ -207,7 +208,7 @@ export class WorkerSupervisor {
         } catch (error) { failure ??= asError(error); }
       }
       if (!failure && session.childExit?.started && session.childExit.code === 0 && session.childExit.signal === null) {
-        try { result = validateWorkerResult(await readJsonFile(binding.resultPath), binding.input); }
+        try { result = (await recordValidatedResult(reserved)).content; }
         catch (error) { failure = new RuntimeFailure("invalid_result", asError(error).message); }
       } else if (!failure && session.childExit) {
         failure = new RuntimeFailure("worker_exit", "The worker did not exit successfully");

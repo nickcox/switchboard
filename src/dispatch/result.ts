@@ -77,6 +77,7 @@ export type DispatchResult = {
   worker?: { status: string; outcome?: string; summary?: string; reason?: string; nextAction?: string };
   task?: { id: string; state: string; held: boolean; holdReason: string | null };
   retention?: RetentionResult;
+  resultDiscrepancy?: string;
   /** A lease is absent, preserved, or unknown when its current state could not be checked. */
   lease: "none" | "preserved" | "unknown";
   /** Owner state the decision was based on, including anything that was unknown. */
@@ -115,6 +116,7 @@ export function describe(value: DispatchResult): string {
     for (const note of value.retention.notes) lines.push(`  note: ${note}`);
   }
   lines.push(`Lease: ${value.lease}`);
+  if (value.resultDiscrepancy) lines.push(`Result discrepancy: ${value.resultDiscrepancy}`);
   if (value.detail) lines.push(`Detail: ${value.detail}`);
   lines.push(`Next: ${value.nextAction.description}`);
   return lines.join("\n");

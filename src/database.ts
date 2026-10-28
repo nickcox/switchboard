@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 6) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 7) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -204,6 +204,23 @@ export class Database {
         `);
         migrateRequestRecords(result);
         db.exec("PRAGMA user_version = 6");
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 7) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 7) return;
+        db.exec(`
+          DROP TRIGGER worker_observations_immutable;
+          ALTER TABLE worker_observations RENAME TO previous_worker_observations;
+          CREATE TABLE worker_observations (
+            directory TEXT NOT NULL REFERENCES launches(directory) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN ('exit','session_start','validated_result')), recorded_at TEXT NOT NULL,
+            value TEXT NOT NULL CHECK(json_valid(value)), PRIMARY KEY(directory, kind));
+          INSERT INTO worker_observations SELECT * FROM previous_worker_observations;
+          DROP TABLE previous_worker_observations;
+          CREATE TRIGGER worker_observations_immutable BEFORE UPDATE ON worker_observations BEGIN
+            SELECT RAISE(ABORT, 'Worker observations cannot be changed');
+          END;
+          PRAGMA user_version = 7;
+        `);
       });
       return result;
     } catch (error) { db.close(); throw error; }

@@ -8,6 +8,7 @@ import { inside, requireRetainedStorage } from "../infra/storage.ts";
 export { inside } from "../infra/storage.ts";
 import { workerInputSchema, type WorkerInput } from "./contracts.ts";
 import { RuntimeStore, type RuntimeAddress } from "./store.ts";
+import { parseValidatedResult, resultDiscrepancy, type ValidatedResult } from "./validated-result.ts";
 
 import { thinkingLevelSchema, type ThinkingLevel } from "./settings.ts";
 export { thinkingLevelSchema, type ThinkingLevel } from "./settings.ts";
@@ -21,6 +22,8 @@ export type ChildExit = z.infer<typeof childExitSchema>;
 export type RuntimeRecord = RuntimeAddress & {
   binding: RuntimeBinding;
   thinkingLevel?: ThinkingLevel;
+  validatedResult?: ValidatedResult;
+  resultDiscrepancy?: string;
   /** A direct-child exit is an observation; an operator confirmation is not. */
   child:
     | { status: "exited"; exit: ChildExit }
@@ -32,6 +35,10 @@ const maxRecordBytes = 1024 * 1024;
 
 /** Bounded, regular-file JSON read. A worker result is data, never executable content. */
 export async function readJsonFile(path: string, maxBytes = maxRecordBytes): Promise<unknown> {
+  return (await readJsonDocument(path, maxBytes)).value;
+}
+
+export async function readJsonDocument(path: string, maxBytes = maxRecordBytes): Promise<{ value: unknown; digest: string }> {
   const before = await lstat(path);
   if (!before.isFile() || before.isSymbolicLink()) throw new Error("Expected a regular JSON file");
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -52,7 +59,8 @@ export async function readJsonFile(path: string, maxBytes = maxRecordBytes): Pro
       length += read.bytesRead;
     }
     if (length > maxBytes) throw new Error("JSON file exceeds byte limit");
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)));
+    const content = bytes.subarray(0, length);
+    return { value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(content)), digest: createHash("sha256").update(content).digest("hex") };
   } finally { await handle.close(); }
 }
 
@@ -150,7 +158,12 @@ export class RuntimeRecords {
       const exit = await this.storage.observation(directory, "exit");
       const stop = await this.storage.stopConfirmation(directory);
       const thinking = await this.storage.observation(directory, "session_start");
+      const value = await this.storage.observation(directory, "validated_result");
+      const validated = value === undefined ? undefined : parseValidatedResult(value, binding);
+      const discrepancy = validated === undefined ? undefined : await resultDiscrepancy(validated);
       records.push({ directory, binding, storage: this.storage, claimId: String(row.claim_id),
+        ...(validated === undefined ? {} : { validatedResult: validated }),
+        ...(discrepancy === undefined ? {} : { resultDiscrepancy: discrepancy }),
         child: exit !== undefined ? { status: "exited", exit: childExitSchema.parse(exit) } : stop ? { status: "operator_confirmed_stopped", ...stop } : { status: "unknown" },
         ...(thinking === undefined ? {} : { thinkingLevel: thinkingLevelSchema.parse(thinking) }) });
     }

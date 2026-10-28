@@ -35,6 +35,7 @@ export type AttemptAssessment = {
   leaseInOtherPool?: string;
   task: TaskView;
   taskDisagreement?: boolean;
+  resultDiscrepancy?: string;
   facts: AttemptFacts;
 };
 
@@ -72,6 +73,7 @@ export function assessAttempt(observation: AttemptObservation): AttemptAssessmen
   return { attempt: observation.attempt, state, nextAction: { code, description: nextActions[code] }, facts,
     lastEntry: record?.entries.at(-1)?.kind ?? "none", possiblyRunning, leaseHeld, task,
     ...(pool === undefined ? {} : { leaseInOtherPool: pool }),
+    ...(observation.runtime.known && observation.runtime.value?.resultDiscrepancy ? { resultDiscrepancy: observation.runtime.value.resultDiscrepancy } : {}),
     ...(record?.entries.some(e => e.kind === "task_recorded" && e.data.applied === false) ? { taskDisagreement: true } : {}) };
 }
 

@@ -4,6 +4,7 @@ import { attemptSpecificationSchema } from "../attempts/specification.ts";
 import type { RuntimeBinding, ChildExit, ThinkingLevel } from "./records.ts";
 import type { ActivityEntry } from "./activity.ts";
 import type { ControlRequest, RequestResult } from "./requests.ts";
+import type { ValidatedResult } from "./validated-result.ts";
 
 const ownerStartedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
 const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
@@ -71,6 +72,13 @@ export class RuntimeStore {
   async recordObservation(directory: string, kind: "exit" | "session_start", value: ChildExit | ThinkingLevel): Promise<void> {
     await this.use(database => database.transaction(() => {
       database.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, kind, new Date().toISOString(), JSON.stringify(value));
+    }));
+  }
+
+  async recordValidatedResult(directory: string, value: ValidatedResult): Promise<unknown> {
+    return this.use(database => database.transaction(() => {
+      database.run("INSERT INTO worker_observations VALUES(?,?,?,?) ON CONFLICT(directory, kind) DO NOTHING", directory, "validated_result", value.validatedAt, JSON.stringify(value));
+      return JSON.parse(String(database.get("SELECT value FROM worker_observations WHERE directory = ? AND kind = 'validated_result'", directory)!.value));
     }));
   }
 
