@@ -1,4 +1,4 @@
-import { cleanupOutputBranch, describeOutputBranch, outputTarget } from "./output-branch.ts";
+import { cleanupOutputBranch, describeOutputBranch, outputTarget, retentionReferences } from "./output-branch.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 import { callerName } from "../caller.ts";
 import { randomUUID } from "node:crypto";
@@ -138,7 +138,7 @@ async function recheck(deps: OperationDependencies, attempt: AttemptAssessment, 
   const delivery = runtime.binding.input.delivery;
   const retention = await readRetention(deps, {
     repository: deps.repository, workspace: runtime.binding.input.workspace, outputBranch: delivery.outputBranch, targetBranch: outputTarget(deps.attempts.read(attempt.attempt)), startingCommit: delivery.startingCommit,
-    gitReferences: report.workReferences.flatMap(w => (w.kind === "git" ? [w] : [])),
+    gitReferences: retentionReferences(deps, deps.attempts.read(attempt.attempt), report.workReferences.flatMap(w => (w.kind === "git" ? [w] : []))),
     artefacts: report.workReferences.flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
     recyclableRoots: await deps.reads.read("Treehouse workspace roots", "check retention", () => deps.workspaces.recyclableRoots()),
     artefactDirectory: runtime.binding.artefactDirectory,

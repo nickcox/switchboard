@@ -17,7 +17,7 @@ export type RetentionRequest = {
   /** Check only recorded commits on retained branches, without requiring an old workspace to still exist. */
   commitsOnly?: boolean;
   /** Every reported Git deliverable, checked by its own branch and exact commit. */
-  gitReferences?: { name: string; branch: string; commit: string }[];
+  gitReferences?: { name: string; branch: string; commit: string; targetBranch?: string | undefined }[];
   /** Absolute paths of required reports and evidence, which must exist outside the workspace. */
   artefacts: string[];
   /** Provider areas containing all recyclable workspaces, not just the current lease. */
@@ -69,39 +69,32 @@ export async function checkRetention(git: string, environment: Record<string, st
     if (result) readFailures.push({ message, detail: describeCommand(result) });
   };
 
-  const references = request.gitReferences ?? (request.resultCommit === undefined ? [] : [
+  const references: NonNullable<RetentionRequest["gitReferences"]> = request.gitReferences ?? (request.resultCommit === undefined ? [] : [
     { name: "output", branch: request.outputBranch, commit: request.resultCommit },
   ]);
   for (const reference of references) {
-    const ref = `refs/heads/${reference.branch}`;
-    const exists = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    let targetFailure: Awaited<ReturnType<typeof run>> | undefined;
-    if (request.targetBranch) {
-      const target = await run(request.repository, ["rev-parse", "--verify", "--quiet", `refs/heads/${request.targetBranch}^{commit}`]);
-      if (target.exitCode === 0 && !target.timedOut && !target.truncated) {
-        const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, target.stdout.trim()]);
-        if (contained.exitCode === 0 && !contained.timedOut && !contained.truncated) continue;
-        if (contained.timedOut || contained.truncated || contained.exitCode !== 1) targetFailure = contained;
-      } else if (target.timedOut || target.truncated || target.exitCode !== 1) targetFailure = target;
-    }
-    if (exists.timedOut || exists.truncated) unable("the output branch", exists);
-    else if (exists.exitCode === 1) {
-      if (targetFailure) unable("whether the target branch contains the result commit", targetFailure);
-      else reject(`Output branch ${reference.branch} does not exist (${reference.name})${request.targetBranch ? ` and result commit is not retained by target branch ${request.targetBranch}` : ""}`);
-    }
-    else if (exists.exitCode !== 0) unable("the output branch", exists);
-    else {
-      const commit = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${reference.commit}^{commit}`]);
-      if (commit.timedOut || commit.truncated || commit.exitCode !== 0 && commit.exitCode !== 1) { unable("the result commit", commit); continue; }
-      if (commit.exitCode === 1) { reject(`Result commit ${reference.commit} does not exist (${reference.name})`); continue; }
-      const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, ref]);
-      if (contained.timedOut || contained.truncated) unable("whether the output branch contains the result commit", contained);
-      else if (contained.exitCode === 1) {
-        if (targetFailure) unable("whether the target branch contains the result commit", targetFailure);
-        else reject(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
+    const targetBranch = reference.targetBranch ?? (reference.branch === request.outputBranch ? request.targetBranch : undefined);
+    const commit = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${reference.commit}^{commit}`]);
+    if (commit.timedOut || commit.truncated || commit.exitCode !== 0 && commit.exitCode !== 1) { unable("the result commit", commit); continue; }
+    if (commit.exitCode === 1) { reject(`Result commit ${reference.commit} does not exist (${reference.name} on ${reference.branch})`); continue; }
+    const failures: { what: string; result: Awaited<ReturnType<typeof run>> }[] = [];
+    let retained = false;
+    let outputMissing = false;
+    for (const [branch, label] of [[reference.branch, "output"], ...(targetBranch ? [[targetBranch, "target"]] : [])]) {
+      const ref = `refs/heads/${branch}`;
+      const exists = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      if (exists.timedOut || exists.truncated || exists.exitCode !== 0 && exists.exitCode !== 1) {
+        failures.push({ what: `the ${label} branch`, result: exists });
+        continue;
       }
-      else if (contained.exitCode !== 0) unable("whether the output branch contains the result commit", contained);
+      if (exists.exitCode === 1) { if (label === "output") outputMissing = true; continue; }
+      const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, exists.stdout.trim()]);
+      if (!contained.timedOut && !contained.truncated && contained.exitCode === 0) { retained = true; break; }
+      if (contained.timedOut || contained.truncated || contained.exitCode !== 1) failures.push({ what: `whether the ${label} branch contains the result commit`, result: contained });
     }
+    if (retained) continue;
+    if (failures.length) for (const failure of failures) unable(failure.what, failure.result);
+    else reject(`${outputMissing ? `Output branch ${reference.branch} does not exist` : `Output branch ${reference.branch} does not contain result commit ${reference.commit}`} (${reference.name})${targetBranch ? `; result commit is not retained by target branch ${targetBranch}` : ""}`);
   }
 
   if (request.commitsOnly) {

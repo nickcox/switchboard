@@ -144,7 +144,7 @@ for (const step of ["output_accepted", "integrated", "task_recorded"] as const) 
       const record = (await f.deps.attempts.forTask("finish-a1"))[0]!;
       assert.equal(record.entries.filter(e => e.kind === "task_recorded" && e.data.outcome === "done").length, 1);
       assert.equal((await finish(deps, { leaseId, noProcesses: true })).reason, "finished");
-      assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned"]);
+      assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned", "output_branch_cleanup"]);
     });
   }
 }
@@ -227,7 +227,7 @@ test("finish integrates the worker's exact result commit, not a later branch hea
   assert.notEqual(f.run(["rev-parse", branch]), commit);
   const completed = await kinds(f);
   assert.equal((await finish(deps, { leaseId, noProcesses: true })).reason, "finished");
-  assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned"]);
+  assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned", "output_branch_cleanup"]);
   assert.equal(f.run(["rev-parse", "main"]), commit);
 });
 
@@ -413,7 +413,7 @@ for (const policy of ["manual", "local-merge"] as const) {
     assert.equal(returning.detail, `Would return lease ${leaseId}`);
     assert.deepEqual(await kinds(f), completed);
     assert.equal((await finish(deps, { leaseId, noProcesses: true })).reason, "finished");
-    assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned"]);
+    assert.deepEqual(await kinds(f), [...completed, "lease_return_started", "lease_returned", "output_branch_cleanup"]);
     assert.equal(await listed(f, leaseId), false);
   });
 }
@@ -424,7 +424,7 @@ test("finish under the manual policy records the task as done and returns the le
   assert.equal(outcome.reason, "finished", outcome.detail ?? "");
   assert.equal((await f.tasks.read("finish-a1"))?.state, "done");
   assert.equal(await listed(f, leaseId), false);
-  assert.deepEqual((await kinds(f)).slice(-3), ["task_recorded", "lease_return_started", "lease_returned"]);
+  assert.deepEqual((await kinds(f)).slice(-4), ["task_recorded", "lease_return_started", "lease_returned", "output_branch_cleanup"]);
   assert.equal(await state(f.deps), "finished");
   assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "refused");
 });
@@ -440,7 +440,7 @@ test("finish under local-merge fast-forwards the target branch to the output bra
   const outcome = await finish(deps, { leaseId, noProcesses: true });
   assert.equal(outcome.reason, "finished", outcome.detail ?? "");
   assert.equal(f.run(["rev-parse", "main"]), head);
-  assert.deepEqual((await kinds(f)).slice(-4), ["integrated", "task_recorded", "lease_return_started", "lease_returned"]);
+  assert.deepEqual((await kinds(f)).slice(-5), ["integrated", "task_recorded", "lease_return_started", "lease_returned", "output_branch_cleanup"]);
 });
 
 test("finish under local-merge refuses a change that is not a fast-forward, before changing anything", async () => {
@@ -525,7 +525,7 @@ test("discard needs explicit confirmation, then returns the lease even with unco
   assert.equal(await listed(f, leaseId), false);
   const held = await f.tasks.read("finish-a1");
   assert.deepEqual([held?.state, held?.held], ["queued", true]);
-  assert.deepEqual((await kinds(f)).slice(-3), ["discarded", "lease_return_started", "lease_returned"]);
+  assert.deepEqual((await kinds(f)).slice(-4), ["discarded", "lease_return_started", "lease_returned", "output_branch_cleanup"]);
 });
 
 test("finish refuses an attempt that may be changed but is not awaiting review or finish, such as one its worker held", async () => {
@@ -606,7 +606,7 @@ test("finding 12: a lease returned before its log entry failed is recorded by th
   for (const noProcesses of [false, true]) {
     const plan = await finish(f.deps, { leaseId, noProcesses, dryRun: true });
     assert.equal(plan.reason, "planned");
-    assert.equal(plan.detail, `Would record that lease ${leaseId} was returned`);
+    assert.match(plan.detail ?? "", /Output branch .*kept.*not in target branch main/);
     assert.deepEqual(await kinds(f), before);
   }
   const second = await finish(f.deps, { leaseId, noProcesses: true });
@@ -627,7 +627,7 @@ test("finding 12: a fast-forward made before its log entry failed is recorded by
   assert.equal(f.run(["rev-parse", "main"]), f.run(["rev-parse", branch]));
   assert.equal((await finish({ ...f.deps, policy: localMerge(f) }, { leaseId, noProcesses: true })).reason, "finished");
   const integrated = (await f.deps.attempts.forTask("finish-a1"))[0]!.entries.filter(e => e.kind === "integrated");
-  assert.deepEqual(integrated.map(e => e.data.commit), [f.run(["rev-parse", branch])]);
+  assert.deepEqual(integrated.map(e => e.data.commit), [f.run(["rev-parse", "main"])]);
 });
 
 // Phase 2 review findings 8, 9, 11 and 16. Each test asserts the attempt's state before the command's outcome, so it

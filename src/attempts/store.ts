@@ -29,6 +29,9 @@ const confirmationSchema = z.discriminatedUnion("fact", [
 export type Confirmation = z.infer<typeof confirmationSchema>;
 export type ConfirmationRecord = AttemptRef & Confirmation & { confirmedBy: string; confirmedAt: string };
 export type PendingDeletion = AttemptRef & { directory: string };
+export type ArchivedOutputBranch = AttemptRef & {
+  branch: string; repository: string; commit?: string | undefined; targetBranch?: string | undefined; discarded: boolean;
+};
 export type ArchivedRequest = AttemptRef & { archived: true; summary: Record<string, unknown> };
 export type StartingPointEvidence = {
   records: AttemptRecord[];
@@ -353,6 +356,32 @@ export class AttemptStore {
       .map(row => this.read({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.number) }));
   }
 
+  archivedOutputBranches(): ArchivedOutputBranch[] {
+    return this.database.all("SELECT task, attempt, summary FROM archived_attempts WHERE context = ? ORDER BY task, attempt", this.contextId).flatMap(row => {
+      const archive = JSON.parse(String(row.summary));
+      const branch = archive.allocation?.outputBranch ?? archive.summary?.outputBranch;
+      if (!branch) return [];
+      const accepted = [...(archive.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
+      return [{ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.attempt), branch,
+        repository: archive.allocation?.backingRepository ?? archive.specification?.backingRepository,
+        commit: archive.outputBranchRecord?.commit ?? accepted?.scope.commit ?? archive.summary?.resultCommit,
+        targetBranch: archive.outputBranchRecord?.targetBranch ?? archive.allocation?.baseRef ?? archive.specification?.baseRef,
+        discarded: archive.outputBranchRecord?.discarded ?? false }];
+    });
+  }
+
+  async appendArchivedOutputBranchCleanup(ref: AttemptRef, data: EntryData<"output_branch_cleanup">): Promise<void> {
+    await this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "returnLease", { taskId: ref.taskId });
+      const row = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
+      if (!row) throw new Error("The branch cleanup archive is missing");
+      const archive = JSON.parse(String(row.summary));
+      const entries = archive.outputBranchCleanup ??= [];
+      entries.push({ sequence: entries.length, recordedAt: new Date().toISOString(), askedBy: callerName(this.caller), ...data });
+      this.database.run("UPDATE archived_attempts SET summary = ? WHERE context = ? AND task = ? AND attempt = ?", JSON.stringify(archive), ref.contextId, ref.taskId, ref.attempt);
+    });
+  }
+
   async archiveAttempt(expected: AttemptRecord, summary: Record<string, unknown>, directories: string[], expectedTask?: { state: string; held: boolean; holdReason: string | null }): Promise<void> {
     if (directories.some(directory => !isAbsolute(directory))) throw new Error("Deletion paths must be absolute");
     await this.database.transaction(() => {
@@ -371,6 +400,10 @@ export class AttemptStore {
       const archive = {
         ...identity(expected), summary, spending: attemptSpending(this.database, expected), entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
         archivedAt: new Date().toISOString(), archivedBy: callerName(this.caller), confirmations: this.confirmations(expected), acceptedCommits: this.acceptedCommits(expected),
+        outputBranchRecord: { commit: this.startingPointCommit(expected),
+          targetBranch: [...current.entries].reverse().find(e => e.kind === "integrated")?.data.targetBranch ?? current.allocation?.baseRef ?? current.specification?.baseRef,
+          discarded: current.entries.some(e => e.kind === "discarded") },
+        outputBranchCleanup: current.entries.filter(e => e.kind === "output_branch_cleanup").map((e, sequence) => ({ sequence, recordedAt: e.recordedAt, askedBy: e.askedBy, ...e.data })),
         ...(current.entries.some(e => e.kind === "owner_read_failed") ? { readFailures: current.entries.filter(e => e.kind === "owner_read_failed" || e.kind === "owner_read_reconciled") } : {}),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
         ...(current.entries.some(entry => entry.kind === "review_recorded") ? { reviews: current.entries.filter(entry => entry.kind === "review_recorded").map(entry => entry.data) } : {}),
@@ -584,7 +617,7 @@ export class AttemptStore {
     this.database.run("UPDATE attempts SET closed = 1 WHERE context = ? AND task = ? AND number = ?", ref.contextId, ref.taskId, ref.attempt);
   }
   private insert<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>) {
-    requireAuthority(this.database, this.caller, kind === "lease_returned" || kind === "lease_return_started" || kind === "discarded" ? "returnLease"
+    requireAuthority(this.database, this.caller, kind === "lease_returned" || kind === "lease_return_started" || kind === "discarded" || kind === "output_branch_cleanup" ? "returnLease"
       : kind === "integrated" || kind === "integration_started" || kind === "owner_read_reconciled" ? "integrate"
       : kind === "output_accepted" || kind === "check_finished" ? "acceptOutput"
       : ["requested", "leased", "task_started", "launched"].includes(kind) ? "dispatch" : "recordAttempt", { taskId: ref.taskId });

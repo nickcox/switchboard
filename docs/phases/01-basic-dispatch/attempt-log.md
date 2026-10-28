@@ -29,6 +29,7 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `integration_started` | Intended `targetBranch`, its previous `from` commit and exact output `commit` |
 | `integrated` | `policy: local-merge`, `targetBranch` and `commit` |
 | `discarded` | Optional `note` |
+| `output_branch_cleanup` | Output `branch`, `status` (`deleted` or `kept`) and optional explanatory `detail` |
 | `lease_return_started`, `lease_returned` | `leaseId`, `by` (`finish` or `discard`) and the return's unique `returnId` |
 
 Outcome categories are `done`, `review_required`, `not_retained`, `held_by_worker`, `failed`, `interrupted` and `over_budget`. Classification reads the category, never a category inferred from a hold reason. Task instructions are not changed to carry attempt evidence; the result and attempt records retain it.
@@ -40,6 +41,18 @@ A reservation starting from kept output uses a fresh `requested` entry and reque
 `reserveFromAttempt` performs owner and retention checks, then `AttemptStore.reserveAttempt` atomically checks the source snapshot, observed exits or scoped stop confirmations, task-wide worker exclusion, readiness, context capacity and `maxAttemptsPerTask` (default 3), and writes the new number, request, attempt and specification. Retained numbers, including archives and other contexts, count towards the per-task limit. Replays return the original reservation even at the limit. Refusals change nothing; a transaction crash leaves either all reservation records or none. A reserved continuation prevents the source from obtaining fresh launch permission, even after archiving.
 
 The named source's retained lease is allowed for this reservation only. Ordinary dispatch and other earlier leases retain their existing exclusions. The operation stops at reservation: there is no new `leased` or `launched` entry yet, no task start and no reused worker identity. A later workspace-preparation step must allocate a fresh branch, lease and session from the stored commit. See the [task-store contract](../../task-store.md#starting-from-an-earlier-attempt).
+
+## Output-branch lifecycle
+
+An attempt's exact recorded output commit is retained when reachable from its output branch or target branch. Continuations and reviews use this rule too, so integrated output remains usable after its branch has gone. The target is the recorded integration target, or otherwise the attempt's recorded base branch; a later configuration change does not choose another target for old output. Other Git references still require their named branch, except a review's exact source-output reference, which uses the source attempt's target.
+
+After `finish` or `discard` confirms a lease return and records `lease_returned`, it deletes the output branch only if the attempt was discarded or its recorded output commit is reachable from that target. Manual finalisation keeps unintegrated output. A branch must still point at the exact recorded commit; Git checks that old value atomically during deletion. Symbolic refs, moved branches, missing commit records and failed checks or deletions are kept with a reason. An already absent branch counts as deleted. Cleanup is best effort: failure never prevents or undoes a lease return.
+
+Each cleanup appends `output_branch_cleanup`, including kept branches and failures. `status` presents its latest result as deleted or kept with any reason; before cleanup it shows kept. If writing that entry fails, the command still reports the cleanup result and recording failure. An interrupted return completed by a later `finish` or `discard` also performs cleanup after confirming absence.
+
+`cleanup-output-branches --dry-run` lists what would be deleted and every branch kept with its reason, without changing refs or records. Running without `--dry-run` applies the same rule to attempts whose returns have already been confirmed. Held leases and unknown worker or lease state never permit cleanup. Archived attempts are included where their records identify the branch and commit; incomplete older records are kept rather than guessed. Cleanup never changes tasks or leases. It may be run again after manual integration or a failed deletion.
+
+Pruning preserves the output commit, target and discard decision in `outputBranchRecord`, and the branch-cleanup history in `outputBranchCleanup` in the archive summary. Later cleanup appends to that history with its own sequence, time and caller. Older archives use their recorded allocation, result commit or scoped acceptance where available. A dry run records no cleanup entry.
 
 ## Review records
 

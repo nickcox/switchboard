@@ -74,7 +74,11 @@ with --no-processes to return the lease, skipping completed steps. The text and 
 was retained or returned; JSON lease is preserved or none respectively.
 discard returns the lease of an attempt whose work is not wanted, removing the workspace's contents, and holds its
 task. Both return a lease only with --no-processes, your confirmation that no worker process remains; discard
-also needs --confirm. --dry-run shows what would be done.
+also needs --confirm. --dry-run shows what would be done. After a confirmed return, the output branch is deleted
+only if it still points at the recorded commit and that commit is in the target branch, or the attempt was discarded.
+Unintegrated or moved branches and failed deletions are kept with a reason; cleanup never fails a lease return.
+cleanup-output-branches applies the same rule to earlier returned leases, including archived attempts.
+Its --dry-run lists planned deletions and every kept branch with its reason, without changing refs or records.
 
 prune archives summaries and removes records only for finished attempts older than --older-than days.
 It preserves unfinished, leased, possibly running and unknown attempts. --dry-run lists removals without writing.
@@ -83,7 +87,7 @@ The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
 Exit status: 0 when no work was ready, a dry run selected a task or the task was recorded as done (dispatch), nothing needs attention (status),
 the confirmation was recorded (resolve), an answer was recorded (answer, even if delivery failed), Pi accepted the request
 (stop, steer), the attempt was found (watch), or the
-attempt was finished, discarded or its dry run planned (finish, discard), or pruning completed (prune);
+attempt was finished, discarded or its dry run planned (finish, discard), or cleanup completed (prune, cleanup-output-branches);
 1 for any other outcome, described by the report's reason; 2 for usage or configuration errors.`;
 
 async function main(argv: string[]): Promise<number> {

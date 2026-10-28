@@ -1,3 +1,4 @@
+import { retentionReferences } from "./output-branch.ts";
 import { randomUUID } from "node:crypto";
 import { latestChecks } from "../attempts/checks.ts";
 import { recordedReviews } from "../attempts/reviews.ts";
@@ -373,7 +374,7 @@ async function finalise(
     repository: stored.allocation!.backingRepository!, workspace: summary.workspace!, outputBranch: delivery.outputBranch, targetBranch: delivery.baseRef,
     startingCommit: stored.allocation!.startingCommit,
     ...(summary.resultCommit ? { resultCommit: summary.resultCommit } : {}),
-    gitReferences: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : [])),
+    gitReferences: retentionReferences(deps, stored, (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : []))),
     artefacts: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
     recyclableRoots: roots,
     ...(report ? { artefactDirectory: report.binding.artefactDirectory } : {}),
