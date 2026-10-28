@@ -71,7 +71,7 @@ const entrySchemas = {
   }),
   /** A stop request or operator message the dispatcher forwarded to the running worker, with what happened. */
   operator_request: z.strictObject({
-    id: z.uuid(), kind: z.enum(["stop", "steer", "follow_up"]), sender: nonempty, outcome: nonempty,
+    id: z.uuid(), kind: z.enum(["stop", "steer", "follow_up"]), sender: nonempty, label: nonempty.optional(), outcome: nonempty,
     message: nonempty.optional(), error: nonempty.optional(),
   }),
   /**
@@ -109,6 +109,7 @@ const envelopeSchema = z.strictObject({
   sequence: z.number().int().nonnegative(),
   kind: z.enum(entryKinds),
   recordedAt: z.iso.datetime(),
+  askedBy: nonempty.optional(),
   data: z.record(z.string(), z.unknown()),
 });
 export type AttemptEntry = z.infer<typeof envelopeSchema>;

@@ -2,9 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { ObjectiveStore, defaultPermissions, type CompletionStatement } from "../../src/objectives/store.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
-import { AttemptStore } from "../../src/attempts/store.ts";
+import { ObjectiveStore, defaultPermissions, type CompletionStatement, AttemptStore, SqliteTaskStore } from "../caller.ts";
 import { specificationFor } from "../helpers.ts";
 
 async function fixture() {
@@ -45,11 +43,11 @@ test("objectives preserve the request, ordered criteria, defaults, creator and t
   finally { reopened.close(); }
 });
 
-test("updates record who changed each field and when, with no permissions or budget enforcement yet", async () => {
+test("creator updates record who changed each field and when, while budgets remain advisory", async () => {
   const f = await fixture();
   try {
     const original = await add(f.objectives);
-    const editor = new ObjectiveStore(f.tasks.database, "operator:editor");
+    const editor = new ObjectiveStore(f.tasks.database, "operator:creator");
     const permissions = { ...defaultPermissions, dispatch: false, manageTasks: false };
     const changed = await editor.update("goal", { acceptanceCriteria: ["Replacement"], scope: "Only this project", constraints: "No publishing",
       permissions, budget: { maxCost: 0, maxWorkerTimeMs: 0 }, deadline: "2026-10-28T22:00:00+11:00" });
@@ -59,7 +57,7 @@ test("updates record who changed each field and when, with no permissions or bud
     assert.deepEqual(changed.permissions, permissions);
     const history = editor.history("goal");
     assert.equal(history.length, 2);
-    assert.equal(history[1]!.changedBy, "operator:editor");
+    assert.equal(history[1]!.changedBy, "operator:creator");
     assert.equal(history[1]!.changedAt, changed.updatedAt);
     assert.deepEqual(history[1]!.changes.scope, { before: "", after: "Only this project" });
     assert.deepEqual(history[1]!.changes.budget.after, { maxCost: 0, maxWorkerTimeMs: 0 });
@@ -235,6 +233,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
     f.tasks.database.run("DROP TRIGGER task_definition_changed");
     f.tasks.database.run("DROP INDEX tasks_by_objective");
     f.tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+    f.tasks.database.run("DROP TABLE task_changes");
     f.tasks.database.run("DROP TABLE objective_changes");
     f.tasks.database.run("DROP TABLE objectives");
     f.tasks.database.run(`CREATE TRIGGER task_definition_changed AFTER UPDATE OF title, body, repo, kind, acceptance_criteria ON tasks
@@ -246,7 +245,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
   const reopened = await Promise.all([SqliteTaskStore.open({ path: f.path }), SqliteTaskStore.open({ path: f.path })]);
   try {
     for (const tasks of reopened) {
-      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 10);
+      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 11);
       assert.deepEqual(await tasks.read("existing"), before);
       assert.deepEqual(new AttemptStore(tasks.database, "fixture").read(ref), attempt);
       assert.deepEqual(new ObjectiveStore(tasks.database, "operator:creator").list(), []);

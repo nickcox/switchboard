@@ -5,7 +5,7 @@ import type { Dependencies } from "./dependencies.ts";
 import { assessAttempts } from "./assess.ts";
 import { observeAttempts } from "./observe.ts";
 import { result, type DispatchResult, type NextAction } from "./result.ts";
-import { checkCanDispatch, checkCanRedispatch, checkCanStartFrom } from "./safety.ts";
+import { checkCanDispatch, checkCanRedispatch, checkCanStartFrom, requireOperationAuthority } from "./safety.ts";
 import { specificationFactory } from "./specification.ts";
 import { handover } from "./handover.ts";
 
@@ -18,6 +18,7 @@ export async function reserveFromAttempt(deps: Dependencies, options: {
     observed: { reason }, detail, nextAction,
   });
   try {
+    requireOperationAuthority(deps, ["dispatch", "continueAttempts"], options);
     const inputs = { taskId: options.taskId, startingPoint: options.startingPoint, ...(options.note === undefined ? {} : { note: options.note }) };
     const existing = await deps.attempts.findByRequest(options.requestId, inputs);
     if (existing) return result({ ok: true, reason: "existing_request", stage: "select", lease: "none", observed: {},

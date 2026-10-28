@@ -1,6 +1,8 @@
 import { isAbsolute } from "node:path";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { z } from "zod";
+import { callerName, callerSchema, type Caller } from "../caller.ts";
+import { requireAuthority } from "../dispatch/safety.ts";
 import { Database } from "../database.ts";
 import { childExitSchema, type RuntimeBinding } from "../runtime/records.ts";
 import { parseValidatedResult } from "../runtime/validated-result.ts";
@@ -44,7 +46,8 @@ export class AttemptStoreError extends Error {
 export class AttemptStore {
   readonly database: Database;
   readonly contextId: string;
-  constructor(database: Database, contextId: string) { this.database = database; this.contextId = nonempty.parse(contextId); }
+  readonly caller: Caller;
+  constructor(database: Database, contextId: string, caller: Caller) { this.database = database; this.contextId = nonempty.parse(contextId); this.caller = callerSchema.parse(caller); }
 
   async checkStorage(roots: string[]): Promise<void> { await requireRetainedStorage(this.database.path, roots); }
   async forTask(taskId: string): Promise<AttemptRecord[]> {
@@ -113,6 +116,8 @@ export class AttemptStore {
     if (!startingPoint && inputs.startingPoint) throw new Error("Starting-point inputs require a starting point");
     if (startingPoint && !options.requested.requestId) throw new Error("Starting from an earlier attempt requires a stable request ID");
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "dispatch", { taskId: options.taskId });
+      if (startingPoint) requireAuthority(this.database, this.caller, "continueAttempts", { taskId: options.taskId });
       const requestId = options.requested.requestId;
       if (requestId !== undefined) {
         nonempty.parse(requestId);
@@ -171,6 +176,7 @@ export class AttemptStore {
 
   async startReservedTask(ref: AttemptRef): Promise<Task> {
     const started = await this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "dispatch", { taskId: ref.taskId });
       this.requireOpen(ref);
       const task = this.task(ref.taskId);
       const record = this.read(ref);
@@ -198,6 +204,7 @@ export class AttemptStore {
   async recordOutcome(ref: AttemptRef, outcome: Required<Pick<EntryData<"task_recorded">, "outcome" | "reason" | "category">>): Promise<{ task: Task; applied: boolean }> {
     return this.database.transaction(() => {
       this.requireOpen(ref);
+      requireAuthority(this.database, this.caller, outcome.outcome === "done" ? "completeTasks" : "recordAttempt", { taskId: ref.taskId });
       if (!this.read(ref).entries.some(e => e.kind === "task_started")) throw new AttemptStoreError("not_ready", "The attempt has not started its task");
       const row = this.database.get("SELECT state, hold_revision, started_hold_revision FROM tasks WHERE id = ?", ref.taskId)!;
       const applied = row.state === "in_flight" && row.hold_revision === row.started_hold_revision;
@@ -213,6 +220,7 @@ export class AttemptStore {
     return this.database.transaction(() => {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
+      requireAuthority(this.database, this.caller, "completeTasks", { taskId: ref.taskId });
       this.expectTask(ref.taskId, expected);
       this.writeOutcome(ref.taskId, "done", "finished");
       this.recordReview(ref, reviewRetained);
@@ -226,6 +234,7 @@ export class AttemptStore {
     return this.database.transaction(() => {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
+      requireAuthority(this.database, this.caller, "returnLease", { taskId: ref.taskId });
       const task = this.expectTask(ref.taskId, expected);
       this.confirm(ref, { fact: "discard", scope: { leaseId } }, confirmedBy);
       if (task.state !== "done") this.writeOutcome(ref.taskId, "hold", `Switchboard attempt ${ref.attempt} discarded`);
@@ -404,6 +413,7 @@ export class AttemptStore {
 
   async createReviewTask(taskId: string, target: ReviewTarget, evidence: StartingPointEvidence): Promise<Task> {
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "manageTasks", { taskId: target.taskId });
       this.checkReviewSource(target, evidence);
       const source = this.read({ contextId: this.contextId, taskId: target.taskId, attempt: target.attempt });
       const specification = attemptSpecificationSchema.parse(source.specification);
@@ -508,7 +518,7 @@ export class AttemptStore {
     if (current.length !== expected.length) throw new AttemptStoreError("attempt_changed", "The task's attempts changed before reservation; inspect them and retry");
     for (const record of expected) this.expectRecord(record);
     const taskRecords = this.database.all("SELECT context, number FROM attempts WHERE task = ? AND number IS NOT NULL", taskId)
-      .map(row => new AttemptStore(this.database, String(row.context)).read({ contextId: String(row.context), taskId, attempt: Number(row.number) }));
+      .map(row => new AttemptStore(this.database, String(row.context), this.caller).read({ contextId: String(row.context), taskId, attempt: Number(row.number) }));
     for (const record of taskRecords) {
       const launch = this.database.get("SELECT * FROM launches WHERE context = ? AND task = ? AND attempt = ? AND kind = 'launch'", record.contextId, taskId, record.attempt);
       const leaseId = launch ? String(launch.lease_id) : record.allocation?.leaseId;
@@ -550,16 +560,21 @@ export class AttemptStore {
     this.database.run("UPDATE attempts SET closed = 1 WHERE context = ? AND task = ? AND number = ?", ref.contextId, ref.taskId, ref.attempt);
   }
   private insert<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>) {
+    requireAuthority(this.database, this.caller, kind === "lease_returned" || kind === "lease_return_started" || kind === "discarded" ? "returnLease"
+      : kind === "integrated" || kind === "integration_started" || kind === "owner_read_reconciled" ? "integrate"
+      : kind === "output_accepted" ? "acceptOutput" : "recordAttempt", { taskId: ref.taskId });
     const sequence = Number(this.database.get("SELECT coalesce(max(sequence), -1) + 1 AS n FROM attempt_entries WHERE context = ? AND task = ? AND attempt = ?",
       ref.contextId, ref.taskId, ref.attempt)!.n);
-    const entry: AttemptEntry = parseAttemptEntry({ version: 1, ...identity(ref), sequence, kind, recordedAt: new Date().toISOString(), data });
+    const entry: AttemptEntry = parseAttemptEntry({ version: 1, ...identity(ref), sequence, kind, recordedAt: new Date().toISOString(), askedBy: callerName(this.caller), data });
     if (kind === "task_recorded" && entry.data.category === undefined) throw new Error("New outcomes require an explicit category");
     this.database.run("INSERT INTO attempt_entries VALUES(?,?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, sequence, JSON.stringify(entry));
   }
-  private confirm(ref: AttemptRef, confirmation: Confirmation, confirmedBy: string) {
+  private confirm(ref: AttemptRef, confirmation: Confirmation, _confirmedBy: string) {
     const value = confirmationSchema.parse(confirmation);
+    requireAuthority(this.database, this.caller, ["no_processes", "lease_returned", "discard"].includes(value.fact) ? "returnLease"
+      : value.fact === "output_accepted" ? "acceptOutput" : value.fact === "worker_stopped" ? "stopWorkers" : "integrate", { taskId: ref.taskId });
     this.database.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope) VALUES(?,?,?,?,?,?,?)",
-      ref.contextId, ref.taskId, ref.attempt, value.fact, nonempty.parse(confirmedBy), new Date().toISOString(), JSON.stringify(value.scope));
+      ref.contextId, ref.taskId, ref.attempt, value.fact, callerName(this.caller), new Date().toISOString(), JSON.stringify(value.scope));
   }
   private task(id: string): Task | undefined {
     const row = this.database.get(`SELECT *, EXISTS(SELECT 1 FROM dependencies d JOIN tasks b ON b.id = d.blocker

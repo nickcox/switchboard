@@ -1,3 +1,4 @@
+import { callerName } from "../caller.ts";
 import { randomUUID } from "node:crypto";
 import { checkWorkspace, runChecks } from "./checks.ts";
 import type { CriteriaReport } from "../runtime/contracts.ts";
@@ -18,7 +19,7 @@ import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
 import { result, type DispatchResult, type NextAction } from "./result.ts";
 import { observeAttempt } from "./observe.ts";
 import { assessAttempt, type AttemptAssessment } from "./assess.ts";
-import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanDiscard, checkCanFinish, checkCanIntegrate, checkCanReturnLease, type AcceptanceEvidence } from "./safety.ts";
+import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanDiscard, checkCanFinish, checkCanIntegrate, checkCanReturnLease, type AcceptanceEvidence, requireOperationAuthority } from "./safety.ts";
 
 /**
  * `finish` and `discard` (Phase 2 PRD): the only commands that return a lease, subject to every condition in
@@ -28,7 +29,6 @@ import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanDiscard, checkCa
 
 type Located = { attempt: AttemptAssessment; record: AttemptRecord };
 type OperationDependencies = Dependencies & { reads: OwnerReads };
-const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
 /** The lease's state after a failed step: `returnLease` marks its errors, and every earlier step leaves the lease held. */
 const leaseAfter = (error: unknown): DispatchResult["lease"] =>
   typeof error === "object" && error !== null && "lease" in error && (error.lease === "none" || error.lease === "unknown") ? error.lease : "preserved";
@@ -71,10 +71,11 @@ async function returnLease(deps: OperationDependencies, record: AttemptRecord, a
   const returnId = randomUUID();
   deps.reads.effectAttempted = true;
   await deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by, returnId },
-    { fact: "no_processes", scope: { leaseId, returnId } }, operator);
+    { fact: "no_processes", scope: { leaseId, returnId } }, callerName(deps.caller));
   const retention = await retained();
   const current = await locate(deps, leaseId);
   if (!("record" in current)) throw new Error(current.detail ?? "The attempt cannot be read before returning its lease");
+  requireOperationAuthority(deps, ["returnLease"], { leaseId });
   const permission = checkCanReturnLease(current.attempt.facts, { by, noProcesses: true, retained: retention, confirmedDiscard: current.attempt.facts.discarded });
   if (!permission.allowed) throw new Error(permission.detail);
   try { await deps.workspaces.returnLease({ leaseId, holder: attempt.attempt.taskId, path: attempt.attempt.workspace! }, { discardChanges: by === "discard" }); }
@@ -157,10 +158,14 @@ const unexpected = (command: "finish" | "discard") => (error: unknown) => readRe
 });
 
 export async function finish(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean; acceptOutput?: boolean }): Promise<DispatchResult> {
+  try { requireOperationAuthority(deps, ["acceptOutput", "completeTasks", ...(options.noProcesses ? ["returnLease" as const] : [])], options); }
+  catch (error) { return refused("inspect_attempt", error instanceof Error ? error.message : String(error)); }
   return finishAttempt({ ...deps, reads: new OwnerReads(deps, "finish", options.leaseId) }, options).catch(unexpected("finish"));
 }
 
 export async function discard(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {
+  try { requireOperationAuthority(deps, ["returnLease"], options); }
+  catch (error) { return refused("inspect_attempt", error instanceof Error ? error.message : String(error)); }
   return discardAttempt({ ...deps, reads: new OwnerReads(deps, "discard", options.leaseId) }, options).catch(unexpected("discard"));
 }
 
@@ -196,6 +201,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: {}, ...base,
     ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
   });
+  if (record.entries.some(e => e.kind === "integration_started")) requireOperationAuthority(deps, ["integrate"], options);
   await reconcileIntegration(deps, record, options.dryRun);
   record.entries = (await deps.reads.read("Attempt records", "read integration reconciliation", () => deps.reads.current()))!.entries;
   await deps.reads.checkEffects();
@@ -207,6 +213,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   let policy: ResolvedPolicy;
   try { policy = deps.policy ? await readPolicy(deps) : { kind: "manual", sources: { kind: "default" }, forbidden: [] }; }
   catch (error) { return readRefusal(error) ?? refused("fix_configuration", `The finalisation policy cannot be resolved: ${error instanceof Error ? error.message : String(error)}`, base); }
+  if (policy.kind === "local-merge") requireOperationAuthority(deps, ["integrate"], options);
   const policyPermission = checkCanIntegrate(attempt.facts, { accepting, retained: true, fastForward: true, policyRefusal: policy.refusal });
   if (!policyPermission.allowed) return refused(policyPermission.nextAction, policyPermission.detail, { ...base, observed: { refusal: policyPermission } });
 
@@ -257,7 +264,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   const recordTask = task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done");
   const retainedDetail = `Lease retained. Once no worker process remains, return it with switchboard finish --lease ${options.leaseId} --no-processes`;
   const steps = [
-    ...(acceptedCommit && accepted?.scope.commit !== acceptedCommit ? [`accept output commit ${acceptedCommit} as the operator`] : []),
+    ...(acceptedCommit && accepted?.scope.commit !== acceptedCommit ? [`accept output commit ${acceptedCommit} as ${callerName(deps.caller)}`] : []),
     ...(integration ? [`fast-forward ${integration.target} to ${integration.to}`] : []),
     ...(unrecorded ? [`record that ${unrecorded.target} contains the work`] : []),
     ...(recordTask ? ["record the task as done"] : []),
@@ -268,6 +275,10 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     const refusal = await checkWorkspace(deps, deps.reads, attempt.attempt.workspace!, outputCommit);
     if (refusal) return refused("inspect_attempt", refusal, base);
     steps.unshift("run configured checks (reusing passing results for this commit)");
+  }
+  if (deps.caller.kind === "supervisor" && options.dryRun && !base.acceptanceEvidence.permission.allowed) {
+    const permission = base.acceptanceEvidence.permission;
+    return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
   }
   if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: `Would ${steps.join(", then ")}${options.noProcesses ? "" : `. ${retainedDetail}`}`, nextAction: options.noProcesses ? "none" : "finish_attempt" });
 
@@ -291,6 +302,12 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     base.acceptanceEvidence = evidence(await deps.attempts.read(record), outputCommit);
     if (checked.refusal) return refused("inspect_attempt", checked.refusal, base);
   }
+  if (deps.caller.kind === "supervisor") {
+    base.acceptanceEvidence = evidence(await deps.attempts.read(record), outputCommit);
+    const permission = base.acceptanceEvidence.permission;
+    if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
+    requireOperationAuthority(deps, ["acceptOutput", "completeTasks", ...(policy.kind === "local-merge" ? ["integrate" as const] : [])], options);
+  }
   if (acceptedCommit && accepted?.scope.commit !== acceptedCommit) {
     try {
       const current = await locate(deps, options.leaseId);
@@ -298,7 +315,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
       const permission = checkCanAcceptOutput(current.attempt.facts, true);
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
       deps.reads.effectAttempted = true;
-      await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, operator, current.record);
+      await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, callerName(deps.caller), current.record);
     }
     catch (error) { return stopped(error, "record the operator's output acceptance"); }
   }
@@ -380,7 +397,7 @@ async function discardAttempt(deps: OperationDependencies, options: { leaseId: s
     const permission = checkCanDiscard(current.attempt.facts, options.confirm);
     if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
     deps.reads.effectAttempted = true;
-    await deps.attempts.discardAttempt(record, task, operator, options.leaseId, options.note, current.record);
+    await deps.attempts.discardAttempt(record, task, callerName(deps.caller), options.leaseId, options.note, current.record);
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard", async () => false); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }

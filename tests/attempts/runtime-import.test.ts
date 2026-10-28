@@ -3,11 +3,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { importAttempts, importRuntime } from "../../src/attempts/import.ts";
-import { AttemptStore } from "../../src/attempts/store.ts";
+import { AttemptStore, SqliteTaskStore, importAttempts, importRuntime } from "../caller.ts";
 import { configSchema, databasePath } from "../../src/config.ts";
 import { RuntimeRecords, key, writeOnce } from "../../src/runtime/records.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { LegacyAttempts } from "../fixtures/legacy-attempts.ts";
 import { LegacyRuntimeFixture } from "../fixtures/legacy-runtime.ts";
 

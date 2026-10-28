@@ -118,8 +118,8 @@ async function snapshot(config: Config, database: Database) {
   return { original, records, reservations, numbers, archives, originalArchives, runtimeRecords };
 }
 
-async function writeSnapshot(config: Config, copy: Database, before: Awaited<ReturnType<typeof snapshot>>) {
-    const store = new AttemptStore(copy, config.contextId);
+async function writeSnapshot(config: Config, copy: Database, before: Awaited<ReturnType<typeof snapshot>>, caller: Caller) {
+    const store = new AttemptStore(copy, config.contextId, caller);
     await copy.transaction(() => {
       for (const number of before.numbers) copy!.run("INSERT INTO attempt_numbers VALUES(?,?,?)", config.contextId, number.taskId, number.attempt);
       for (const { record, confirmations } of before.records) {
@@ -195,17 +195,22 @@ function compareSnapshots(before: Awaited<ReturnType<typeof snapshot>>, after: A
   assert.deepEqual(after.runtimeRecords, before.runtimeRecords, "Runtime files changed during import");
 }
 
+import type { Caller } from "../caller.ts";
+import { requireImportAuthority } from "../dispatch/safety.ts";
+
 /** Adds and validates every legacy record before a new task database is activated. */
-export async function importLegacyRecords(config: Config, database: Database) {
+export async function importLegacyRecords(config: Config, database: Database, caller: Caller) {
+  requireImportAuthority(caller);
   const before = await snapshot(config, database);
-  await writeSnapshot(config, database, before);
+  await writeSnapshot(config, database, before, caller);
   await requireSettled(config);
   compareSnapshots(before, await snapshot(config, database));
   return { attempts: before.records.length, runtime: before.runtimeRecords.records.length };
 }
 
 /** Offline migration into a validated VACUUM copy of the database that already owns the tasks. */
-export async function importAttempts(config: Config) {
+export async function importAttempts(config: Config, caller: Caller) {
+  requireImportAuthority(caller);
   await requireSettled(config);
   const path = databasePath(config);
   await requireRetainedStorage(path, [config.workspaces.poolRoot]);
@@ -221,7 +226,7 @@ export async function importAttempts(config: Config) {
     const dependencies = source.all("SELECT * FROM dependencies ORDER BY task, blocker");
     await source.vacuumInto(staging);
     copy = await Database.open(staging, config.databaseRetryMs);
-    await writeSnapshot(config, copy, before);
+    await writeSnapshot(config, copy, before, caller);
     // Migrations drop the obsolete body snapshot and initialise definition revisions, criteria and objective links; other fields must still match.
     const currentTasks = tasks.map(({ started_body: _startedBody, ...task }) => ({ ...task, definition_revision: task.definition_revision ?? 1, acceptance_criteria: task.acceptance_criteria ?? "[]", objective_id: task.objective_id ?? null }));
     assert.deepEqual(copy.all("SELECT * FROM tasks ORDER BY position").map(task => ({ ...task })), currentTasks, "Task fields changed in the copy");
@@ -252,7 +257,8 @@ const hasRuntime = (database: Database) => Boolean(database.get("SELECT 1 FROM s
  * Offline migration of the old runtime files into a database whose attempts were imported before runtime records
  * moved into the database. Follows importAttempts: settled records only, a validated VACUUM copy, then replacement.
  */
-export async function importRuntime(config: Config) {
+export async function importRuntime(config: Config, caller: Caller) {
+  requireImportAuthority(caller);
   await requireSettled(config);
   const path = databasePath(config);
   await requireRetainedStorage(path, [config.workspaces.poolRoot]);
@@ -274,7 +280,7 @@ export async function importRuntime(config: Config) {
       entries: source.all("SELECT * FROM attempt_entries ORDER BY context, task, attempt, sequence"), confirmations: source.all("SELECT * FROM confirmations ORDER BY id") };
     await source.vacuumInto(staging);
     copy = await Database.open(staging, config.databaseRetryMs);
-    const store = new AttemptStore(copy, context);
+    const store = new AttemptStore(copy, context, caller);
     const attempts = store.list();
     for (const runtime of legacy.records) {
       if (runtime.child.status === "unknown" && !attempts.some(a => summarise(a).leaseId === runtime.binding.input.identity.leaseId &&

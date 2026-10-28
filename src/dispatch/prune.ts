@@ -6,7 +6,7 @@ import { isMissing } from "../runtime/records.ts";
 import type { Dependencies } from "./dispatch.ts";
 import { observeAttempt, observeAttempts } from "./observe.ts";
 import { assessAttempt, assessAttempts } from "./assess.ts";
-import { checkCanPrune } from "./safety.ts";
+import { checkCanPrune, requireOperationAuthority } from "./safety.ts";
 import { result, type DispatchResult } from "./result.ts";
 import { cleanupStartingPoint } from "./starting-point.ts";
 import type { StartingPointCleanup } from "../workspaces/starting-point.ts";
@@ -25,15 +25,19 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
   });
   if (!Number.isFinite(options.olderThan) || options.olderThan <= 0) return report(false, "refused", "--older-than must be a positive number of days");
   try {
+    requireOperationAuthority(deps, ["prune"]);
+    const inScope = (taskId: string) => deps.caller.kind === "person" || deps.attempts.database.get("SELECT objective_id FROM tasks WHERE id = ?", taskId)?.objective_id === deps.caller.objectiveId;
     const roots = await reads.read("Treehouse workspace roots", "check storage", () => deps.workspaces.recyclableRoots());
     await deps.attempts.checkStorage(roots);
     await deps.runtime.checkStorage(roots);
     const context = await observeAttempts(deps);
-    if (context.records.known) reads.record = context.records.value[0];
+    if (context.records.known) reads.record = context.records.value.find(record => inScope(record.taskId));
     await reads.context(context, "inspect prune candidates");
     reads.record = undefined;
     // Private bases have no retention age: an allocation or a closed attempt no longer needs them.
     if (context.records.known) for (const record of context.records.value) {
+      if (!inScope(record.taskId)) continue;
+      requireOperationAuthority(deps, ["prune"], record);
       const cleanup = await cleanupStartingPoint(deps, record, options.dryRun);
       if (!cleanup) continue;
       startingPointCleanup.push({ taskId: record.taskId, attempt: record.attempt, ...cleanup });
@@ -42,6 +46,8 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     const cutoff = Date.now() - options.olderThan * 86400000;
     for (const attempt of assessAttempts(context)) {
       const { taskId, attempt: number } = attempt.attempt;
+      if (!inScope(taskId)) continue;
+      requireOperationAuthority(deps, ["prune"], { taskId });
       if (preservedStartingPoints.has(`${taskId}/${number}`)) {
         skipped.push({ taskId, attempt: number, reason: "starting_point_preserved" });
         continue;
@@ -73,6 +79,8 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     }
     if (!options.dryRun) for (const deletion of await reads.read("Attempt cleanup records", "list pending directory deletions", () => deps.attempts.pendingDeletions())) {
       reads.record = undefined;
+      if (!inScope(deletion.taskId)) continue;
+      requireOperationAuthority(deps, ["prune"], { taskId: deletion.taskId });
       await removeRuntimeDirectory(deps, reads, deletion, files);
       await deps.attempts.completeDeletion(deletion);
     }

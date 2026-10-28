@@ -1,12 +1,61 @@
+import type { Caller } from "../caller.ts";
+import type { Database } from "../database.ts";
+import type { Objective } from "../objectives/store.ts";
+import { TaskStoreError } from "../tasks/store.ts";
 import type { CheckCommand, CheckResult } from "../attempts/checks.ts";
 import type { ReviewRecord } from "../attempts/reviews.ts";
 import type { AttemptFacts } from "./assess.ts";
+import type { Dependencies } from "./dependencies.ts";
 import type { NextAction } from "./result.ts";
 
 export type Permission = { allowed: true } | { allowed: false; reason: string; detail: string; nextAction: NextAction; evidence: unknown };
 const permit: Permission = { allowed: true };
 const refuse = (reason: string, detail: string, nextAction: NextAction, evidence: unknown): Permission =>
   ({ allowed: false, reason, detail, nextAction, evidence });
+
+export type ObjectivePermission = keyof Objective["permissions"];
+export type AuthorityOperation = ObjectivePermission | "objectiveAdd" | "objectiveUpdate" | "objectiveAbandon" | "objectiveReopen" | "returnLease" | "import" | "prune" | "recordAttempt";
+
+/** Authority never replaces the operation's evidence and owner checks. */
+export function checkCaller(caller: Caller, operation: AuthorityOperation, objective?: Pick<Objective, "id" | "permissions" | "createdBy">, options: { objectiveId?: string | null; protectedFields?: boolean } = {}): Permission {
+  if (caller.kind === "person") {
+    if (objective && (options.protectedFields || operation === "objectiveAbandon") && objective.createdBy !== caller.id) {
+      return refuse("creator_required", "Only the person who created the objective can change its permissions, budget or criteria, or abandon it", "inspect_attempt", { operation });
+    }
+    return permit;
+  }
+  if (["returnLease", "objectiveAdd", "objectiveAbandon", "import"].includes(operation) || options.protectedFields) {
+    return refuse("person_required", "This operation requires a person; the supervisor cannot change its authority or return a lease", "inspect_attempt", { operation });
+  }
+  if (!objective || objective.id !== caller.objectiveId || options.objectiveId !== caller.objectiveId) {
+    return refuse("outside_objective", "The supervisor can act only within its named objective", "inspect_attempt", { operation, objectiveId: options.objectiveId ?? null });
+  }
+  if (operation === "recordAttempt") return permit;
+  const permission = operation === "objectiveUpdate" || operation === "objectiveReopen" || operation === "prune" ? "manageTasks" : operation as ObjectivePermission;
+  return objective.permissions[permission] ? permit : refuse("permission_denied", `Objective ${objective.id} does not permit ${permission}`, "inspect_attempt", { operation, permission });
+}
+
+export function requireImportAuthority(caller: Caller): void {
+  const permission = checkCaller(caller, "import");
+  if (!permission.allowed) throw new TaskStoreError("rejected", `${permission.reason}: ${permission.detail}`);
+}
+
+/** Re-read authority at the point of mutation, including inside database transactions. */
+export function requireAuthority(database: Database, caller: Caller, operation: AuthorityOperation, options: { taskId?: string; objectiveId?: string | null; protectedFields?: boolean } = {}): void {
+  const objectiveId = options.taskId === undefined ? options.objectiveId : database.get("SELECT objective_id FROM tasks WHERE id = ?", options.taskId)?.objective_id as string | null | undefined;
+  const row = objectiveId == null ? undefined : database.get("SELECT id,permissions,created_by FROM objectives WHERE id = ?", objectiveId);
+  const objective = row ? { id: String(row.id), permissions: JSON.parse(String(row.permissions)), createdBy: String(row.created_by) } : undefined;
+  const permission = checkCaller(caller, operation, objective, { objectiveId: objectiveId ?? null, ...(options.protectedFields === undefined ? {} : { protectedFields: options.protectedFields }) });
+  if (!permission.allowed) throw new TaskStoreError("rejected", `${permission.reason}: ${permission.detail}`);
+}
+
+/** Resolve only local identity before any observation can record diagnostics or an effect. */
+export function requireOperationAuthority(deps: Dependencies, operations: AuthorityOperation[], selector: { taskId?: string; leaseId?: string } = {}): void {
+  const taskId = selector.taskId ?? (selector.leaseId === undefined ? undefined : deps.attempts.database.get(`SELECT task FROM attempt_entries WHERE context = ?
+    AND json_extract(entry, '$.kind') IN ('leased','halted') AND json_extract(entry, '$.data.leaseId') = ?`, deps.contextId, selector.leaseId)?.task as string | undefined);
+  for (const operation of operations) requireAuthority(deps.attempts.database, deps.caller, operation, taskId === undefined
+    ? { objectiveId: deps.caller.kind === "supervisor" && selector.leaseId === undefined ? deps.caller.objectiveId : null } : { taskId });
+}
 
 export type AcceptanceEvidence = { commit?: string; permission: Permission };
 

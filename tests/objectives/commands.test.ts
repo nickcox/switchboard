@@ -5,8 +5,7 @@ import { userInfo } from "node:os";
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { defaultPermissions } from "../../src/objectives/store.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
-import { AttemptStore } from "../../src/attempts/store.ts";
+import { SqliteTaskStore, AttemptStore } from "../caller.ts";
 import { specificationFor } from "../helpers.ts";
 
 const cli = resolve("src/cli.ts");

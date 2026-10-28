@@ -3,12 +3,11 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { RuntimeRecords } from "../../src/runtime/records.ts";
 import { test } from "node:test";
-import { AttemptStore } from "../../src/attempts/store.ts";
+import { AttemptStore, SqliteTaskStore } from "../caller.ts";
 import { Database } from "../../src/database.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { specificationFromBinding } from "../../src/attempts/specification.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { fixture, task } from "../dispatch/fixture.ts";
 import { specificationFor } from "../helpers.ts";
 
@@ -32,6 +31,7 @@ test("version 4 bindings migrate once without borrowing missing facts from the c
     f.tasks.database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
     f.tasks.database.run("DROP INDEX tasks_by_objective");
     f.tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+    f.tasks.database.run("DROP TABLE task_changes");
     f.tasks.database.run("DROP TABLE objective_changes");
     f.tasks.database.run("DROP TABLE objectives");
     f.tasks.database.run("PRAGMA user_version = 4");
@@ -41,7 +41,7 @@ test("version 4 bindings migrate once without borrowing missing facts from the c
   const reopened = await Promise.all([Database.open(path), Database.open(path)]);
   try {
     for (const database of reopened) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 10);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 11);
       assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);
       assert.equal(database.get("SELECT definition_revision FROM tasks WHERE id = 'snapshot-a1'")!.definition_revision, 1);
       const attempts = new AttemptStore(database, f.deps.contextId);

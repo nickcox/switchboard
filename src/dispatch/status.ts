@@ -135,7 +135,7 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   try { ready = await deps.tasks.ready(); inFlight = await deps.tasks.inFlight(); }
   catch (error) { errors.push(`The task store could not be read: ${error instanceof Error ? error.message : String(error)}`); }
   let objectives: ObjectiveBrief[] = [];
-  try { objectives = new ObjectiveStore(deps.attempts.database, "status").list("open"); }
+  try { objectives = new ObjectiveStore(deps.attempts.database, deps.caller).list("open"); }
   catch (error) { errors.push(`The objectives could not be read: ${error instanceof Error ? error.message : String(error)}`); }
   const attempts: AttemptStatus[] = [];
   for (const { facts, ...assessment } of assessed) {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { commandLineCaller } from "./caller.ts";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -46,7 +47,7 @@ and runtime files, so it works from any terminal and after the dispatcher has st
 
 stop and steer ask the dispatcher that owns a running worker to stop it, or to pass it a message (with --after,
 once it finishes its current work). A request no dispatcher takes within --wait seconds (default 10) is withdrawn
-and never forwarded. --as names the sender recorded with the request; the default is operator:<your user name>.
+and never forwarded. --as records a display label alongside the host-supplied caller; it never grants authority.
 
 resolve records the operator's confirmation that a worker with no observed exit has stopped. Without
 --worker-stopped it only reports what each owner holds. --lease-returned records the operator's confirmation that a
@@ -192,7 +193,7 @@ async function main(argv: string[]): Promise<number> {
   let deps;
   try {
     const config = await loadConfig(configPath);
-    deps = await createDependencies(config, {
+    deps = await createDependencies(config, commandLineCaller(), {
       dispatch: command === "dispatch", progress: message => { if (!values.json) console.error(message); },
     });
   } catch (error) {
@@ -234,7 +235,7 @@ async function main(argv: string[]): Promise<number> {
       const value = await requestControl(deps, {
         leaseId: leaseId!, kind: command === "stop" ? "stop" : values.after ? "follow_up" : "steer",
         ...(command === "steer" ? { message: positionals[1]! } : {}),
-        sender: values.as ?? `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`, waitMs: wait * 1000,
+        ...(values.as === undefined ? {} : { sender: values.as }), waitMs: wait * 1000,
       });
       console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
       return value.ok ? 0 : 1;

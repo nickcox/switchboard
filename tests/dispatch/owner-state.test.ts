@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { testCaller } from "../caller.ts";
 import { createDependencies, loadConfig } from "../../src/config.ts";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
@@ -104,7 +105,7 @@ test("finding 14: a missing Pi entrypoint is refused by dispatch preflight, befo
   const f = await fixture({ tasks: [task("entry-a1")] });
   const config = await loadConfig(f.config);
   config.worker.piEntrypoint = join(f.dir, "missing-pi.js");
-  await assert.rejects(createDependencies(config, { dispatch: true }), /Pi entrypoint/);
+  await assert.rejects(createDependencies(config, testCaller, { dispatch: true }), /Pi entrypoint/);
   assert.deepEqual(await f.deps.attempts.list(), []);
 });
 

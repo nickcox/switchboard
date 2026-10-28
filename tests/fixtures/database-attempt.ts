@@ -1,5 +1,4 @@
-import { AttemptStore } from "../../src/attempts/store.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
+import { AttemptStore, SqliteTaskStore } from "../caller.ts";
 import { specificationFor } from "../helpers.ts";
 
 const [path, mode] = process.argv.slice(2);

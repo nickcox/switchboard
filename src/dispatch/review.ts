@@ -4,7 +4,7 @@ import type { ReviewTarget } from "../runtime/contracts.ts";
 import type { Dependencies } from "./dependencies.ts";
 import { assessAttempts } from "./assess.ts";
 import { observeAttempts } from "./observe.ts";
-import { checkCanStartFrom } from "./safety.ts";
+import { requireOperationAuthority, checkCanStartFrom } from "./safety.ts";
 import { result, type DispatchResult } from "./result.ts";
 
 /** Read the recorded commit, not today's branch head or worker result file. */
@@ -40,6 +40,7 @@ export async function reviewSource(deps: Dependencies, taskId: string, attempt?:
 /** Create a queued review task only. Dispatch is always a separate request. */
 export async function createReview(deps: Dependencies, options: { taskId: string; attempt?: number }): Promise<DispatchResult> {
   try {
+    requireOperationAuthority(deps, ["manageTasks"], options);
     if (!deps.delivery.byTaskKind.review) return result({ ok: false, reason: "refused", stage: "select", lease: "none", observed: {},
       detail: "Configure delivery.byTaskKind.review before creating a review task", nextAction: "fix_configuration" });
     const { target, evidence } = await reviewSource(deps, options.taskId, options.attempt);

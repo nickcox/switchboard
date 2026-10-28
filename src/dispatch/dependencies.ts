@@ -1,3 +1,4 @@
+import type { Caller } from "../caller.ts";
 import type { CheckCommand } from "../attempts/checks.ts";
 import type { AttemptStore } from "../attempts/store.ts";
 import type { RuntimeSettings } from "../attempts/specification.ts";
@@ -21,6 +22,7 @@ export type DeliveryConfiguration = {
 };
 
 export type Dependencies = {
+  caller: Caller;
   contextId: string;
   tasks: TaskStore;
   workspaces: WorkspaceProvider;

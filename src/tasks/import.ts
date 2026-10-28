@@ -20,6 +20,9 @@ const exists = async (path: string) => lstat(path).then(() => true, error => { i
  * Import is offline: every attempt must be settled and no dispatcher may be running, so no Switchboard process can be
  * writing the old records. The import reads these files only; workers' outputs and transcripts stay where they are.
  */
+import { commandLineCaller, type Caller } from "../caller.ts";
+import { requireImportAuthority } from "../dispatch/safety.ts";
+
 export async function requireSettled(config: Config): Promise<void> {
   const attempts = await new AttemptLog(config.runtimeRoot, config.contextId).list();
   if (attempts.some(isOpen)) throw new TaskStoreError("rejected", "Import requires every attempt to be settled");
@@ -43,7 +46,8 @@ export async function requireSettled(config: Config): Promise<void> {
   }
 }
 
-export async function importTasks(config: Config, backlog: string, archive = join(dirname(backlog), "done-archive.md")) {
+export async function importTasks(config: Config, caller: Caller, backlog: string, archive = join(dirname(backlog), "done-archive.md")) {
+  requireImportAuthority(caller);
   await requireSettled(config);
   const path = databasePath(config);
   await requireRetainedStorage(path, [config.workspaces.poolRoot]);
@@ -67,7 +71,7 @@ export async function importTasks(config: Config, backlog: string, archive = joi
   // Each run has its own staging file, removed unless it is activated, so concurrent or repeated imports never share one.
   const staging = `${path}.import-${randomUUID()}`;
   const removeStaging = async () => { for (const suffix of ["", "-wal", "-shm"]) await rm(`${staging}${suffix}`, { force: true }); };
-  const store = await SqliteTaskStore.open({ path: staging });
+  const store = await SqliteTaskStore.open({ caller, path: staging });
   const dropped: { task: string; blocker: string }[] = [];
   // A tasks-axi hold with a date: one still in force becomes an ordinary hold, and one whose date has passed is dropped.
   const timedHolds: { task: string; until: string; kept: boolean }[] = [];
@@ -86,7 +90,7 @@ export async function importTasks(config: Config, backlog: string, archive = joi
       if (!ids.has(dep.id)) dropped.push({ task: task.id, blocker: dep.id });
       else await store.block(task.id, dep.id);
     }
-    records = await (await import("../attempts/import.ts")).importLegacyRecords(config, store.database);
+    records = await (await import("../attempts/import.ts")).importLegacyRecords(config, store.database, caller);
     const imported = await store.list();
     assert.equal(imported.length, tasks.length, "Imported task count differs");
     for (const [index, task] of tasks.entries()) {
@@ -126,9 +130,9 @@ export async function importCommand(argv: string[]): Promise<number> {
   }
   const config = await loadConfig(resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json"));
   try {
-    const result = values.attempts ? await (await import("../attempts/import.ts")).importAttempts(config)
-      : values.runtime ? await (await import("../attempts/import.ts")).importRuntime(config)
-      : await importTasks(config, resolve(values["tasks-axi"]!), values.archive === undefined ? undefined : resolve(values.archive));
+    const result = values.attempts ? await (await import("../attempts/import.ts")).importAttempts(config, commandLineCaller())
+      : values.runtime ? await (await import("../attempts/import.ts")).importRuntime(config, commandLineCaller())
+      : await importTasks(config, commandLineCaller(), resolve(values["tasks-axi"]!), values.archive === undefined ? undefined : resolve(values.archive));
     console.log(JSON.stringify(result, null, values.json ? 2 : undefined));
     return 0;
   } catch (error) {

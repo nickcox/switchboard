@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { onPath } from "../../src/infra/executables.ts";
-import { ObjectiveStore } from "../../src/objectives/store.ts";
+import { ObjectiveStore } from "../caller.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { finish } from "../../src/dispatch/finish.ts";
 import { createReview } from "../../src/dispatch/review.ts";

@@ -115,8 +115,11 @@ function inherited(names: string[]): Record<string, string> {
   return Object.fromEntries(names.flatMap(name => (process.env[name] === undefined ? [] : [[name, process.env[name]!]])));
 }
 
+import { callerSchema, type Caller } from "./caller.ts";
+
 /** Opens local records, deferring external owners unless dispatch needs its preflight before reservation. */
-export async function createDependencies(config: Config, options: { dispatch?: boolean; progress?: (message: string) => void } = {}): Promise<Dependencies & { close(): void }> {
+export async function createDependencies(config: Config, caller: Caller, options: { dispatch?: boolean; progress?: (message: string) => void } = {}): Promise<Dependencies & { close(): void }> {
+  caller = callerSchema.parse(caller);
   const { progress } = options;
   if (options.dispatch) {
     // Otherwise a missing entrypoint would be found only after acquisition and task start.
@@ -142,7 +145,7 @@ export async function createDependencies(config: Config, options: { dispatch?: b
     "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec",
   ]));
   const keepAwake = structuredClone(config.keepAwake);
-  const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
+  const tasks = await SqliteTaskStore.open({ caller, path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
   try {
     const runtime = new RuntimeRecords(config.runtimeRoot, tasks.database);
     const workspaceOptions = {
@@ -152,6 +155,7 @@ export async function createDependencies(config: Config, options: { dispatch?: b
     const workspaces = options.dispatch ? await TreehouseProvider.open(workspaceOptions) : TreehouseProvider.connect(workspaceOptions);
     return {
       close: () => tasks.close(),
+      caller,
       contextId: config.contextId,
       checks: config.checks,
       checkEnvironment: hostEnvironment,
@@ -159,7 +163,7 @@ export async function createDependencies(config: Config, options: { dispatch?: b
       maxAttempts: config.maxAttempts,
       maxAttemptsPerTask: config.maxAttemptsPerTask,
       workspaces,
-      attempts: new AttemptStore(tasks.database, config.contextId),
+      attempts: new AttemptStore(tasks.database, config.contextId, caller),
       runtime,
       runtimeSettings, configurationProvenance: configurationProvenance(config),
       launch: (input, signal, onRequest, settings) => {

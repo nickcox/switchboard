@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { callerName, callerSchema, type Caller } from "../caller.ts";
+import { requireAuthority } from "../dispatch/safety.ts";
 import { Database } from "../database.ts";
 import { AttemptStore } from "../attempts/store.ts";
 import { reviewRecordSchema } from "../attempts/reviews.ts";
@@ -52,8 +54,9 @@ const columns = { acceptanceCriteria: "acceptance_criteria", scope: "scope", con
 /** Objective operations share the task database. The host supplies the actor, never the command's arguments. */
 export class ObjectiveStore {
   readonly database: Database;
-  readonly actor: string;
-  constructor(database: Database, actor: string) { this.database = database; this.actor = parse(nonempty, actor); }
+  readonly caller: Caller;
+  get actor(): string { return callerName(this.caller); }
+  constructor(database: Database, caller: Caller) { this.database = database; this.caller = callerSchema.parse(caller); }
 
   read(id: string): Objective | undefined {
     const row = this.database.get("SELECT * FROM objectives WHERE id = ?", id);
@@ -111,6 +114,7 @@ export class ObjectiveStore {
       scope: "", constraints: "", permissions: defaultPermissions, budget: { maxCost: null, maxWorkerTimeMs: null }, deadline: null, ...input,
     });
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "objectiveAdd");
       if (this.read(value.id)) reject(`Objective ${value.id} already exists`);
       const now = new Date().toISOString();
       this.database.run(`INSERT INTO objectives(id,request,acceptance_criteria,scope,constraints,permissions,budget,deadline,created_by,created_at,updated_at,state)
@@ -124,6 +128,7 @@ export class ObjectiveStore {
   async update(id: string, input: ObjectiveChanges): Promise<Objective> {
     const changes = parse(fieldsSchema.partial(), input);
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "objectiveUpdate", { objectiveId: id, protectedFields: ["permissions", "budget", "acceptanceCriteria"].some(key => key in input) });
       const before = this.requireOpen(id);
       const fields = (Object.keys(columns) as (keyof typeof columns)[]).filter(key => changes[key] !== undefined && JSON.stringify(changes[key]) !== JSON.stringify(before[key]));
       if (!fields.length) return before;
@@ -140,6 +145,7 @@ export class ObjectiveStore {
   async complete(id: string, input: CompletionStatement[]): Promise<Objective> {
     const statements = parse(completionStatementsSchema, input);
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "completeObjective", { objectiveId: id });
       const before = this.requireOpen(id);
       if (statements.length !== before.acceptanceCriteria.length || new Set(statements.map(s => s.position)).size !== statements.length ||
         statements.some(s => s.position > before.acceptanceCriteria.length)) reject("Supply exactly one completion statement for each objective criterion");
@@ -157,6 +163,7 @@ export class ObjectiveStore {
   }
   private async transition(id: string, state: "open" | "abandoned"): Promise<Objective> {
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, state === "open" ? "objectiveReopen" : "objectiveAbandon", { objectiveId: id });
       const before = state === "open" ? this.require(id) : this.requireOpen(id);
       if (before.state === state) reject(`Objective ${id} is already ${state}`);
       const now = new Date().toISOString();
@@ -170,7 +177,7 @@ export class ObjectiveStore {
     const references: ObjectiveReference[] = [];
     for (const row of this.database.all(`SELECT n.* FROM attempt_numbers n JOIN tasks t ON t.id = n.task WHERE t.objective_id = ? ORDER BY n.context,n.task,n.number`, id)) {
       const ref = { contextId: String(row.context), taskId: String(row.task), attempt: Number(row.number) };
-      const attempts = new AttemptStore(this.database, ref.contextId);
+      const attempts = new AttemptStore(this.database, ref.contextId, this.caller);
       const live = attempts.findForTask(ref.taskId, ref.attempt);
       const archive = live ? undefined : this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
       const saved = archive ? JSON.parse(String(archive.summary)) : undefined;

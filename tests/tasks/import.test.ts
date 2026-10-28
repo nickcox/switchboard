@@ -7,8 +7,8 @@ import { MarkdownStore } from "tasks-axi/dist/src/backends/markdown.js";
 import { readyTasks } from "tasks-axi/dist/src/derive.js";
 import { LegacyAttempts } from "../fixtures/legacy-attempts.ts";
 import { configSchema } from "../../src/config.ts";
-import { importTasks, requireSettled } from "../../src/tasks/import.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
+import { requireSettled } from "../../src/tasks/import.ts";
+import { importTasks, SqliteTaskStore } from "../caller.ts";
 import { LegacyRuntimeFixture as RuntimeRecords } from "../fixtures/legacy-runtime.ts";
 import { randomUUID } from "node:crypto";
 

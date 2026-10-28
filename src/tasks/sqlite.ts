@@ -1,3 +1,5 @@
+import { callerName, callerSchema, type Caller } from "../caller.ts";
+import { requireAuthority, type ObjectivePermission } from "../dispatch/safety.ts";
 import { Database } from "../database.ts";
 import { acceptanceCriteriaSchema, criteriaSection } from "./criteria.ts";
 import { TaskStoreError, type Task, type TaskState, type TaskStore } from "./store.ts";
@@ -17,9 +19,11 @@ const validReason = (reason: string) => {
 export class SqliteTaskStore implements TaskStore {
   readonly database: Database;
   readonly repo: string | null;
-  private constructor(database: Database, repo: string | null) { this.database = database; this.repo = repo; }
-  static async open(options: { path: string; repo?: string | null; retryMs?: number }): Promise<SqliteTaskStore> {
-    return new SqliteTaskStore(await Database.open(options.path, options.retryMs), options.repo ?? null);
+  readonly caller: Caller;
+  private constructor(database: Database, repo: string | null, caller: Caller) { this.database = database; this.repo = repo; this.caller = callerSchema.parse(caller); }
+  static async open(options: { path: string; repo?: string | null; retryMs?: number; caller: Caller }): Promise<SqliteTaskStore> {
+    const caller = callerSchema.parse(options.caller);
+    return new SqliteTaskStore(await Database.open(options.path, options.retryMs), options.repo ?? null, caller);
   }
   close() { this.database.close(); }
   async list(state?: TaskState): Promise<StoredTask[]> {
@@ -50,18 +54,23 @@ export class SqliteTaskStore implements TaskStore {
   private require(id: string): StoredTask { return this.readNow(id) ?? reject(`Task ${id} does not exist`); }
   async add(task: NewTask): Promise<StoredTask> {
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "manageTasks", { objectiveId: task.objectiveId ?? null });
       if (!/^[a-zA-Z0-9._-]+$/.test(task.id)) reject("Task ID must contain only letters, digits, ., _ and -");
       if (this.readNow(task.id)) reject(`Task ${task.id} already exists`);
       this.checkObjective(task.objectiveId ?? null);
       this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,acceptance_criteria,objective_id,position) VALUES(?,?,?,?,?,?,?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
         task.id, task.title, task.body ?? "", task.repo === undefined ? this.repo : task.repo || null, task.kind === "task" ? null : task.kind || null, JSON.stringify(validCriteria(task.acceptanceCriteria ?? [])), task.objectiveId ?? null);
-      return this.require(task.id);
+      const added = this.require(task.id);
+      this.record(task.id, "add", null, added);
+      return added;
     });
   }
   async update(id: string, changes: TaskChanges): Promise<StoredTask> {
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "manageTasks", { taskId: id });
       const task = this.require(id);
       if (changes.objectiveId !== undefined && changes.objectiveId !== task.objectiveId) {
+        requireAuthority(this.database, this.caller, "manageTasks", { objectiveId: changes.objectiveId });
         this.checkObjective(task.objectiveId);
         this.checkObjective(changes.objectiveId);
       }
@@ -70,7 +79,9 @@ export class SqliteTaskStore implements TaskStore {
       if (fields.length) this.database.run(`UPDATE tasks SET ${fields.map(key => `${key === "acceptanceCriteria" ? "acceptance_criteria" : key === "objectiveId" ? "objective_id" : key} = ?`).join(", ")} WHERE id = ?`,
         ...fields.map(key => key === "acceptanceCriteria" ? JSON.stringify(changes[key]) : key === "kind" && changes[key] === "task" ? null
           : (key === "repo" || key === "kind") && changes[key] === "" ? null : changes[key]!), id);
-      return this.require(id);
+      const updated = this.require(id);
+      this.record(id, "update", task, updated);
+      return updated;
     });
   }
   async convertCriteria(): Promise<{ id: string; status: "converted" | "unconverted"; reason?: string }[]> {
@@ -78,6 +89,8 @@ export class SqliteTaskStore implements TaskStore {
       const reports: { id: string; status: "converted" | "unconverted"; reason?: string }[] = [];
       for (const row of this.database.all("SELECT id FROM tasks WHERE (? IS NULL OR repo = ?) ORDER BY position", this.repo, this.repo)) {
         const task = this.require(String(row.id));
+        if (this.caller.kind === "supervisor" && task.objectiveId !== this.caller.objectiveId) continue;
+        requireAuthority(this.database, this.caller, "manageTasks", { taskId: task.id });
         const section = criteriaSection(task.body);
         if (!section) continue;
         const reason = task.state !== "queued" ? "Task is in flight or done"
@@ -85,6 +98,7 @@ export class SqliteTaskStore implements TaskStore {
         if (reason) reports.push({ id: task.id, status: "unconverted", reason });
         else if ("body" in section) {
           this.database.run("UPDATE tasks SET body = ?, acceptance_criteria = ? WHERE id = ?", section.body, JSON.stringify(section.acceptanceCriteria), task.id);
+          this.record(task.id, "convert-criteria", task, this.require(task.id));
           reports.push({ id: task.id, status: "converted" });
         }
       }
@@ -111,7 +125,7 @@ export class SqliteTaskStore implements TaskStore {
     return this.change(id, () => this.database.run("DELETE FROM dependencies WHERE task = ? AND blocker = ?", id, by));
   }
   async done(id: string, note = ""): Promise<StoredTask> {
-    return this.change(id, () => this.writeDone(id, note));
+    return this.change(id, () => this.writeDone(id, note), "completeTasks");
   }
   async reopen(id: string): Promise<StoredTask> {
     return this.change(id, () => this.database.run("UPDATE tasks SET state = 'queued' WHERE id = ?", id));
@@ -125,7 +139,19 @@ export class SqliteTaskStore implements TaskStore {
     const row = this.database.get("SELECT state FROM objectives WHERE id = ?", id) ?? reject(`Objective ${id} does not exist`);
     if (row.state !== "open") reject(`Objective ${id} is ${row.state}; reopen it before changing its tasks`);
   }
-  private async change(id: string, apply: () => unknown): Promise<StoredTask> {
-    return this.database.transaction(() => { this.require(id); apply(); return this.require(id); });
+  private async change(id: string, apply: () => unknown, permission: ObjectivePermission = "manageTasks"): Promise<StoredTask> {
+    return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, permission, { taskId: id });
+      const before = this.require(id);
+      apply();
+      const after = this.require(id);
+      this.record(id, permission, before, after);
+      return after;
+    });
+  }
+  private record(id: string, action: string, before: StoredTask | null, after: StoredTask) {
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    this.database.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
+      id, action, callerName(this.caller), new Date().toISOString(), JSON.stringify({ before, after }));
   }
 }

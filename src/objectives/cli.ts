@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { userInfo } from "node:os";
+import { commandLineCaller } from "../caller.ts";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { databasePath, loadConfig } from "../config.ts";
@@ -37,7 +37,7 @@ export async function objectiveCommand(argv: string[]): Promise<number> {
   let database: Database | undefined;
   try {
     database = await Database.open(path, config.databaseRetryMs);
-    const store = new ObjectiveStore(database, `operator:${userInfo().username}`);
+    const store = new ObjectiveStore(database, commandLineCaller());
     const changes: ObjectiveChanges = {};
     if (values.scope !== undefined) changes.scope = values.scope;
     if (values.constraints !== undefined) changes.constraints = values.constraints;

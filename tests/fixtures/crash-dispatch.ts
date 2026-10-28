@@ -2,12 +2,13 @@
 // at the requested point, so no cleanup or compensation code can run.
 import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { testCaller } from "../caller.ts";
 import { createDependencies, loadConfig } from "../../src/config.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 
 const [configPath, stage, taskId, fromAttempt] = process.argv.slice(2);
 const config = await loadConfig(configPath!);
-const deps = await createDependencies(config, { dispatch: true });
+const deps = await createDependencies(config, testCaller, { dispatch: true });
 const die = () => process.kill(process.pid, "SIGKILL");
 
 if (stage === "after-reservation") {

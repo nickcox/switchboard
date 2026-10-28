@@ -1,8 +1,9 @@
+import { callerName } from "../caller.ts";
 import { awaitDelivery, submitRequest, type ControlRequest } from "../runtime/requests.ts";
 import type { Dependencies } from "./dispatch.ts";
 import { observeAttempt } from "./observe.ts";
 import { assessAttempt } from "./assess.ts";
-import { checkCanControl } from "./safety.ts";
+import { checkCanControl, requireOperationAuthority } from "./safety.ts";
 import { result, type DispatchResult } from "./result.ts";
 
 /**
@@ -11,8 +12,10 @@ import { result, type DispatchResult } from "./result.ts";
  * `waitMs` is withdrawn and reported as undelivered.
  */
 export async function requestControl(
-  deps: Dependencies, options: { leaseId: string; kind: ControlRequest["kind"]; message?: string; sender: string; waitMs: number },
+  deps: Dependencies, options: { leaseId: string; kind: ControlRequest["kind"]; message?: string; sender?: string; waitMs: number },
 ): Promise<DispatchResult> {
+  try { requireOperationAuthority(deps, [options.kind === "stop" ? "stopWorkers" : "steerWorkers"], options); }
+  catch (error) { return result({ ok: false, reason: "refused", stage: "control", lease: "preserved", observed: {}, detail: error instanceof Error ? error.message : String(error), nextAction: "inspect_attempt" }); }
   const observation = await observeAttempt(deps, { leaseId: options.leaseId });
   const record = observation?.runtime.known ? observation.runtime.value : undefined;
   const base = { stage: "control" as const, lease: "preserved" as const, observed: { leaseId: options.leaseId } };
@@ -27,7 +30,7 @@ export async function requestControl(
   const attempt = { ...assessment.attempt, sessionId: record.binding.input.identity.sessionId };
   // Submission checks the runtime's exit and scoped stop confirmation again in its transaction.
   let request;
-  try { request = await submitRequest(record, { kind: options.kind, sender: options.sender, ...(options.message ? { message: options.message } : {}) }); }
+  try { request = await submitRequest(record, { kind: options.kind, sender: callerName(deps.caller), ...(options.sender ? { label: options.sender } : {}), ...(options.message ? { message: options.message } : {}) }); }
   catch (error) { return result({ ...base, ok: false, reason: "refused", attempt, detail: error instanceof Error ? error.message : String(error), nextAction: "inspect_attempt" }); }
   const delivery = await awaitDelivery(record, request.id, options.waitMs);
   const observed = { ...base.observed, requestId: request.id };

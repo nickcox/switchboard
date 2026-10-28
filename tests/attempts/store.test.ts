@@ -6,8 +6,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { AttemptStore } from "../../src/attempts/store.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
+import { AttemptStore, SqliteTaskStore } from "../caller.ts";
 import { specificationFor } from "../helpers.ts";
 
 const run = promisify(execFile);
@@ -105,6 +104,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
       tasks.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
       tasks.database.run("DROP INDEX tasks_by_objective");
       tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+      tasks.database.run("DROP TABLE task_changes");
       tasks.database.run("DROP TABLE objective_changes");
       tasks.database.run("DROP TABLE objectives");
       tasks.database.run("PRAGMA user_version = 1");
@@ -113,7 +113,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const reopened = await SqliteTaskStore.open({ path });
   try {
     assert.deepEqual(await reopened.list(), before);
-    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 10);
+    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 11);
     assert.deepEqual(new AttemptStore(reopened.database, "context").list(), []);
   } finally { reopened.close(); }
 });
@@ -206,7 +206,7 @@ test("confirmation records name their attempt, person, time and exact scope", as
     const confirmation = { fact: "no_processes" as const, scope: { leaseId: "lease", returnId: "3c33c74e-3214-440e-af1a-d2ab26d336f7" } };
     await attempts.recordConfirmation(ref, confirmation, "operator:nick");
     const [record] = attempts.confirmations(ref);
-    assert.deepEqual(record, { ...ref, ...confirmation, confirmedBy: "operator:nick", confirmedAt: record!.confirmedAt });
+    assert.deepEqual(record, { ...ref, ...confirmation, confirmedBy: "operator:test", confirmedAt: record!.confirmedAt });
     assert.ok(Number.isFinite(Date.parse(record!.confirmedAt)));
     await assert.rejects(attempts.recordConfirmation(ref, { fact: "output_accepted", scope: { commit: "bad" } }, "operator"));
     assert.equal(attempts.confirmations(ref).length, 1);

@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 10) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 11) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -279,6 +279,20 @@ export class Database {
               OR NEW.acceptance_criteria IS NOT OLD.acceptance_criteria OR NEW.objective_id IS NOT OLD.objective_id
             BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END;
           PRAGMA user_version = 10;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 11) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 11) return;
+        db.exec(`
+          CREATE TABLE task_changes (
+            sequence INTEGER PRIMARY KEY, task TEXT NOT NULL REFERENCES tasks(id), action TEXT NOT NULL,
+            changed_by TEXT NOT NULL, changed_at TEXT NOT NULL,
+            changes TEXT NOT NULL CHECK(json_valid(changes)));
+          CREATE TRIGGER task_changes_immutable BEFORE UPDATE ON task_changes BEGIN
+            SELECT RAISE(ABORT, 'Task changes cannot be changed'); END;
+          CREATE TRIGGER task_changes_not_removed BEFORE DELETE ON task_changes BEGIN
+            SELECT RAISE(ABORT, 'Task changes cannot be removed'); END;
+          PRAGMA user_version = 11;
         `);
       });
       return result;

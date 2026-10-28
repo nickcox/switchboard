@@ -3,9 +3,8 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { Database } from "../../src/database.ts";
-import { AttemptStore } from "../../src/attempts/store.ts";
+import { AttemptStore, SqliteTaskStore } from "../caller.ts";
 import { requestFingerprint } from "../../src/attempts/requests.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { specificationFor } from "../helpers.ts";
 
 const root = resolve(import.meta.dirname, "../../.investigation/request-records-unit");
@@ -28,6 +27,7 @@ async function historical(change: (database: Database) => void) {
         BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END`);
       tasks.database.run("DROP INDEX tasks_by_objective");
       tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+      tasks.database.run("DROP TABLE task_changes");
       tasks.database.run("DROP TABLE objective_changes");
       tasks.database.run("DROP TABLE objectives");
       tasks.database.run("PRAGMA user_version = 5");

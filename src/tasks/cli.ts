@@ -1,3 +1,4 @@
+import { commandLineCaller } from "../caller.ts";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -35,7 +36,7 @@ export async function taskCommand(argv: string[]): Promise<number> {
   await requireRetainedStorage(path, [config.workspaces.poolRoot]);
   let store: SqliteTaskStore | undefined;
   try {
-    store = await SqliteTaskStore.open({ path, repo: values.repo ?? config.tasks.repo, retryMs: config.databaseRetryMs });
+    store = await SqliteTaskStore.open({ caller: commandLineCaller(), path, repo: values.repo ?? config.tasks.repo, retryMs: config.databaseRetryMs });
     const changes: TaskChanges = {};
     for (const key of ["title", "body", "kind"] as const) if (values[key] !== undefined) changes[key] = values[key];
     if (values.repo !== undefined) changes.repo = values.repo;

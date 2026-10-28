@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { testCaller } from "./caller.ts";
 import { createDependencies, loadConfig } from "../src/config.ts";
 import { dispatchOnce } from "../src/dispatch/dispatch.ts";
 import { observeAttempts } from "../src/dispatch/observe.ts";
@@ -101,7 +102,7 @@ test("unavailable external owners leave local observations readable", async () =
   let deps: Awaited<ReturnType<typeof createDependencies>> | undefined;
   try {
     process.env.PATH = "";
-    deps = await createDependencies(config);
+    deps = await createDependencies(config, testCaller);
     const observation = await observeAttempts(deps);
     assert.equal(observation.records.known, true);
     assert.equal(observation.runtime.known, true);
@@ -128,7 +129,7 @@ for (const owner of ["git", "treehouse"] as const) {
     }));
     let deps: Awaited<ReturnType<typeof createDependencies>> | undefined;
     try {
-      deps = await createDependencies(await loadConfig(f.config));
+      deps = await createDependencies(await loadConfig(f.config), testCaller);
       const observation = await observeAttempts(deps);
       assert.equal(observation.records.known, true);
       assert.equal(observation.runtime.known, true);
@@ -150,7 +151,7 @@ test("a later provider construction failure closes the opened database", async t
     return opened;
   });
   try {
-    await assert.rejects(createDependencies(config, { dispatch: true }), /ENOENT/);
+    await assert.rejects(createDependencies(config, testCaller, { dispatch: true }), /ENOENT/);
     assert.ok(opened);
     assert.throws(() => opened!.database.get("SELECT 1"), /not open/);
   } finally { f.tasks.close(); }
@@ -159,7 +160,7 @@ test("a later provider construction failure closes the opened database", async t
 test("closing dependencies closes their database", async () => {
   const f = await fixture();
   try {
-    const deps = await createDependencies(await loadConfig(f.config));
+    const deps = await createDependencies(await loadConfig(f.config), testCaller);
     const store = deps.tasks as SqliteTaskStore;
     assert.ok(store.database.get("SELECT 1"));
     deps.close();

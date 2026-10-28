@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
+import { testCaller } from "../caller.ts";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { createDependencies, loadConfig } from "../../src/config.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
@@ -163,7 +164,7 @@ test("inspection after reopening shows the same stored specification, not the ne
   config.worker.maxTokens = 1000000;
   writeFileSync(f.config, JSON.stringify(config));
   f.tasks.close();
-  const deps = await createDependencies(await loadConfig(f.config));
+  const deps = await createDependencies(await loadConfig(f.config), testCaller);
   let specification;
   try {
     const result = await dispatchOnce(deps);
@@ -183,11 +184,11 @@ test("inspection after reopening shows the same stored specification, not the ne
   config.delivery.baseRef = "another-base";
   config.delivery.kind = "artefact";
   writeFileSync(f.config, JSON.stringify(config));
-  const restarted = await createDependencies(await loadConfig(f.config));
+  const restarted = await createDependencies(await loadConfig(f.config), testCaller);
   try {
     const inspected = (await status(restarted)).attempts[0]!;
     assert.equal(inspected.specificationComplete, true);
     assert.deepEqual(inspected.specification, specification);
-    assert.deepEqual(new AttemptStore(restarted.attempts.database, restarted.contextId).list()[0]!.specification, specification);
+    assert.deepEqual(new AttemptStore(restarted.attempts.database, restarted.contextId, testCaller).list()[0]!.specification, specification);
   } finally { restarted.attempts.database.close(); }
 });

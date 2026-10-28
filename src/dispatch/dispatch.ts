@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { latestChecks } from "../attempts/checks.ts";
+import { recordedReviews } from "../attempts/reviews.ts";
 import { type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory } from "../attempts/log.ts";
 import { AttemptStoreError, type ArchivedRequest } from "../attempts/store.ts";
 import { attemptSpecificationSchema, workerInput, type StartingPoint } from "../attempts/specification.ts";
@@ -13,7 +15,7 @@ import type { Dependencies } from "./dependencies.ts";
 import { resolvedBy, summarise } from "./attempt.ts";
 import { observeAttempts } from "./observe.ts";
 import { assessAttempts, type AttemptAssessment } from "./assess.ts";
-import { checkCanDispatch, checkCanRedispatch } from "./safety.ts";
+import { checkCanDispatch, checkCanRedispatch, requireOperationAuthority, checkAcceptanceEvidence } from "./safety.ts";
 import { OwnerReads, readRefusal } from "./owner-reads.ts";
 import { specificationFactory } from "./specification.ts";
 import { reserveFromAttempt } from "./reserve.ts";
@@ -94,6 +96,7 @@ export async function dispatchOnce(
 }
 
 async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, reads: OwnerReads): Promise<DispatchResult> {
+  requireOperationAuthority(deps, ["dispatch", ...(options.startingPoint ? ["continueAttempts" as const] : [])], options);
   try {
     const roots = await reads.read("Treehouse workspace roots", "check storage", () => deps.workspaces.recyclableRoots());
     await deps.runtime.checkStorage(roots);
@@ -154,7 +157,7 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
     const unfinished = checks.find(check => !check.allowed);
     if (unfinished && !unfinished.allowed) return refusal("select", unfinished.nextAction, unfinished.detail, observed);
   } else {
-    taskId = state.ready.find(id => !blocked(id));
+    taskId = state.ready.find(id => !blocked(id) && (deps.caller.kind === "person" || deps.attempts.database.get("SELECT objective_id FROM tasks WHERE id = ?", id)?.objective_id === deps.caller.objectiveId));
     if (taskId === undefined) return result({ ok: true, reason: "no_ready_work", stage: "select", lease: "none", observed, nextAction: "dispatch_again" });
   }
   // Resolve the delivery contract before any change; a task whose contract cannot be resolved is refused.
@@ -237,6 +240,7 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
   // names the stage and preserves whatever exists.
   let stage: Stage = "acquire";
   try {
+    requireOperationAuthority(deps, ["dispatch", ...(options.startingPoint ? ["continueAttempts" as const] : [])], { taskId });
     // The reservation's requested entry is the durable acquisition intent.
     reads.effectAttempted = true;
     // The operator may have resolved this attempt while it was waiting; never acquire for a resolved attempt.
@@ -305,7 +309,7 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
     let requests = Promise.resolve();
     const onRequest: WorkerHooks["onRequest"] = (request, outcome) => {
       requests = requests.then(() => deps.attempts.append(ref, "operator_request", {
-        id: request.id, kind: request.kind, sender: request.sender, outcome: outcome.outcome,
+        id: request.id, kind: request.kind, sender: request.sender, ...(request.label ? { label: request.label } : {}), outcome: outcome.outcome,
         ...(request.message ? { message: request.message.slice(0, 4000) } : {}), ...(outcome.error ? { error: outcome.error.slice(0, 500) } : {}),
       })).catch(error => {
         // The request reached the worker; failing to log it is reported with the result rather than dropped.
@@ -384,7 +388,14 @@ async function finalise(
   if (failedRead) throw failedRead;
   await deps.attempts.append(ref, "retention_checked", { retained: retention.retained, findings: retention.findings, notes: retention.notes });
 
-  const outcome = decide(report, delivery, retention);
+  let outcome = decide(report, delivery, retention);
+  if (outcome.done && deps.caller.kind === "supervisor") {
+    try {
+      requireOperationAuthority(deps, ["acceptOutput", "completeTasks"], { taskId: ref.taskId });
+      const permission = checkAcceptanceEvidence(summary.resultCommit, deps.checks ?? [], latestChecks(stored, summary.resultCommit), recordedReviews(stored, summary.resultCommit));
+      if (!permission.allowed) outcome = { done: false, category: "review_required" };
+    } catch { outcome = { done: false, category: "review_required" }; }
+  }
   const holdReason = `Switchboard attempt ${ref.attempt} ${holdLabels[outcome.category]}`;
   const { task: recorded, applied } = await deps.attempts.recordOutcome(ref, {
     outcome: outcome.done ? "done" : "hold", reason: outcome.done ? "done" : holdReason, category: outcome.category,

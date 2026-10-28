@@ -8,7 +8,7 @@ import type { RuntimeAddress } from "./store.ts";
 /** Requests target one claim. A conditional update makes forwarding and withdrawal mutually exclusive. */
 export const requestSchema = z.strictObject({
   version: z.literal(1), id: z.uuid(), kind: z.enum(["stop", "steer", "follow_up"]),
-  message: z.string().min(1).max(20000).optional(), sender: z.string().min(1).max(200),
+  message: z.string().min(1).max(20000).optional(), sender: z.string().min(1).max(200), label: z.string().min(1).max(200).optional(),
   identity: identitySchema, createdAt: z.iso.datetime(),
 });
 export type ControlRequest = z.infer<typeof requestSchema>;
@@ -18,7 +18,7 @@ const resultSchema = z.strictObject({
 export type RequestResult = z.infer<typeof resultSchema>;
 
 export async function submitRequest(record: RuntimeAddress & Pick<RuntimeRecord, "binding">,
-  request: { kind: ControlRequest["kind"]; message?: string; sender: string }): Promise<ControlRequest> {
+  request: { kind: ControlRequest["kind"]; message?: string; sender: string; label?: string }): Promise<ControlRequest> {
   if (request.kind !== "stop" && !request.message) throw new Error("A message is required");
   const value = requestSchema.parse({ version: 1, id: randomUUID(), ...request,
     identity: record.binding.input.identity, createdAt: new Date().toISOString() });

@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
+import { SqliteTaskStore } from "../caller.ts";
 
 const cli = resolve("src/cli.ts");
 async function fixture() {

@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { onPath } from "../../src/infra/executables.ts";
 import { isArtefactPath } from "./paths.ts";
+import { commandLineCaller } from "../../src/caller.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 
 const usage = `Usage: node investigations/real-dispatch/run.ts --provider <provider> --model <model> [--kind code|scout] [--pi-entrypoint <path>] [--setup-only]
@@ -52,7 +53,7 @@ const base = run(["rev-parse", "main"]);
 const scout = values.kind === "scout";
 const taskId = scout ? "survey-a1" : "hello-a1";
 const expected = "hello from switchboard";
-const tasks = await SqliteTaskStore.open({ path: database, repo: "demo" });
+const tasks = await SqliteTaskStore.open({ caller: commandLineCaller(), path: database, repo: "demo" });
 await tasks.add({
   id: taskId, title: scout ? "Survey the repository" : "Add a hello file", kind: scout ? "scout" : null,
   body: scout
@@ -93,7 +94,7 @@ console.log(`\nDispatch: ${report.reason}${report.detail ? ` – ${report.detail
 const branch = report.attempt?.outputBranch as string | undefined;
 const show = (args: string[]) => { try { return run(args); } catch { return undefined; } };
 const branchHead = branch ? show(["rev-parse", `refs/heads/${branch}`]) : undefined;
-const taskStore = await SqliteTaskStore.open({ path: database, repo: "demo" });
+const taskStore = await SqliteTaskStore.open({ caller: commandLineCaller(), path: database, repo: "demo" });
 const task = await taskStore.read(taskId);
 taskStore.close();
 const nextAction = JSON.parse(switchboard(["status"]).stdout).attempts?.[0]?.nextAction?.code;

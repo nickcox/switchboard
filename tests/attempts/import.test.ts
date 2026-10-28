@@ -4,14 +4,12 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { importAttempts } from "../../src/attempts/import.ts";
 import { LegacyAttempts } from "../fixtures/legacy-attempts.ts";
-import { AttemptStore } from "../../src/attempts/store.ts";
+import { AttemptStore, SqliteTaskStore, importAttempts } from "../caller.ts";
 import { Database } from "../../src/database.ts";
 import { configSchema, databasePath } from "../../src/config.ts";
 import { key } from "../../src/runtime/records.ts";
 import { LegacyRuntimeFixture as RuntimeRecords } from "../fixtures/legacy-runtime.ts";
-import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { specificationFor } from "../helpers.ts";
 
 async function fixture() {
@@ -154,6 +152,7 @@ test("a staging failure does not migrate the original schema, and the next run b
     database.run("ALTER TABLE tasks DROP COLUMN definition_revision");
     database.run("DROP INDEX tasks_by_objective");
     database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+    database.run("DROP TABLE task_changes");
     database.run("DROP TABLE objective_changes");
     database.run("DROP TABLE objectives");
     database.run("PRAGMA user_version = 1");

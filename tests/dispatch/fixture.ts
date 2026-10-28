@@ -1,3 +1,4 @@
+import { testCaller } from "../caller.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -47,7 +48,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
 
   const runtimeRoot = join(dir, "runtime");
   // Share one database connection between the stores, as createDependencies does.
-  const tasks = await SqliteTaskStore.open({ path: join(dir, "tasks.db"), repo: "fixture" });
+  const tasks = await SqliteTaskStore.open({ caller: testCaller, path: join(dir, "tasks.db"), repo: "fixture" });
   const runtime = new RuntimeRecords(runtimeRoot, tasks.database);
   const log = join(dir, "requests.jsonl");
   const worker = new PiWorker(runtime, {
@@ -57,9 +58,9 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     ...options.worker,
   });
   const deps: Dependencies & { attempts: FixtureAttemptStore } = {
-    contextId: "fixture-context", tasks, runtimeSettings: structuredClone(runtimeSettings), configurationProvenance: { configuration: "fixture" },
+    caller: testCaller, contextId: "fixture-context", tasks, runtimeSettings: structuredClone(runtimeSettings), configurationProvenance: { configuration: "fixture" },
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
-    attempts: new FixtureAttemptStore(tasks.database, "fixture-context"), runtime,
+    attempts: new FixtureAttemptStore(tasks.database, "fixture-context", testCaller), runtime,
     launch: (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {}),
     retention: request => checkRetention(git, environment, request),
     repository,
