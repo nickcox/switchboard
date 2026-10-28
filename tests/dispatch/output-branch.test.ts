@@ -11,7 +11,7 @@ import { createReview } from "../../src/dispatch/review.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
-import { fixture, task } from "./fixture.ts";
+import { attemptsWith, fixture, task } from "./fixture.ts";
 
 const taskId = "branches-a1";
 const review = { kind: "artefact" as const, acceptance: "independent_deliverable" as const, requiredEvidence: [], requiredDeliverables: ["report"] };
@@ -94,10 +94,44 @@ test("failed deletion is recorded and never prevents a lease return", async () =
   } finally { rmSync(path, { force: true }); f.tasks.close(); }
 });
 
+test("Git's old-value check preserves a branch moved between inspection and deletion", { skip: process.platform === "win32" }, async () => {
+  const f = await output();
+  try {
+    const git = onPath("git");
+    const shim = join(f.dir, "git-moved-output");
+    const earlier = f.run(["rev-parse", `${f.commit}^`]);
+    writeFileSync(shim, `#!/bin/sh\nif [ "$1" = update-ref ] && [ "$3" = -d ] && [ "$4" = 'refs/heads/${f.branch}' ]; then '${git}' update-ref 'refs/heads/${f.branch}' '${earlier}'; fi\nexec '${git}' "$@"\n`, { mode: 0o755 });
+    const result = await finish({ ...f.merged, policy: { ...f.merged.policy, git: shim } }, { leaseId: f.leaseId, noProcesses: true });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.lease, "none");
+    assert.equal(f.run(["rev-parse", f.branch]), earlier);
+    assert.match(result.detail!, /kept.*Could not delete output branch/);
+    assert.match(result.detail!, /expected/);
+  } finally { f.tasks.close(); }
+});
+
+test("a failed cleanup log write does not fail or undo the lease return or deletion", async () => {
+  const f = await output();
+  try {
+    const attempts = attemptsWith(f, { append: async (...args) => {
+      if (args[1] === "output_branch_cleanup") throw new Error("Fixture recording failure");
+      return f.deps.attempts.append(...args);
+    } });
+    const result = await finish({ ...f.merged, attempts }, { leaseId: f.leaseId, noProcesses: true });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.lease, "none");
+    assert.equal(exists(f), false);
+    assert.match(result.detail!, /deleted.*Could not record branch cleanup: Fixture recording failure/);
+  } finally { f.tasks.close(); }
+});
+
 test("integrated output with no branch can be reviewed and continued from", async () => {
   const f = await output();
   try {
-    assert.equal((await finish(f.merged, { leaseId: f.leaseId, noProcesses: true })).ok, true);
+    f.run(["branch", "integration", "main"]);
+    const merged = { ...f.merged, policy: { ...f.merged.policy, context: { kind: "local-merge" as const, targetBranch: "integration" } } };
+    assert.equal((await finish(merged, { leaseId: f.leaseId, noProcesses: true })).ok, true);
+    assert.notEqual(f.run(["rev-parse", "main"]), f.commit, "Retention uses the recorded integration target, not today's configuration");
     assert.equal(exists(f), false);
     const created = await createReview(f.deps, { taskId, attempt: 1 });
     assert.equal(created.reason, "review_created", JSON.stringify(created));
