@@ -78,7 +78,7 @@ test("schema 6 observations survive migration and can gain a validated result", 
   await f.records.recordSessionStart(reserved, "high");
   await withRuntimeDatabase(f.records, async database => {
     await database.transaction(() => {
-      database.run("DROP TABLE worker_usage");
+      for (const table of ["answer_deliveries", "question_answers", "question_files", "worker_usage"]) database.run(`DROP TABLE ${table}`);
       database.run("DROP TABLE review_tasks");
       database.run("DROP TRIGGER worker_observations_immutable");
       database.run("ALTER TABLE worker_observations RENAME TO current_observations");
@@ -118,7 +118,7 @@ test("reserve commits launch permission and a fresh claim before its hook, and w
     assert.equal(claim?.owner_pid, process.pid);
     assert.equal(claim?.released_at, null);
   });
-  assert.deepEqual((await readdir(reserved.directory)).sort(), ["artefacts", "sessions"]);
+  assert.deepEqual((await readdir(reserved.directory)).sort(), ["artefacts", "questions", "sessions"]);
 });
 
 test("startup observations are write-once and discovery checks their identity", async () => {

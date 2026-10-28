@@ -69,7 +69,7 @@ export interface RuntimeSession {
   /** Throws a RuntimeFailure unless the run ended successfully and the worker is idle as bound. */
   confirmEnd(signal: AbortSignal): Promise<void>;
   usage(): Promise<{ tokens: number; cost: number }>;
-  /** Passes an operator message to the running worker and returns the runtime's disposition for it. */
+  /** Passes a message to the worker. Answers may use follow-up between turns, but must never restart a settled run. */
   deliver(kind: "steer" | "follow_up", message: string, options?: { followUpWhenIdle: boolean }): Promise<string>;
   /** Asks the worker to stop if `abort` is set, then ends it and waits, within the runtime's own limits, for its exit. */
   shutdown(abort: boolean): Promise<void>;

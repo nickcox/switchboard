@@ -18,7 +18,7 @@ async function historical(change: (database: Database) => void) {
     await tasks.add({ id: "first", title: "First" });
     await tasks.add({ id: "second", title: "Second" });
     await tasks.database.transaction(() => {
-      tasks.database.run("DROP TABLE worker_usage");
+      for (const table of ["answer_deliveries", "question_answers", "question_files", "worker_usage"]) tasks.database.run(`DROP TABLE ${table}`);
       tasks.database.run("DROP TABLE review_tasks");
       tasks.database.run("DROP TABLE request_records");
       tasks.database.run("DROP TRIGGER task_definition_changed");

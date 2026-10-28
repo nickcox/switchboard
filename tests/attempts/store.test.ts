@@ -95,7 +95,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const before = await tasks.list();
   try {
     await tasks.database.transaction(() => {
-      for (const table of ["worker_usage", "review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) {
+      for (const table of ["answer_deliveries", "question_answers", "question_files", "worker_usage", "review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) {
         tasks.database.run(`DROP TABLE ${table}`);
       }
       tasks.database.run("DROP TRIGGER task_definition_changed");
@@ -113,7 +113,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const reopened = await SqliteTaskStore.open({ path });
   try {
     assert.deepEqual(await reopened.list(), before);
-    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 12);
+    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 13);
     assert.deepEqual(new AttemptStore(reopened.database, "context").list(), []);
   } finally { reopened.close(); }
 });

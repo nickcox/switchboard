@@ -130,6 +130,11 @@ function handle(request: Record<string, unknown>) {
     }
     send({ type: "agent_start" });
     if (scenario !== "no-ack" && scenario !== "fast-events") respond(request, { disposition: "started" });
+    if (scenario === "await-question-settled") setTimeout(() => {
+      send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Finished before the answer" }], stopReason: "stop" } });
+      send({ type: "agent_settled", aborted: false });
+      writeFileSync(join(dirname(sessions), "fixture-settled"), "settled");
+    }, 300);
     if (scenario === "ignore-stop" || scenario?.startsWith("await-steer") || scenario?.startsWith("await-question")) return;
     send({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "echo synthetic" } });
     send({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: {}, isError: false, durationMs: 12 });
@@ -157,7 +162,9 @@ function handle(request: Record<string, unknown>) {
     send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Received: ${String(request.message)}` }], stopReason: "stop" } });
     send({ type: "agent_settled", aborted: false });
   } else if (request.type === "get_session_stats") {
-    respond(request, { tokens: { total: 1200 }, cost: scenario === "expensive" ? 9.99 : scenario === "free" ? 0 : 0.01 });
+    const data = { tokens: { total: 1200 }, cost: scenario === "expensive" ? 9.99 : scenario === "free" ? 0 : 0.01 };
+    if (scenario === "await-question-settled") setTimeout(() => respond(request, data), 700);
+    else respond(request, data);
   } else if (request.type === "clear_queue") respond(request, { steering: [], followUp: [] });
   else if (request.type === "abort") {
     if (scenario !== "ignore-stop") respond(request);

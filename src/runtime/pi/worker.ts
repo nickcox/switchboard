@@ -127,7 +127,10 @@ class PiSession implements RuntimeSession {
 
   async deliver(kind: "steer" | "follow_up", message: string, options?: { followUpWhenIdle: boolean }): Promise<string> {
     if (options?.followUpWhenIdle) {
+      if (this.ending) return "not_running";
       const state = stateSchema.parse(await this.client.request("get_state", {}, this.options.requestMs));
+      // A settled run cannot consume another queue entry. Keep the answer file and handover instead of restarting it.
+      if (this.ending) return "not_running";
       if (!state.isStreaming && !state.isCompacting) kind = "follow_up";
     }
     const data = await this.client.request(kind, { message }, this.options.requestMs);

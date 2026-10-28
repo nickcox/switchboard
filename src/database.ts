@@ -314,16 +314,22 @@ export class Database {
             FOREIGN KEY(context, task, attempt) REFERENCES attempt_numbers(context, task, number));
           CREATE TRIGGER question_files_immutable BEFORE UPDATE ON question_files BEGIN
             SELECT RAISE(ABORT, 'Question files cannot be changed'); END;
+          CREATE TRIGGER question_files_not_removed BEFORE DELETE ON question_files BEGIN
+            SELECT RAISE(ABORT, 'Question files cannot be removed'); END;
           CREATE TABLE question_answers (
             question_id TEXT PRIMARY KEY REFERENCES question_files(id), text TEXT NOT NULL,
             answered_by TEXT NOT NULL, answered_at TEXT NOT NULL, request_id TEXT UNIQUE);
           CREATE TRIGGER question_answers_immutable BEFORE UPDATE ON question_answers BEGIN
             SELECT RAISE(ABORT, 'Question answers cannot be changed'); END;
+          CREATE TRIGGER question_answers_not_removed BEFORE DELETE ON question_answers BEGIN
+            SELECT RAISE(ABORT, 'Question answers cannot be removed'); END;
           CREATE TABLE answer_deliveries (
             sequence INTEGER PRIMARY KEY, question_id TEXT NOT NULL REFERENCES question_answers(question_id),
             channel TEXT NOT NULL CHECK(channel IN ('file','message')), outcome TEXT NOT NULL, at TEXT NOT NULL, error TEXT);
           CREATE TRIGGER answer_deliveries_immutable BEFORE UPDATE ON answer_deliveries BEGIN
             SELECT RAISE(ABORT, 'Answer deliveries cannot be changed'); END;
+          CREATE TRIGGER answer_deliveries_not_removed BEFORE DELETE ON answer_deliveries BEGIN
+            SELECT RAISE(ABORT, 'Answer deliveries cannot be removed'); END;
           PRAGMA user_version = 13;
         `);
       });

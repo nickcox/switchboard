@@ -48,9 +48,13 @@ The worker writes `result.json` with the standard write tool, without a custom e
 
 `PiRunReport.status = reported` means a valid worker report was obtained after direct-child exit, not that the task is accepted or its workspace may be returned. A valid `failed` or `hold` worker result is still a reported outcome. Callers must inspect the result and remaining runtime obligations separately.
 
+## Questions
+
+Workers ask [questions through files](../../worker-questions.md) with the standard write tool. The input and prompt give a `questionsDirectory` outside the workspace. The shared supervisor polls new `.question.json` files on its control-request interval and once more at exit, recording immutable valid questions or invalid-file diagnostics in the database. `answer` records an answer once, under `answerQuestions` authority, and uses the existing claimed-request delivery. Pi selects steering while streaming or a follow-up between turns. A separate answer file lets the worker check without ending its run. Answers are guidance, not authority. Open questions survive exit, and open and answered questions appear in continuation handovers.
+
 ## Runtime records
 
-What the runtime records about each worker is kept in Switchboard's database ([ADR-0007](../../adr/0007-one-sqlite-database.md)). Each attempt also has a runtime directory under the configured absolute runtime root, with context and lease IDs hashed into its name, which holds only what the worker and Pi write themselves; the database records its paths. Before dispatch writes anything, the runtime root and the database are checked against the provider's entire recyclable area (Treehouse's configured pool root, including earlier pools and idle workspaces), resolving existing ancestors even for paths not yet created. Paths are resolved again before launch, and runtime evidence beneath the worker's workspace is refused.
+What the runtime records about each worker is kept in Switchboard's database ([ADR-0007](../../adr/0007-one-sqlite-database.md)). Each attempt also has a runtime directory under the configured absolute runtime root, with context and lease IDs hashed into its name, which holds what the worker and Pi write themselves, plus Switchboard's answer-file copies; the database records its paths and remains authoritative for questions and answers. Before dispatch writes anything, the runtime root and the database are checked against the provider's entire recyclable area (Treehouse's configured pool root, including earlier pools and idle workspaces), resolving existing ancestors even for paths not yet created. Paths are resolved again before launch, and runtime evidence beneath the worker's workspace is refused.
 
 | Record | Where | Purpose |
 | --- | --- | --- |
@@ -60,6 +64,8 @@ What the runtime records about each worker is kept in Switchboard's database ([A
 | Stop confirmation | Database | The operator's confirmation, made with `switchboard resolve --worker-stopped`, that a worker with no observed exit has stopped. Reported as `operator_confirmed_stopped`, never as an observed exit; an observed exit takes precedence |
 | Activity | Database | Diagnostic record of the worker's tool calls, assistant messages, queue changes and usage snapshots. Read by `watch` and `status`; never used to decide task, lease or liveness state |
 | Requests | Database | Stop requests and operator messages, addressed to a claim by its ID. Each is claimed exactly once, by the owning dispatcher or, if nobody claims it in time, by its sender withdrawing it, and records the outcome Pi reported |
+| Questions and answers | Database | Immutable question-file readings, including invalid diagnostics, single-use answers with the caller and time, and separate file/message delivery outcomes. These survive attempt pruning |
+| `questions/` | Runtime directory | Worker-written `.question.json` files and Switchboard-written `.answer.json` copies. The input and prompt give its path; answer files are not authoritative records |
 | `sessions/` | Runtime directory | Pi's own session files, selected with an explicit `--session-dir` |
 | `artefacts/` | Runtime directory | Where the worker writes reports and other non-code deliverables, so they survive workspace recycling. The worker prompt gives its path |
 | `result.json` | Runtime directory | The worker's reported outcome, through the agreed result contract |

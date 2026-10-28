@@ -79,7 +79,8 @@ It preserves unfinished, leased, possibly running and unknown attempts. --dry-ru
 
 The configuration file defaults to $SWITCHBOARD_CONFIG, then ./switchboard.json.
 Exit status: 0 when no work was ready, a dry run selected a task or the task was recorded as done (dispatch), nothing needs attention (status),
-the confirmation was recorded (resolve), Pi accepted the request (stop, steer), the attempt was found (watch), or the
+the confirmation was recorded (resolve), an answer was recorded (answer, even if delivery failed), Pi accepted the request
+(stop, steer), the attempt was found (watch), or the
 attempt was finished, discarded or its dry run planned (finish, discard), or pruning completed (prune);
 1 for any other outcome, described by the report's reason; 2 for usage or configuration errors.`;
 

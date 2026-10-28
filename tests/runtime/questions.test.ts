@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { claimRequest, recordResult, unclaimedRequests } from "../../src/runtime/requests.ts";
+import { awaitDelivery, claimRequest, recordResult, unclaimedRequests } from "../../src/runtime/requests.ts";
 import { maxQuestionBytes, pollQuestions, writeAnswerFile } from "../../src/runtime/questions.ts";
 import { QuestionStore } from "../../src/runtime/questions-store.ts";
 import { fixture, withRuntimeDatabase } from "../helpers.ts";
@@ -40,6 +40,7 @@ test("question polling records valid, malformed, oversized and invalid-schema fi
   assert.deepEqual(await record.storage.questions.list(selector), before);
   await withRuntimeDatabase(f.records, async database => {
     await assert.rejects(database.transaction(() => database.run("UPDATE question_files SET document = '{}' WHERE id = ?", question.id)), /cannot be changed/);
+    await assert.rejects(database.transaction(() => database.run("DELETE FROM question_files WHERE id = ?", question.id)), /cannot be removed/);
   });
 });
 
@@ -53,6 +54,13 @@ test("symlinked question files and directories are never read", { skip: process.
   const files = await record.storage.questions.list({ contextId: f.input.identity.contextId });
   assert.equal(files.questions.length, 0);
   assert.match(files.invalid[0]!.diagnostic, /regular JSON file/);
+  const outside = join(f.dir, "outside");
+  await mkdir(outside);
+  await writeFile(join(outside, "outside.question.json"), JSON.stringify(document));
+  await rename(record.binding.input.questionsDirectory!, join(f.dir, "original-questions"));
+  await symlink(outside, record.binding.input.questionsDirectory!, "dir");
+  await assert.rejects(pollQuestions(record), /Unsafe questions directory/);
+  assert.deepEqual(await record.storage.questions.list({ contextId: f.input.identity.contextId }), files);
 });
 
 test("answering is atomic and single-use, addressed to the task, with file and request outcomes", async () => {
@@ -91,15 +99,18 @@ test("answering is atomic and single-use, addressed to the task, with file and r
   assert.deepEqual(final.answer!.deliveries.map(delivery => delivery.outcome), ["pending", "pending", "written", "steer:queued"]);
   await withRuntimeDatabase(f.records, async database => {
     await assert.rejects(database.transaction(() => database.run("UPDATE question_answers SET text = 'Changed' WHERE question_id = ?", question.id)), /cannot be changed/);
+    await assert.rejects(database.transaction(() => database.run("DELETE FROM question_answers WHERE question_id = ?", question.id)), /cannot be removed/);
+    await assert.rejects(database.transaction(() => database.run("DELETE FROM answer_deliveries WHERE question_id = ?", question.id)), /cannot be removed/);
   });
 });
 
-test("questions remain open after an exit; late answers are retained and written, without a new request", async () => {
+for (const stopped of [false, true]) test(`questions remain open after ${stopped ? "a confirmed stop" : "an exit"}; late answers are retained and written without a new request`, async () => {
   const f = fixture();
   const record = await f.records.reserve(f.input);
   await writeFile(join(record.binding.input.questionsDirectory!, "late.question.json"), JSON.stringify({ text: "What next?", waiting: false }));
   await pollQuestions(record);
-  await f.records.recordChildExit(record, { started: true, code: 0, signal: null });
+  if (stopped) await f.records.recordOperatorStop(record, caller);
+  else await f.records.recordChildExit(record, { started: true, code: 0, signal: null });
   const store = new QuestionStore(f.records.databasePath);
   const context = f.input.identity.contextId;
   const question = (await store.list({ contextId: context })).questions[0]!;
@@ -109,4 +120,43 @@ test("questions remain open after an exit; late answers are retained and written
   await writeAnswerFile(store, record.directory, answered.question);
   assert.deepEqual(await unclaimedRequests(record), []);
   assert.deepEqual((await store.list({ contextId: context })).questions[0]!.answer!.deliveries.map(delivery => delivery.outcome), ["not_running", "pending", "written"]);
+});
+
+for (const inactive of ["stale", "released", "future"]) test(`an answer with a ${inactive} dispatcher keeps its file delivery without queueing to an unowned channel`, async () => {
+  const f = fixture();
+  const record = await f.records.reserve(f.input);
+  await writeFile(join(record.binding.input.questionsDirectory!, "design.question.json"), JSON.stringify(document));
+  await pollQuestions(record);
+  if (inactive === "released") await record.storage.releaseClaim(record.claimId);
+  else await withRuntimeDatabase(f.records, database => database.transaction(() => {
+    database.run("UPDATE worker_claims SET heartbeat_at = ? WHERE id = ?", new Date(Date.now() + (inactive === "future" ? 60000 : -60000)).toISOString(), record.claimId);
+  }));
+  const store = record.storage.questions;
+  const question = (await store.list({ contextId: f.input.identity.contextId })).questions[0]!;
+  const answered = await store.answer(question.contextId, question.taskId, question.id, "Small", caller);
+  assert.equal(answered.question.answer!.requestId, undefined);
+  await writeAnswerFile(store, record.directory, answered.question);
+  assert.deepEqual(await unclaimedRequests(record), []);
+  assert.deepEqual((await store.list({ contextId: question.contextId })).questions[0]!.answer!.deliveries.map(delivery => delivery.outcome), ["no_dispatcher", "pending", "written"]);
+});
+
+test("an undelivered answer request is withdrawn once, and a failed file write does not allow another answer", async () => {
+  const f = fixture();
+  const record = await f.records.reserve(f.input);
+  await writeFile(join(record.binding.input.questionsDirectory!, "design.question.json"), JSON.stringify(document));
+  await pollQuestions(record);
+  const store = record.storage.questions;
+  const question = (await store.list({ contextId: f.input.identity.contextId })).questions[0]!;
+  const answered = await store.answer(question.contextId, question.taskId, question.id, "Small", caller);
+  const file = join(record.binding.input.questionsDirectory!, "design.answer.json");
+  await writeFile(file, "Existing content must not be overwritten");
+  await writeAnswerFile(store, record.directory, answered.question);
+  assert.equal(await readFile(file, "utf8"), "Existing content must not be overwritten");
+  const requestId = answered.question.answer!.requestId!;
+  assert.deepEqual(await awaitDelivery(record, requestId, 1, 1), { state: "undelivered" });
+  assert.equal(await claimRequest(record, requestId, "dispatcher"), false);
+  const final = (await store.list({ contextId: question.contextId })).questions[0]!;
+  assert.ok(final.answer!.deliveries.some(delivery => delivery.channel === "message" && delivery.outcome === "undelivered"));
+  assert.ok(final.answer!.deliveries.some(delivery => delivery.channel === "file" && delivery.outcome === "failed" && delivery.error));
+  await assert.rejects(store.answer(question.contextId, question.taskId, question.id, "Large", caller), /already been answered/);
 });
