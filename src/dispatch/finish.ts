@@ -228,6 +228,11 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
   if (options.rebase && policy.kind !== "local-merge") return refused("fix_configuration", "--rebase applies only under the local-merge finalisation policy", base);
   const outputBranch = attempt.attempt.outputBranch!;
   const git = { git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? {}, repository: deps.repository, ...gitReads(deps) };
+  const rebaseGit = { ...git, beforeEffect: async () => {
+    requireOperationAuthority(deps, ["rebase"], options);
+    await deps.reads.checkEffects();
+    deps.reads.effectAttempted = true;
+  } };
   let moving: { output: RebasedOutput; head: string } | undefined;
   if (rebased) {
     const head = await branchHead(git, outputBranch);
@@ -243,7 +248,7 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
   if (accepting) {
     try {
       const git = { git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? {}, repository: deps.repository, ...gitReads(deps) };
-      acceptedCommit = options.acceptOutput ? await branchHead(git, outputBranch) : rebased?.commit ?? accepted!.scope.commit;
+      acceptedCommit = moving?.output.commit ?? (options.acceptOutput ? await branchHead(git, outputBranch) : rebased?.commit ?? accepted!.scope.commit);
       const start = rebased && rebased.commit === acceptedCommit ? rebased.onto : leased?.data.startingCommit as string | undefined;
       const permission = checkCanAcceptOutput(attempt.facts, !!acceptedCommit && !!start && acceptedCommit !== start && await isAncestor(git, start, acceptedCommit));
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
@@ -302,7 +307,7 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
     steps.push({ description: `move ${outputBranch} from ${move.rebasedFrom} to the rebased commit ${move.commit}, completing an earlier rebase`, run: async () => {
       requireOperationAuthority(deps, ["rebase"], options);
       await deps.reads.checkEffects();
-      await moveDetachedBranch(git, attempt.attempt.workspace!, outputBranch, move.rebasedFrom, move.commit);
+      await moveDetachedBranch(rebaseGit, attempt.attempt.workspace!, outputBranch, move.rebasedFrom, move.commit);
       const retained = await check();
       if (typeof retained === "string" || !retained.retained) return refused("inspect_attempt", typeof retained === "string" ? retained : retained.findings.join("; "), base);
       retention = retained;
@@ -316,6 +321,10 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
       if (!("record" in current)) return current;
       const planned = await planRebase(git, current.attempt.facts, attempt.attempt.workspace!, outputBranch, change.original, change.upstream);
       if (!planned.permission.allowed) return refused(planned.permission.nextAction, planned.permission.detail, { ...base, observed: { refusal: planned.permission } });
+      const currentPolicy = await readPolicy(deps);
+      const permission = checkCanIntegrate(current.attempt.facts, { accepting, retained: true, fastForward: true,
+        policyRefusal: currentPolicy.refusal ?? (currentPolicy.kind !== "local-merge" || currentPolicy.targetBranch !== target.target ? "The finalisation policy changed" : undefined) });
+      if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
       const outcome = await rebaseDetached({ ...git, beforeEffect: async () => {
         requireOperationAuthority(deps, ["rebase", "integrate"], options);
         await deps.reads.checkEffects();
@@ -329,7 +338,7 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
       rebased = { commit: outcome.rebased, rebasedFrom: change.original, onto: change.onto };
       await deps.attempts.append(record, "output_rebased", rebased);
       requireOperationAuthority(deps, ["rebase"], options);
-      await moveDetachedBranch(git, attempt.attempt.workspace!, outputBranch, change.original, rebased.commit);
+      await moveDetachedBranch(rebaseGit, attempt.attempt.workspace!, outputBranch, change.original, rebased.commit);
       acceptedCommit = outputCommit = target.to = rebased.commit;
       const retained = await check();
       if (typeof retained === "string" || !retained.retained) return refused("inspect_attempt", typeof retained === "string" ? retained : retained.findings.join("; "), base);

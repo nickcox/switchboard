@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { userInfo } from "node:os";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { callerName, type Caller } from "../../src/caller.ts";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
@@ -260,6 +261,30 @@ test("a recorded detached candidate is recovered by the next finish without reba
   assert.equal(kinds(r).filter(kind => kind === "rebase_started").length, 1);
 });
 
+test("the same --accept-output --rebase command recovers a candidate and rebases again if the target moved", async t => {
+  const r = await output(t, true);
+  moveMain(r);
+  const attempts = attemptsWith(r.f, { append: async (...args) => {
+    await r.f.deps.attempts.append(...args);
+    if (args[1] === "output_rebased") throw new Error("Interrupted after recording the candidate");
+  } });
+  const command = { ...options(r), acceptOutput: true };
+  assert.equal((await finish({ ...r.deps, attempts }, command)).reason, "stopped");
+  const candidate = record(r).entries.find(e => e.kind === "output_rebased")!.data.commit as string;
+  const target = moveMain(r, "again.txt");
+  const plan = await finish(r.deps, { ...command, dryRun: true });
+  assert.equal(plan.reason, "planned", JSON.stringify(plan));
+  assert.match(plan.detail!, /Would move .*completing an earlier rebase, then rebase/);
+  assert.equal(r.f.run(["rev-parse", r.branch]), r.original);
+  const outcome = await finish(r.deps, command);
+  assert.equal(outcome.reason, "finished", JSON.stringify(outcome));
+  assert.deepEqual(outcome.observed.steps, plan.observed.steps);
+  const commit = r.f.run(["rev-parse", "main"]);
+  assert.equal(r.f.run(["rev-parse", `${commit}^`]), target);
+  assert.equal(r.f.run(["rev-list", "--count", `${target}..${commit}`]), "1");
+  assert.deepEqual(record(r).confirmations!.find(c => c.fact === "output_accepted")!.scope, { commit, rebasedFrom: candidate, onto: target });
+});
+
 test("--rebase finishes normally when the target has not moved, and refuses under manual", async t => {
   const r = await output(t);
   const manual = await finish(r.f.deps, options(r));
@@ -272,11 +297,19 @@ test("--rebase finishes normally when the target has not moved, and refuses unde
 
 test("the CLI accepts --rebase and uses the person's existing approval", async t => {
   const r = await output(t);
-  const cli = spawnSync(process.execPath, [resolve("src/cli.ts"), "finish", "--lease", r.leaseId, "--rebase", "--json", "--config", r.f.config], { encoding: "utf8" });
+  const target = moveMain(r);
+  const config = JSON.parse(readFileSync(r.f.config, "utf8"));
+  writeFileSync(r.f.config, JSON.stringify({ ...config, finalisation: { kind: "local-merge" } }));
+  const cli = spawnSync(process.execPath, [resolve("src/cli.ts"), "finish", "--lease", r.leaseId, "--rebase", "--json", "--config", r.f.config], {
+    encoding: "utf8", env: { ...process.env, USER: "not-the-caller", USERNAME: "not-the-caller" },
+  });
   const outcome = JSON.parse(cli.stdout);
-  assert.equal(cli.status, 1, cli.stderr);
-  assert.equal(outcome.reason, "refused");
-  assert.match(outcome.detail, /--rebase applies only under the local-merge/);
+  assert.equal(cli.status, 0, cli.stderr || cli.stdout);
+  assert.equal(outcome.reason, "finished");
+  const commit = r.f.run(["rev-parse", "main"]);
+  const confirmation = record(r).confirmations!.find(c => c.fact === "output_accepted")!;
+  assert.equal(confirmation.confirmedBy, `operator:${userInfo().username}`);
+  assert.deepEqual(confirmation.scope, { commit, rebasedFrom: r.original, onto: target });
 });
 
 for (const command of ["symbolic-ref", "status", "rev-list"]) test(`a failed ${command} owner read before rebase can be retried`, { skip: process.platform === "win32" }, async t => {
