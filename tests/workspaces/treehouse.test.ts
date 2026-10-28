@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { WorkspaceError } from "../../src/workspaces/provider.ts";
@@ -57,6 +58,33 @@ test("acquire returns a verified allocation on the requested branch and starting
   assert.deepEqual(await provider.leases(), [
     { leaseId: allocation.leaseId, holder: "task-a1", path: allocation.path, branch: "switchboard/task-a1/1" },
   ]);
+});
+
+test("a recorded starting commit is pinned for Treehouse instead of following the target branch", async () => {
+  const f = fixture();
+  f.run(["-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "--no-gpg-sign", "-m", "Later target"]);
+  const target = f.run(["rev-parse", "main"]);
+  const branch = "switchboard/task-a1/2";
+  const seed = `switchboard-starting-points/${createHash("sha256").update(branch).digest("hex")}`;
+  const provider = await TreehouseProvider.open(f.options);
+  const allocation = await provider.acquire({ holder: "task-a1", baseRef: "main", branch, startingCommit: f.base });
+  assert.equal(allocation.startingCommit, f.base);
+  assert.equal(f.run(["rev-parse", seed]), f.base);
+  assert.equal(f.run(["rev-parse", branch]), f.base);
+  assert.equal(f.run(["rev-parse", "main"]), target);
+});
+
+test("an interrupted or conflicting starting-point ref is never overwritten or used for another acquisition", async () => {
+  const f = fixture();
+  const branch = "switchboard/task-a1/2";
+  const seed = `switchboard-starting-points/${createHash("sha256").update(branch).digest("hex")}`;
+  f.run(["branch", seed, f.base]);
+  const provider = await TreehouseProvider.open(f.options);
+  await assert.rejects(provider.acquire({ holder: "task-a1", baseRef: "main", branch, startingCommit: f.base }),
+    (error: unknown) => error instanceof WorkspaceError && error.reason === "outcome_unknown");
+  assert.equal(f.run(["rev-parse", seed]), f.base);
+  assert.deepEqual(await provider.leases(), []);
+  assert.equal(f.run(["branch", "--list", branch]), "");
 });
 
 test("an unknown base is rejected and leaves no lease", async () => {

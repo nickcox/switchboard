@@ -130,7 +130,14 @@ async function main(argv: string[]): Promise<number> {
     console.error("--from-attempt requires --task and a positive integer; use at most one of --note and --note-file with it.");
     return 2;
   }
-  const note = values["note-file"] === undefined ? values.note : await readFile(resolve(values["note-file"]), "utf8");
+  let note = values.note;
+  if (values["note-file"] !== undefined) {
+    try { note = await readFile(resolve(values["note-file"]), "utf8"); }
+    catch (error) {
+      console.error(`Could not read --note-file: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   const olderThan = Number(values["older-than"]);
   if (command === "prune" && (!Number.isFinite(olderThan) || olderThan <= 0)) {
     console.error("prune requires --older-than <days>, a positive number of days.");

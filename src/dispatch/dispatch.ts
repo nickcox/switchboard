@@ -104,6 +104,11 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
     if (!options.taskId) return refusal("select", "choose_another_task", "Starting from an earlier attempt requires an explicit task");
     const requestId = options.requestId ?? randomUUID();
     const reserved = await reserveFromAttempt(deps, { ...options, taskId: options.taskId, startingPoint: options.startingPoint, requestId });
+    if (reserved.reason === "existing_request") {
+      const existing = await reads.read("Attempt records", "read existing starting-point request", () => deps.attempts.findByRequest(requestId));
+      if (!existing) return refusal("select", "inspect_attempt", "The reserved request record is missing");
+      return existingRequest(deps, existing, requestId, reads);
+    }
     if (reserved.reason !== "reserved") return reserved;
     return executeReserved(deps, { ...options, requestId }, reads, reserved.attempt!, options.taskId, reserved.observed);
   }
@@ -224,7 +229,9 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
     const outputBranch = specification.outputBranch;
     let allocation: Allocation;
     try {
-      allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.startingPoint?.commit ?? specification.baseRef, branch: outputBranch });
+      allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.baseRef, branch: outputBranch,
+        ...(specification.startingPoint ? { startingCommit: specification.startingPoint.commit } : {}),
+      });
     } catch (error) {
       if (error instanceof WorkspaceError && error.readFailure) throw await reads.failure(error.readFailure.owner, "read acquisition", error.readFailure.error);
       if (error instanceof WorkspaceError && error.reason === "unreadable") throw await reads.failure("Treehouse", "read acquisition", error);

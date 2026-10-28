@@ -5,12 +5,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createDependencies, loadConfig } from "../../src/config.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 
-const [configPath, stage] = process.argv.slice(2);
+const [configPath, stage, taskId, fromAttempt] = process.argv.slice(2);
 const config = await loadConfig(configPath!);
 const deps = await createDependencies(config, { dispatch: true });
 const die = () => process.kill(process.pid, "SIGKILL");
 
-if (stage === "after-lease") {
+if (stage === "after-reservation") {
+  const real = deps.attempts.reserveAttempt.bind(deps.attempts);
+  deps.attempts.reserveAttempt = async options => { await real(options); die(); throw new Error("unreachable"); };
+} else if (stage === "after-lease") {
   const real = deps.workspaces;
   deps.workspaces = { recyclableRoots: () => real.recyclableRoots(), returnLease: (lease, options) => real.returnLease(lease, options), leases: () => real.leases(), pool: () => real.pool(), acquire: async request => { await real.acquire(request); die(); throw new Error("unreachable"); } };
 } else if (stage === "after-start") {
@@ -31,5 +34,7 @@ if (stage === "after-lease") {
 } else {
   throw new Error(`Unknown stage ${stage}`);
 }
-await dispatchOnce(deps, { requestId: `crash-${stage}` });
+await dispatchOnce(deps, { requestId: `crash-${stage}`, ...(taskId ? { taskId } : {}),
+  ...(fromAttempt ? { startingPoint: { taskId: taskId!, attempt: Number(fromAttempt) } } : {}),
+});
 throw new Error("The dispatcher should have been killed");

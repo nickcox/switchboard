@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
@@ -60,15 +61,27 @@ export class TreehouseProvider implements WorkspaceProvider {
     if (top !== repository) throw new Error("Repository path must be the top level of a Git work tree");
   }
 
-  async acquire(request: { holder: string; baseRef: string; branch: string }): Promise<Allocation> {
+  async acquire(request: { holder: string; baseRef: string; branch: string; startingCommit?: string }): Promise<Allocation> {
     try { await this.validateRepository(); }
     catch (error) { throw new WorkspaceError("unreadable", "Git repository could not be read before acquisition", undefined, { owner: "Git repository", error }); }
     const holder = argument.parse(request.holder);
-    const baseRef = argument.parse(request.baseRef);
+    let baseRef = argument.parse(request.baseRef);
     const branch = argument.parse(request.branch);
     const pool = await this.pool().catch(error => {
       throw new WorkspaceError("unreadable", "Git workspace pool could not be read before acquisition", undefined, { owner: "Git workspace pool", error });
     });
+    if (request.startingCommit !== undefined) {
+      const startingCommit = commit.parse(request.startingCommit);
+      // Treehouse accepts only branch names as bases. A create-only private ref pins this attempt's exact commit;
+      // it is kept if acquisition is interrupted and is never reused for another acquisition.
+      baseRef = `switchboard-starting-points/${createHash("sha256").update(branch).digest("hex")}`;
+      const prepared = await runCommand(resolveExecutable(this.options.git), ["update-ref", `refs/heads/${baseRef}`, startingCommit, ""], {
+        cwd: this.options.repository, env: this.options.environment, timeoutMs: gitTimeoutMs,
+      });
+      if (prepared.exitCode !== 0 || prepared.timedOut || prepared.truncated) {
+        throw new WorkspaceError("outcome_unknown", "The starting-point ref could not be prepared; inspect it before any further acquisition", describeCommand(prepared));
+      }
+    }
     const args = ["get", "--lease", "--json", "--lease-holder", holder, "--base", baseRef, "--branch", branch];
     const result = await this.treehouse([...args, ...(this.options.fetch ? [] : ["--no-fetch"])]);
     if (result.timedOut || result.exitCode === null) {
@@ -83,7 +96,11 @@ export class TreehouseProvider implements WorkspaceProvider {
     let acquired: z.infer<typeof acquiredSchema>;
     try { acquired = acquiredSchema.parse(JSON.parse(result.stdout)); }
     catch { throw new WorkspaceError("outcome_unknown", `Unreadable Treehouse result for ${holder}`, describeCommand(result)); }
-    return { ...await this.verify(acquired, holder, branch), pool };
+    const allocation = { ...await this.verify(acquired, holder, branch), pool };
+    if (request.startingCommit !== undefined && allocation.startingCommit !== request.startingCommit) {
+      throw new WorkspaceError("unexpected_state", `Workspace does not start at the requested commit (lease ${allocation.leaseId})`);
+    }
+    return allocation;
   }
 
   async recyclableRoots(): Promise<string[]> { return [this.options.poolRoot]; }

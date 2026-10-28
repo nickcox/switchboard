@@ -57,7 +57,7 @@ export interface WorkspaceProvider {
    * make the return fail unless `discardChanges` is set. Confirms the lease is no longer listed.
    */
   returnLease(lease: LeaseIdentity, options: { discardChanges: boolean }): Promise<void>;
-  acquire(request: { holder: string; baseRef: string; branch: string }): Promise<Allocation>;
+  acquire(request: { holder: string; baseRef: string; branch: string; startingCommit?: string }): Promise<Allocation>;
   /** Areas containing every recyclable workspace, including idle workspaces and earlier pools. */
   recyclableRoots(): Promise<string[]>;
   /** Current leases in this context's workspace pool. */

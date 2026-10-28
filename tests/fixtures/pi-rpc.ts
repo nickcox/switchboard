@@ -54,12 +54,13 @@ function reportResult() {
   }
   if (scenario === "commit-result") {
     // Makes a real commit on the output branch in the workspace, so retention checks can pass.
-    writeFileSync(join(process.cwd(), "worker-output.txt"), "synthetic worker output\n");
+    writeFileSync(join(process.cwd(), "worker-output.txt"), `synthetic worker output on ${binding.input.delivery.outputBranch}\n`);
     const git = (args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8" }).trim();
     git(["add", "worker-output.txt"]);
     git(["commit", "-q", "--no-gpg-sign", "-m", "Synthetic worker output"]);
     result.workReferences[0]!.commit = git(["rev-parse", "HEAD"]);
   }
+  if (scenario === "no-new-commit") result.workReferences[0]!.commit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   if (scenario === "hold" || scenario === "failed") {
     writeFileSync(binding.resultPath, JSON.stringify({
       ...result, outcome: scenario, reason: "Needs operator inspection", nextAction: "Inspect retained workspace",
