@@ -6,7 +6,7 @@ import { createDependencies, loadConfig } from "./config.ts";
 import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
-import { resolveLeaseReturned, resolveStopped } from "./dispatch/resolve.ts";
+import { resolveLeaseReturned, resolveReadFailure, resolveStopped } from "./dispatch/resolve.ts";
 import { discard, finish } from "./dispatch/finish.ts";
 import { leaseOfTask } from "./dispatch/select.ts";
 import { prune } from "./dispatch/prune.ts";
@@ -24,6 +24,7 @@ const usage = `Usage:
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
+  switchboard resolve (--lease <id> | --task <id> [--attempt <n>]) --read-failure <sequence> --effect-outcome <happened|not_happened> --note <text> [--json] [--config <path>]
   switchboard finish <attempt> [--no-processes] [--accept-output] [--dry-run] [--json] [--config <path>]
   switchboard discard <attempt> --confirm --no-processes [--note <text>] [--dry-run] [--json] [--config <path>]
   switchboard watch <attempt> [--no-follow] [--json] [--config <path>]
@@ -48,7 +49,9 @@ resolve records the operator's confirmation that a worker with no observed exit 
 --worker-stopped it only reports what each owner holds. --lease-returned records the operator's confirmation that a
 lease in a workspace pool Switchboard no longer lists, for example after the origin remote changed, was returned.
 Use exactly one of --lease and --task. --task is only for --lease-returned; --attempt selects a task's attempt
-(default: latest). resolve never changes the task or the lease.
+(default: latest). --read-failure reconciles one uncertain read by its entry sequence, with the outcome the
+operator established and a required note. It refuses while a worker may be running and never repeats the effect.
+A claimed return still needs Treehouse to confirm the lease is absent. resolve never changes the task or the lease.
 
 finish --accept-output accepts committed output from a held attempt as your decision, without a worker result.
 The output branch must advance the starting commit and the workspace must be clean.
@@ -86,7 +89,7 @@ async function main(argv: string[]): Promise<number> {
     options: {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
-      lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, note: { type: "string" }, "no-follow": { type: "boolean" },
+      lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, "read-failure": { type: "string" }, "effect-outcome": { type: "string" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" }, "older-than": { type: "string" },
     },
   });
@@ -104,7 +107,7 @@ async function main(argv: string[]): Promise<number> {
   // An option that a command does not use is refused, so that, for example, `stop --dry-run` cannot send a real stop.
   const selectors = ["lease", "task", "attempt"];
   const allowed: Record<string, string[]> = {
-    dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "note"],
+    dispatch: ["once", "dry-run", "task", "request-id"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
     watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
     prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
   };
@@ -127,18 +130,26 @@ async function main(argv: string[]): Promise<number> {
     console.error("--wait must be a positive number of seconds.");
     return 2;
   }
-  if (values["worker-stopped"] && values["lease-returned"]) {
-    console.error("resolve takes either --worker-stopped or --lease-returned, not both.");
+  const reconcilingRead = values["read-failure"] !== undefined;
+  const failureSequence = Number(values["read-failure"]);
+  if ([values["worker-stopped"], values["lease-returned"], reconcilingRead].filter(Boolean).length > 1) {
+    console.error("resolve takes only one of --worker-stopped, --lease-returned and --read-failure.");
+    return 2;
+  }
+  if (command === "resolve" && (reconcilingRead
+    ? !Number.isSafeInteger(failureSequence) || failureSequence < 0 || !["happened", "not_happened"].includes(values["effect-outcome"] ?? "") || !values.note?.trim()
+    : values["effect-outcome"] !== undefined)) {
+    console.error("--read-failure needs a nonnegative entry sequence, --effect-outcome happened or not_happened, and --note.");
     return 2;
   }
   const attempt = values.attempt === undefined ? undefined : Number(values.attempt);
   if (command === "resolve" && (
     (values.lease !== undefined) === (values.task !== undefined)
     || values.lease === "" || values.task === ""
-    || (values.task !== undefined && !values["lease-returned"])
+    || (values.task !== undefined && !values["lease-returned"] && !reconcilingRead)
     || (values.attempt !== undefined && (!values.task || !Number.isSafeInteger(attempt) || attempt! <= 0))
   )) {
-    console.error("resolve requires exactly one of --lease or --task; --task requires --lease-returned, and --attempt must be a positive integer with --task.\n\n" + usage);
+    console.error("resolve requires exactly one of --lease or --task; --task requires --lease-returned or --read-failure, and --attempt must be a positive integer with --task.\n\n" + usage);
     return 2;
   }
   const byAttempt = ["watch", "stop", "steer", "finish", "discard"].includes(command);
@@ -217,7 +228,9 @@ async function main(argv: string[]): Promise<number> {
 
     if (command === "resolve") {
       const note = values.note ? { note: values.note } : {};
-      const value = values["lease-returned"]
+      const value = reconcilingRead
+        ? await resolveReadFailure(deps, { ...(values.task ? { taskId: values.task, ...(attempt !== undefined ? { attempt } : {}) } : { leaseId: values.lease! }), failureSequence, outcome: values["effect-outcome"] as "happened" | "not_happened", note: values.note! })
+        : values["lease-returned"]
         ? await resolveLeaseReturned(deps, { ...(values.task ? { taskId: values.task, ...(attempt !== undefined ? { attempt } : {}) } : { leaseId: values.lease! }), ...note })
         : await resolveStopped(deps, { leaseId: values.lease!, confirmed: values["worker-stopped"] === true, ...note });
       console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));

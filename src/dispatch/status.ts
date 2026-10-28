@@ -1,4 +1,5 @@
 import type { ReadFailure } from "./failure.ts";
+import { unsettledReads } from "./owner-reads.ts";
 import { readActivity } from "../runtime/activity.ts";
 import { attemptSpecificationSchema, type StoredSpecification, type AttemptAllocation } from "../attempts/specification.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
@@ -125,8 +126,7 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
     const record = records.find(r => r.taskId === assessment.attempt.taskId && r.attempt === assessment.attempt.attempt);
     const latestReadFailure = [...(record?.entries ?? [])].reverse().find(e => e.kind === "owner_read_failed");
-    const reconcile = record?.entries.some(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain") &&
-      !record.entries.some(e => e.kind === "lease_returned") && !facts.leaseReturnedConfirmed;
+    const reconcile = record !== undefined && unsettledReads(record).length > 0;
     attempts.push({ ...assessment,
       ...(latestReadFailure ? { latestReadFailure: latestReadFailure.data as ReadFailure } : {}),
       specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,

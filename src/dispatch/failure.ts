@@ -17,7 +17,7 @@ export type CommandDiagnostics = Pick<CommandResult, "exitCode" | "stdout" | "st
 export type ReadFailure = {
   owner: string;
   classification: FailureKind;
-  operation: "finish" | "discard";
+  operation: "dispatch" | "resolve" | "prune" | "finish" | "discard";
   step: string;
   failedAt: string;
   diagnostics: { message: string; command?: CommandDiagnostics };

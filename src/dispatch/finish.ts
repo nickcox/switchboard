@@ -7,7 +7,7 @@ import type { RetentionRequest, RetentionResult } from "../workspaces/retention.
 import { branchHead, fastForward, isAncestor } from "../workspaces/integration.ts";
 import { WorkspaceError } from "../workspaces/provider.ts";
 import { OwnerReadError } from "./failure.ts";
-import { OwnerReads, readRefusal } from "./owner-reads.ts";
+import { OwnerReads, readRefusal, unsettledReads } from "./owner-reads.ts";
 import { resolvedBy } from "./attempt.ts";
 import type { Dependencies } from "./dependencies.ts";
 import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
@@ -167,6 +167,24 @@ export async function discard(deps: Dependencies, options: { leaseId: string; no
   return discardAttempt({ ...deps, reads: new OwnerReads(deps, "discard", options.leaseId) }, options).catch(unexpected("discard"));
 }
 
+/** Only the target containing the exact intended commit can settle an interrupted integration. */
+async function reconcileIntegration(deps: OperationDependencies, record: AttemptRecord, dryRun = false): Promise<void> {
+  for (const failure of unsettledReads(record)) {
+    const intent = [...record.entries].reverse().find(e => e.sequence < failure.sequence && e.kind === "integration_started");
+    if (!intent || record.entries.some(e => e.kind === "lease_return_started" && e.sequence < failure.sequence)) continue;
+    const target = intent.data.targetBranch as string;
+    const commit = intent.data.commit as string;
+    const git = { git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? {}, repository: deps.repository, ...gitReads(deps) };
+    const head = await branchHead(git, target);
+    if (!head || !await isAncestor(git, commit, head) || dryRun) continue;
+    await deps.attempts.append(record, "owner_read_reconciled", { failureSequence: failure.sequence, targetBranch: target, commit });
+    const current = (await deps.reads.current())!;
+    if (!current.entries.some(e => e.kind === "integrated" && e.data.commit === commit && e.data.targetBranch === target)) {
+      await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: target, commit });
+    }
+  }
+}
+
 async function finishAttempt(deps: OperationDependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean; acceptOutput?: boolean }): Promise<DispatchResult> {
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
@@ -176,6 +194,8 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: {}, ...base,
     ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
   });
+  await reconcileIntegration(deps, record, options.dryRun);
+  record.entries = (await deps.reads.current())!.entries;
   await deps.reads.checkEffects();
   const accepted = [...(record.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
   const accepting = options.acceptOutput || accepted !== undefined;
@@ -266,7 +286,12 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
       const permission = checkCanIntegrate(current.attempt.facts, { accepting, retained: typeof retained !== "string" && retained.retained,
         policyRefusal: currentPolicy.refusal ?? (currentPolicy.kind !== "local-merge" || currentPolicy.targetBranch !== integration.target ? "The finalisation policy changed" : undefined), fastForward: true });
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
-      await fastForward({ git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository, ...gitReads(deps) }, integration.target, integration.from, integration.to);
+      await fastForward({ git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository, ...gitReads(deps),
+        beforeEffect: async () => {
+          await deps.reads.checkEffects();
+          deps.reads.effectAttempted = true;
+          await deps.attempts.append(record, "integration_started", { targetBranch: integration.target, from: integration.from, commit: integration.to });
+        } }, integration.target, integration.from, integration.to);
       await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: integration.target, commit: integration.to });
     } catch (error) { return stopped(error, `fast-forward ${integration.target}`); }
   }

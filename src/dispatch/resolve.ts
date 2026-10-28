@@ -3,6 +3,7 @@ import type { Dependencies } from "./dependencies.ts";
 import { observeAttempt, type AttemptSelector } from "./observe.ts";
 import { assessAttempt } from "./assess.ts";
 import { checkCanConfirmLeaseReturned, checkCanConfirmStopped } from "./safety.ts";
+import { OwnerReads, readRefusal, unsettledReads } from "./owner-reads.ts";
 import { result, type DispatchResult } from "./result.ts";
 
 const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
@@ -11,8 +12,14 @@ const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknow
 export async function resolveStopped(
   deps: Dependencies, options: { leaseId: string; confirmed: boolean; note?: string },
 ): Promise<DispatchResult> {
+  const reads = new OwnerReads(deps, "resolve", options.leaseId);
+  return confirmStopped(deps, options, reads).catch(error => readRefusal(error) ?? unexpected(error));
+}
+
+async function confirmStopped(deps: Dependencies, options: { leaseId: string; confirmed: boolean; note?: string }, reads: OwnerReads): Promise<DispatchResult> {
   const observation = await observeAttempt(deps, { leaseId: options.leaseId });
   if (!observation) return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: { leaseId: options.leaseId }, detail: "No attempt or runtime record in this context has this lease ID", nextAction: "inspect_attempt" });
+  await reads.attempt(observation, "inspect worker confirmation");
   const assessment = assessAttempt(observation);
   const runtime = observation.runtime.known ? observation.runtime.value : undefined;
   const attempt = observation.record.known ? observation.record.value : undefined;
@@ -23,10 +30,12 @@ export async function resolveStopped(
   if (!attempt) return result({ ...common, ok: false, reason: "refused", detail: "The runtime has no attempt to record this confirmation against; restore or import its attempt records first", nextAction: "inspect_attempt" });
 
   // The immutable launch row prevents a pending launch after this confirmation.
+  if (!runtime && attempt.entries.some(e => e.kind === "launched")) reads.effectAttempted = true;
   if (!runtime && attempt.entries.some(e => e.kind === "launched") && !await deps.runtime.fence(deps.contextId, options.leaseId)) {
     return result({ ...common, ok: false, reason: "refused", detail: "The dispatcher is starting this worker now; follow the attempt with watch or request a stop", nextAction: "watch_attempt" });
   }
   const current = await observeAttempt(deps, { leaseId: options.leaseId });
+  if (current) await reads.attempt(current, "recheck worker confirmation");
   const rechecked = current && checkCanConfirmStopped(assessAttempt(current).facts, options.confirmed);
   if (!rechecked || !rechecked.allowed) return result({ ...common, ok: false, reason: "refused", detail: rechecked ? rechecked.detail : "The attempt disappeared", nextAction: rechecked ? rechecked.nextAction : "inspect_attempt" });
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) },
@@ -39,9 +48,15 @@ export async function resolveLeaseReturned(
   deps: Dependencies,
   options: ({ leaseId: string; taskId?: never; attempt?: never } | { taskId: string; attempt?: number; leaseId?: never }) & { note?: string },
 ): Promise<DispatchResult> {
+  const reads = new OwnerReads(deps, "resolve", options.leaseId);
+  return confirmLeaseReturned(deps, options, reads).catch(error => readRefusal(error) ?? unexpected(error));
+}
+
+async function confirmLeaseReturned(deps: Dependencies, options: ({ leaseId: string; taskId?: never; attempt?: never } | { taskId: string; attempt?: number; leaseId?: never }) & { note?: string }, reads: OwnerReads): Promise<DispatchResult> {
   const selector: AttemptSelector = options.taskId !== undefined ? { taskId: options.taskId, ...(options.attempt === undefined ? {} : { attempt: options.attempt }) } : { leaseId: options.leaseId };
   const observation = await observeAttempt(deps, selector);
   if (!observation) return result({ ok: false, reason: "refused", stage: "resolve", lease: "none", observed: options, detail: "No attempt in this context matches the given lease or task and attempt", nextAction: "inspect_attempt" });
+  await reads.attempt(observation, "inspect lease confirmation");
   const assessment = assessAttempt(observation);
   const attempt = observation.record.known ? observation.record.value : undefined;
   const summary = assessment.attempt;
@@ -56,6 +71,7 @@ export async function resolveLeaseReturned(
   if (!attempt) return result({ ...common, ok: false, reason: "refused", detail: "The attempt could not be read", nextAction: "inspect_attempt" });
   const current = await observeAttempt(deps, selector);
   if (!current) return result({ ...common, ok: false, reason: "refused", detail: "The attempt disappeared", nextAction: "inspect_attempt" });
+  await reads.attempt(current, "recheck lease confirmation");
   const rechecked = assessAttempt(current);
   const currentListed = current.leases.known && current.leases.value.some(l => l.leaseId === summary.leaseId || (l.holder === summary.taskId && l.branch === outputBranch));
   const fresh = checkCanConfirmLeaseReturned({ ...rechecked.facts, leaseHeld: currentListed });
@@ -63,4 +79,40 @@ export async function resolveLeaseReturned(
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "lease_returned", ...(options.note ? { note: options.note } : {}) },
     { fact: "lease_returned", scope: { outputBranch, ...(summary.leaseId ? { leaseId: summary.leaseId } : {}) } }, operator, current.record.known ? current.record.value : undefined);
   return result({ ...common, ok: true, reason: "resolved", nextAction: "dispatch_again" });
+}
+
+const unexpected = (error: unknown) => result({ ok: false, reason: "stopped", stage: "resolve", lease: "unknown", observed: {},
+  detail: `Resolution stopped: ${error instanceof Error ? error.message : String(error)}`, nextAction: "inspect_attempt" });
+
+/** Records what the operator established about one failure. It never performs the uncertain effect. */
+export async function resolveReadFailure(deps: Dependencies, options: AttemptSelector & {
+  failureSequence: number; outcome: "happened" | "not_happened"; note: string;
+}): Promise<DispatchResult> {
+  const reads = new OwnerReads(deps, "resolve", "leaseId" in options ? options.leaseId : undefined);
+  try {
+    const observation = await observeAttempt(deps, options);
+    const refuse = (detail: string) => result({ ok: false, reason: "refused", stage: "resolve", lease: "unknown", observed: {}, detail, nextAction: "inspect_attempt" });
+    if (!observation) return refuse("No attempt matches this reconciliation");
+    await reads.attempt(observation, "inspect read reconciliation");
+    const assessment = assessAttempt(observation);
+    if (assessment.facts.possiblyRunning || assessment.facts.dispatcherRunning || observation.taskWorkerMayBeRunning) return refuse("The attempt's worker or dispatcher may still be running; confirm it stopped first");
+    if (!Number.isSafeInteger(options.failureSequence) || !options.note.trim() || !["happened", "not_happened"].includes(options.outcome)) return refuse("Reconciliation needs a failure sequence, an established outcome and a note");
+    const record = observation.record.known ? observation.record.value : undefined;
+    const failure = record && unsettledReads(record).find(e => e.sequence === options.failureSequence);
+    if (!record || !failure) return refuse("The sequence does not name an unsettled uncertain read failure in this attempt");
+    const intent = [...record.entries].reverse().find(e => e.kind === "lease_return_started" && e.sequence < failure.sequence);
+    // A claimed return cannot overrule a lease that Treehouse still lists or cannot observe.
+    if (intent && options.outcome === "happened" && (assessment.leaseHeld || assessment.leaseInOtherPool || assessment.facts.unknown.length)) return refuse("Treehouse must confirm the lease is absent before recording that the return happened");
+    const current = await observeAttempt(deps, options);
+    if (!current) return refuse("The attempt disappeared");
+    await reads.attempt(current, "recheck read reconciliation");
+    const fresh = assessAttempt(current);
+    if (fresh.facts.possiblyRunning || fresh.facts.dispatcherRunning || current.taskWorkerMayBeRunning ||
+      intent && options.outcome === "happened" && (fresh.leaseHeld || fresh.leaseInOtherPool || fresh.facts.unknown.length)) return refuse("The worker or lease changed while reconciling; inspect the owners again");
+    await deps.attempts.appendConfirmed(record, "operator_resolved", { action: "owner_read_reconciled", note: options.note },
+      { fact: "owner_read_reconciled", scope: { failureSequence: options.failureSequence, outcome: options.outcome, ...(intent ? { returnId: intent.data.returnId as string } : {}) } },
+      operator, current.record.known ? current.record.value : undefined);
+    return result({ ok: true, reason: "resolved", stage: "resolve", lease: fresh.leaseHeld ? "preserved" : "none", attempt: fresh.attempt,
+      observed: { failureSequence: options.failureSequence, outcome: options.outcome }, nextAction: "inspect_attempt" });
+  } catch (error) { return readRefusal(error) ?? unexpected(error); }
 }

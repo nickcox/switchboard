@@ -61,7 +61,8 @@ export class TreehouseProvider implements WorkspaceProvider {
   }
 
   async acquire(request: { holder: string; baseRef: string; branch: string }): Promise<Allocation> {
-    await this.validateRepository();
+    try { await this.validateRepository(); }
+    catch (error) { throw new WorkspaceError("unreadable", "Git repository could not be read before acquisition", undefined, { owner: "Git repository", error }); }
     const holder = argument.parse(request.holder);
     const baseRef = argument.parse(request.baseRef);
     const branch = argument.parse(request.branch);
@@ -146,7 +147,9 @@ export class TreehouseProvider implements WorkspaceProvider {
     if (path !== acquired.path || !inside(pool, path) || path === pool) throw unexpected("Workspace is not a canonical path in the pool");
     const listed = (await this.leases()).find(lease => lease.leaseId === acquired.lease_id);
     if (!listed || listed.path !== path || listed.holder !== holder) throw unexpected("Lease is not listed as acquired");
-    const read = (args: string[]) => this.git(path, args).catch(() => { throw unexpected(`git ${args.join(" ")} failed in the workspace`); });
+    const read = (args: string[]) => this.git(path, args).catch(error => {
+      throw new WorkspaceError("unreadable", `git ${args.join(" ")} could not be read in the workspace`, undefined, { owner: "Git workspace", error });
+    });
     const checkedOut = await read(["branch", "--show-current"]);
     if (checkedOut !== branch) throw unexpected(`Workspace has branch ${JSON.stringify(checkedOut)} checked out`);
     const head = commit.safeParse(await read(["rev-parse", "HEAD"]));

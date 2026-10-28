@@ -10,6 +10,7 @@ import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptR
 const nonempty = z.string().trim().min(1);
 const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 const confirmationSchema = z.discriminatedUnion("fact", [
+  z.strictObject({ fact: z.literal("owner_read_reconciled"), scope: z.strictObject({ failureSequence: z.number().int().nonnegative(), outcome: z.enum(["happened", "not_happened"]), returnId: z.uuid().optional() }) }),
   z.strictObject({ fact: z.literal("no_processes"), scope: z.strictObject({ leaseId: nonempty, returnId: z.uuid() }) }),
   z.strictObject({ fact: z.literal("output_accepted"), scope: z.strictObject({ commit }) }),
   z.strictObject({ fact: z.literal("discard"), scope: z.strictObject({ leaseId: nonempty }) }),
@@ -288,6 +289,27 @@ export class AttemptStore {
   pendingDeletions(): PendingDeletion[] {
     return this.database.all("SELECT task, attempt, directory FROM pending_attempt_deletions WHERE context = ? ORDER BY task, attempt, directory", this.contextId)
       .map(row => ({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.attempt), directory: String(row.directory) }));
+  }
+
+  /** Cleanup evidence survives archiving, when the live attempt entries no longer exist. */
+  cleanupEntries(deletion: PendingDeletion): { kind: string; data: Record<string, unknown> }[] {
+    this.checkContext(deletion);
+    const row = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", deletion.contextId, deletion.taskId, deletion.attempt);
+    const archive = row ? JSON.parse(String(row.summary)) : {};
+    return archive.cleanup?.[deletion.directory] ?? [];
+  }
+
+  async appendCleanup(deletion: PendingDeletion, kind: "deletion_started" | "owner_read_failed", data: Record<string, unknown>): Promise<void> {
+    this.checkContext(deletion);
+    await this.database.transaction(() => {
+      const row = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", deletion.contextId, deletion.taskId, deletion.attempt);
+      if (!row) throw new Error("The cleanup archive is missing");
+      const archive = JSON.parse(String(row.summary));
+      archive.cleanup ??= {};
+      const entries = archive.cleanup[deletion.directory] ??= [];
+      entries.push({ sequence: entries.length, kind, recordedAt: new Date().toISOString(), data });
+      this.database.run("UPDATE archived_attempts SET summary = ? WHERE context = ? AND task = ? AND attempt = ?", JSON.stringify(archive), deletion.contextId, deletion.taskId, deletion.attempt);
+    });
   }
 
   /** Called only after the caller has removed the directory or found it absent. */

@@ -28,6 +28,9 @@ const entrySchemas = {
       requiredEvidence: z.array(nonempty), requiredDeliverables: z.array(nonempty),
     }).optional(),
   }),
+  acquisition_started: z.strictObject({ outputBranch: nonempty }),
+  integration_started: z.strictObject({ targetBranch: nonempty, from: commit, commit }),
+  owner_read_reconciled: z.strictObject({ failureSequence: z.number().int().nonnegative(), targetBranch: nonempty, commit }),
   leased: z.strictObject({
     leaseId: nonempty, workspace: nonempty, baseRef: nonempty, outputBranch: nonempty, startingCommit: commit,
     /** The workspace pool the lease was acquired in. Absent in entries written before it was recorded. */
@@ -51,7 +54,7 @@ const entrySchemas = {
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
   owner_read_failed: z.strictObject({
     owner: nonempty, classification: z.enum(["owner_read", "approval_required", "effect_uncertain", "rejected"]),
-    operation: z.enum(["finish", "discard"]), step: nonempty, failedAt: z.iso.datetime(),
+    operation: z.enum(["dispatch", "resolve", "prune", "finish", "discard"]), step: nonempty, failedAt: z.iso.datetime(),
     diagnostics: z.strictObject({
       message: z.string(), command: z.strictObject({
         command: z.strictObject({ executable: nonempty, args: z.array(z.string()) }).optional(),
@@ -72,7 +75,7 @@ const entrySchemas = {
    * An operator confirmed the attempt's worker had stopped although no exit was observed, or that its lease, which
    * is in a workspace pool the provider no longer lists, has been returned.
    */
-  operator_resolved: z.strictObject({ action: z.enum(["worker_stopped", "lease_returned"]), note: nonempty.optional() }),
+  operator_resolved: z.strictObject({ action: z.enum(["worker_stopped", "lease_returned", "owner_read_reconciled"]), note: nonempty.optional() }),
   /** `finish --accept-output`: the operator accepted committed output instead of a worker result. */
   output_accepted: z.strictObject({ commit, acceptedBy: z.literal("operator").optional() }),
   /** `finish` under the local-merge policy fast-forwarded the target branch to the output branch. */

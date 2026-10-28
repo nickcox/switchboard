@@ -3,7 +3,7 @@ import { CommandError, runCommand } from "../infra/command.ts";
 type Git = {
   git: string; environment: Record<string, string>; repository: string;
   read?: <T>(step: string, load: () => Promise<T>) => Promise<T>;
-  beforeEffect?: () => void;
+  beforeEffect?: () => void | Promise<void>;
 };
 const read = <T>(options: Git, step: string, load: () => Promise<T>): Promise<T> => options.read ? options.read(step, load) : load();
 
@@ -58,7 +58,7 @@ export async function isAncestor(options: Git, ancestor: string, descendant: str
  */
 export async function fastForward(options: Git, branch: string, expected: string, commit: string): Promise<void> {
   const checkedOut = await checkoutOf(options, branch);
-  options.beforeEffect?.();
+  await options.beforeEffect?.();
   const result = checkedOut
     ? await git(options, ["merge", "--ff-only", "--quiet", commit], checkedOut)
     : await git(options, ["update-ref", `refs/heads/${branch}`, commit, expected]);

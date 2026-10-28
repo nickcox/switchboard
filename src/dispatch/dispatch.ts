@@ -14,6 +14,7 @@ import { resolvedBy, summarise } from "./attempt.ts";
 import { observeAttempts } from "./observe.ts";
 import { assessAttempts, type AttemptAssessment } from "./assess.ts";
 import { checkCanDispatch, checkCanRedispatch } from "./safety.ts";
+import { OwnerReads, readRefusal } from "./owner-reads.ts";
 export type { ContractSpec, DeliveryConfiguration, Dependencies } from "./dependencies.ts";
 
 /** Owner state read before dispatch. Every field comes from its owner, not from memory. */
@@ -45,12 +46,14 @@ type Failure = { failed: DispatchResult };
 const isFailure = (value: unknown): value is Failure => typeof value === "object" && value !== null && "failed" in value;
 
 /** Phase 1 PRD dispatch step 1: read every owner. Unreadable owner state refuses dispatch. */
-export async function inspect(deps: Dependencies): Promise<Inspection | Failure> {
+export async function inspect(deps: Dependencies, reads = new OwnerReads(deps, "dispatch")): Promise<Inspection | Failure> {
   const read = async <T>(what: string, load: () => Promise<T>): Promise<T | Failure> => {
     try { return await load(); }
-    catch (error) { return { failed: refusal("preflight", "fix_configuration", `${what} could not be read: ${message(error)}`) }; }
+    catch (error) { return { failed: readRefusal(await reads.failure(what, "preflight", error))! }; }
   };
   const observation = await observeAttempts(deps);
+  try { await reads.context(observation, "preflight"); }
+  catch (error) { return { failed: readRefusal(error)! }; }
   const { records: attempts, runtime, leases, pool } = observation;
   if (!attempts.known) return { failed: refusal("preflight", "fix_configuration", attempts.reason) };
   if (!runtime.known) return { failed: refusal("preflight", "fix_configuration", runtime.reason) };
@@ -77,12 +80,17 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
 export async function dispatchOnce(
   deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean } = {},
 ): Promise<DispatchResult> {
+  const reads = new OwnerReads(deps, "dispatch");
+  return dispatchAttempt(deps, options, reads).catch(error => readRefusal(error) ?? refusal("preflight", "inspect_attempt", message(error)));
+}
+
+async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; requestId?: string; signal?: AbortSignal; dryRun?: boolean }, reads: OwnerReads): Promise<DispatchResult> {
   try {
-    const roots = await deps.workspaces.recyclableRoots();
+    const roots = await reads.read("Treehouse workspace roots", "check storage", () => deps.workspaces.recyclableRoots());
     await deps.runtime.checkStorage(roots);
     await deps.attempts.checkStorage(roots);
   } catch (error) {
-    return refusal("preflight", "fix_configuration", `Runtime storage is not retained: ${message(error)}`);
+    return readRefusal(error) ?? refusal("preflight", "fix_configuration", `Runtime storage is not retained: ${message(error)}`);
   }
   if (options.requestId !== undefined) {
     try {
@@ -92,12 +100,11 @@ export async function dispatchOnce(
       if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
         ok: false, reason: "request_input_mismatch", stage: "preflight", lease: "none", observed: {}, detail: error.message, nextAction: "inspect_attempt",
       });
-      return refusal("preflight", "fix_configuration", `Request records could not be read: ${message(error)}`,
-        error instanceof AttemptStoreError ? { reason: error.reason } : {});
+      return readRefusal(await reads.failure("Attempt records", "read request record", error))!;
     }
   }
-  const state = await inspect(deps);
-  if (isFailure(state)) return state.failed;
+  const state = await inspect(deps, reads);
+  if (isFailure(state)) return { ...state.failed, lease: "none" };
   const observed: Record<string, unknown> = { ready: state.ready, inFlight: state.inFlight, leases: state.leases.length };
   for (const assessment of state.assessments) {
     const check = checkCanDispatch(assessment.facts);
@@ -129,7 +136,7 @@ export async function dispatchOnce(
   // Resolve the delivery contract before any change; a task whose contract cannot be resolved is refused.
   let selected: Task | undefined;
   try { selected = await deps.tasks.read(taskId); }
-  catch (error) { return refusal("select", "fix_configuration", `The task store could not be read: ${message(error)}`, observed); }
+  catch (error) { return { ...readRefusal(await reads.failure("Task store", "read selected task", error), "select")!, lease: "none" }; }
   if (!selected) return refusal("select", "choose_another_task", `Task ${taskId} no longer exists`, observed);
   const contractName = selected.kind ?? "default";
   const contract = selected.kind === null ? deps.delivery.default : deps.delivery.byTaskKind[selected.kind];
@@ -179,6 +186,7 @@ export async function dispatchOnce(
     if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", "inspect_attempt", error.message, { ...observed, reason: error.reason });
     return refusal("select", "fix_configuration", `The attempt store could not be written: ${message(error)}`, observed);
   }
+  reads.record = ref;
   const summary: AttemptSummary = { contextId: deps.contextId, taskId, attempt: ref.attempt, ...(options.requestId ? { requestId: options.requestId } : {}) };
   deps.progress?.(`Task ${taskId}, attempt ${ref.attempt}`);
   // Stopped after a change: record why in the attempt log and preserve whatever exists.
@@ -195,21 +203,25 @@ export async function dispatchOnce(
   let stage: Stage = "acquire";
   try {
     // The operator may have resolved this attempt while it was waiting; never acquire for a resolved attempt.
-    if (resolvedBy(await deps.attempts.read(ref), "lease_returned")) {
+    if (resolvedBy(await reads.read("Attempt records", "check resolution before acquisition", () => deps.attempts.read(ref)), "lease_returned")) {
       return halt("acquire", "inspect_attempt", "The operator resolved this attempt before its lease was acquired");
     }
 
     stage = "acquire";
     // Step 3: acquire a lease for the exact task ID on a unique output branch.
-    const specification = attemptSpecificationSchema.parse(deps.attempts.read(ref).specification);
+    const specification = attemptSpecificationSchema.parse((await reads.read("Attempt specification", "read acquisition inputs", () => deps.attempts.read(ref))).specification);
     const outputBranch = specification.outputBranch;
     let allocation: Allocation;
     try {
+      await deps.attempts.append(ref, "acquisition_started", { outputBranch });
+      reads.effectAttempted = true;
       allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.baseRef, branch: outputBranch });
     } catch (error) {
+      if (error instanceof WorkspaceError && error.readFailure) throw await reads.failure(error.readFailure.owner, "read acquisition", error.readFailure.error);
+      if (error instanceof WorkspaceError && error.reason === "unreadable") throw await reads.failure("Treehouse", "read acquisition", error);
       if (error instanceof WorkspaceError && error.reason === "rejected") return halt("acquire", "fix_configuration", `The workspace provider refused the lease: ${message(error)}`);
       // Inspect by holder and branch instead of acquiring again, and report whatever lease exists.
-      const found = await deps.workspaces.leases().then(all => all.filter(l => l.holder === taskId && l.branch === outputBranch), () => undefined);
+      const found = (await reads.read("Treehouse leases", "inspect acquisition outcome", () => deps.workspaces.leases())).filter(l => l.holder === taskId && l.branch === outputBranch);
       const lease = found === undefined ? "unknown" : found.length > 0 ? "preserved" : "none";
       if (found?.[0]) Object.assign(summary, { leaseId: found[0].leaseId, workspace: found[0].path, outputBranch });
       const stopped = await halt("acquire", "inspect_attempt", `The lease outcome is unknown or unexpected: ${message(error)}`, "outcome_unknown");
@@ -235,7 +247,7 @@ export async function dispatchOnce(
 
     stage = "launch";
     // Steps 6–7: launch exactly one worker and observe it until its direct child exits.
-    const stored = deps.attempts.read(ref);
+    const stored = await reads.read("Attempt records", "read launch inputs", () => deps.attempts.read(ref));
     const input = workerInput(attemptSpecificationSchema.parse(stored.specification), stored.allocation!, randomUUID());
     const delivery = input.delivery;
     const sessionId = input.identity.sessionId;
@@ -259,7 +271,7 @@ export async function dispatchOnce(
     catch (error) {
       // The runtime reserves its records before starting a worker, so a worker can exist only if they do. Without an
       // observed or confirmed exit, the error leaves the attempt unresolved, like any launch whose worker may be running.
-      const records = await deps.runtime.discover(deps.contextId).catch(() => undefined);
+      const records = await reads.read("Runtime records", "inspect launch outcome", () => deps.runtime.discover(deps.contextId));
       const runtime = records?.find(r => r.binding.input.identity.leaseId === allocation.leaseId);
       if (records === undefined || runtime?.child.status === "unknown") {
         if (runtime) await deps.attempts.append(ref, "worker_finished", { status: "unresolved", runtimeDirectory: runtime.directory, reason: message(error).slice(0, 500) });
@@ -267,12 +279,12 @@ export async function dispatchOnce(
       }
       await deps.attempts.append(ref, "worker_finished", { status: runtime ? "failed" : "not_started", runtimeDirectory: runtime?.directory ?? "-", reason: message(error).slice(0, 500) });
       // Awaited here, so that a failure while finalising reaches the handler below and is recorded.
-      return await finalise(deps, ref, summary, observed, delivery, undefined, `${runtime ? "Worker failed" : "Worker not started"}: ${message(error)}`);
+      return await finalise(deps, reads, ref, summary, observed, delivery, undefined, `${runtime ? "Worker failed" : "Worker not started"}: ${message(error)}`);
     }
     await requests;
     if (unrecorded.length > 0) observed.unrecordedRequests = unrecorded;
     if (report.result) {
-      const runtime = (await deps.runtime.discover(deps.contextId, { leaseId: allocation.leaseId }))[0];
+      const runtime = (await reads.read("Runtime records", "read validated result", () => deps.runtime.discover(deps.contextId, { leaseId: allocation.leaseId })))[0];
       if (!runtime?.validatedResult) throw new Error("The validated worker result was not recorded");
       report.result = runtime.validatedResult.content;
       if (runtime.resultDiscrepancy) observed.resultDiscrepancy = runtime.resultDiscrepancy;
@@ -289,8 +301,10 @@ export async function dispatchOnce(
       return result({ ok: false, reason: "stopped", stage: "launch", lease: "preserved", observed, attempt: summary, worker: { status: report.status }, detail: "The worker's exit was not observed, so it may still be running", nextAction: "stop_worker" });
     }
     stage = "finalise";
-    return await finalise(deps, ref, summary, observed, delivery, report);
+    return await finalise(deps, reads, ref, summary, observed, delivery, report);
   } catch (error) {
+    const failed = readRefusal(error, stage);
+    if (failed) return { ...failed, attempt: summary, lease: summary.leaseId ? "preserved" : reads.effectAttempted ? "unknown" : "none" };
     const detail = `The attempt stopped at ${stage} because a step failed: ${message(error)}`;
     await deps.attempts.append(ref, "halted", { stage, reason: "error", detail: detail.slice(0, 4000) }).catch(() => {});
     return result({ ok: false, reason: "stopped", stage, lease: summary.leaseId ? "preserved" : "unknown", observed, attempt: summary, detail, nextAction: "inspect_attempt" });
@@ -299,20 +313,25 @@ export async function dispatchOnce(
 
 /** Step 8: decide the task outcome, check retention, record it and read it back. The lease is always preserved. */
 async function finalise(
-  deps: Dependencies, ref: AttemptRef, summary: AttemptSummary, observed: Record<string, unknown>,
+  deps: Dependencies, reads: OwnerReads, ref: AttemptRef, summary: AttemptSummary, observed: Record<string, unknown>,
   delivery: DeliveryContract, report: RunReport | undefined, notStarted?: string,
 ): Promise<DispatchResult> {
   const worker = workerView(report, notStarted);
-  const retention = await deps.retention({
-    repository: deps.attempts.read(ref).allocation!.backingRepository!, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
+  const stored = await reads.read("Attempt records", "read retention inputs", () => deps.attempts.read(ref));
+  const roots = await reads.read("Treehouse workspace roots", "check retention", () => deps.workspaces.recyclableRoots());
+  const retention = await reads.read("Git retention", "check retention", () => deps.retention({
+    repository: stored.allocation!.backingRepository!, workspace: summary.workspace!, outputBranch: delivery.outputBranch,
     ...(summary.resultCommit ? { resultCommit: summary.resultCommit } : {}),
     gitReferences: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "git" ? [w] : [])),
     artefacts: (report?.result?.workReferences ?? []).flatMap(w => (w.kind === "artefact" ? [w.path] : [])),
-    recyclableRoots: await deps.workspaces.recyclableRoots(),
+    recyclableRoots: roots,
     ...(report ? { artefactDirectory: report.binding.artefactDirectory } : {}),
     // For a non-code contract the workspace is scratch; reported deliverables are still checked.
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
-  });
+  }));
+  if (!retention.definiteRejection) for (const failure of retention.readFailures ?? []) {
+    throw await reads.failure("Git retention", "check retention", Object.assign(new Error(failure.message), { detail: failure.detail }));
+  }
   await deps.attempts.append(ref, "retention_checked", { retained: retention.retained, findings: retention.findings, notes: retention.notes });
 
   const outcome = decide(report, delivery, retention);
