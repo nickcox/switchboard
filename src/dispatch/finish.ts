@@ -13,6 +13,7 @@ import { recordValidatedResult, resultDiscrepancy, validateResultFile } from "..
 import type { RetentionRequest, RetentionResult } from "../workspaces/retention.ts";
 import { branchHead, fastForward, isAncestor, moveDetachedBranch, rebaseDetached, workspaceState } from "../workspaces/integration.ts";
 import { planRebase, type RebasedOutput, type RebasePlan } from "./rebase.ts";
+import { runSteps, type OperationStep } from "./steps.ts";
 import { WorkspaceError } from "../workspaces/provider.ts";
 import { OwnerReadError, type ReadFailure } from "./failure.ts";
 import { effectBefore, OwnerReads, readRefusal, unsettledReads } from "./owner-reads.ts";
@@ -227,15 +228,14 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
   if (options.rebase && policy.kind !== "local-merge") return refused("fix_configuration", "--rebase applies only under the local-merge finalisation policy", base);
   const outputBranch = attempt.attempt.outputBranch!;
   const git = { git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? {}, repository: deps.repository, ...gitReads(deps) };
+  let moving: { output: RebasedOutput; head: string } | undefined;
   if (rebased) {
     const head = await branchHead(git, outputBranch);
     const state = await workspaceState(git, attempt.attempt.workspace!);
     if (head === rebased.rebasedFrom || head === rebased.commit && state.branch === undefined && state.head === rebased.commit) {
       requireOperationAuthority(deps, ["rebase"], options);
-      const step = `move ${outputBranch} from ${rebased.rebasedFrom} to the rebased commit ${rebased.commit}, completing an earlier rebase`;
-      if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: {}, ...base,
-        detail: `Would ${step}. Run finish --dry-run again afterwards to see the remaining steps`, nextAction: "finish_attempt" });
-      await moveDetachedBranch(git, attempt.attempt.workspace!, outputBranch, rebased.rebasedFrom, rebased.commit);
+      await moveDetachedBranch(git, attempt.attempt.workspace!, outputBranch, rebased.rebasedFrom, rebased.commit, true);
+      moving = { output: rebased, head: head! };
     }
   }
   const leased = record.entries.find(e => e.kind === "leased");
@@ -253,9 +253,11 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
     repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch: attempt.attempt.outputBranch!, targetBranch: outputTarget(deps.attempts.read(record)),
     resultCommit: acceptedCommit, artefacts: [],
   }) : recheck(deps, attempt, options.dryRun);
-  const initialRetention = await check();
+  const initialRetention = moving ? await readRetention(deps, {
+    repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch, resultCommit: moving.head, commitsOnly: true, artefacts: [],
+  }) : await check();
   if (typeof initialRetention === "string") return refused("inspect_attempt", initialRetention, base);
-  let retention = initialRetention;
+  let retention: RetentionResult & { outputCommit?: string; criteriaReport?: CriteriaReport } = initialRetention;
   if (retention.criteriaReport) base.criteriaReport = retention.criteriaReport;
   const integrationPermission = checkCanIntegrate(attempt.facts, { accepting, retained: retention.retained, fastForward: true });
   if (!integrationPermission.allowed) return refused(integrationPermission.nextAction, `${integrationPermission.detail}: ${retention.findings.join("; ")}`, { ...base, retention, observed: { refusal: integrationPermission } });
@@ -277,8 +279,8 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
     if (!await isAncestor(git, to, from)) {
       const permission = checkCanIntegrate(attempt.facts, { accepting, retained: true, fastForward: await isAncestor(git, from, to) });
       if (!permission.allowed && permission.reason === "not_fast_forward" && options.rebase) {
-        const upstream = rebased?.commit === to ? rebased.onto : leased?.data.startingCommit as string | undefined;
-        const planned = await planRebase(git, attempt.facts, attempt.attempt.workspace!, outputBranch, to, upstream);
+        const upstream = rebased && rebased.commit === to ? rebased.onto : leased?.data.startingCommit as string | undefined;
+        const planned = await planRebase(git, attempt.facts, attempt.attempt.workspace!, outputBranch, to, upstream, moving?.output);
         if (!planned.permission.allowed) return refused(planned.permission.nextAction, planned.permission.detail, { ...base, observed: { refusal: planned.permission } });
         rebase = planned;
       } else if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
@@ -290,37 +292,26 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
   if (!task) return refused("inspect_attempt", "The task cannot be read", base);
   const recordTask = task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done");
   const retainedDetail = `Lease retained. Once no worker process remains, return it with switchboard finish --lease ${options.leaseId} --no-processes`;
-  const steps = [
-    ...(rebase && integration ? [`rebase ${outputBranch} (${rebase.count} commit${rebase.count === 1 ? "" : "s"} after ${rebase.upstream}) onto ${integration.target} at ${integration.from}`] : []),
-    ...(deps.checks?.length ? ["run configured checks (reusing passing results for this commit)"] : []),
-    ...(deps.caller.kind === "supervisor" ? ["require passing checks and review for the exact output commit"] : []),
-    ...(rebase || acceptedCommit && accepted?.scope.commit !== acceptedCommit ? [`accept ${rebase ? "the rebased commit" : `output commit ${acceptedCommit}`} as ${callerName(deps.caller)}`] : []),
-    ...(integration ? [`fast-forward ${integration.target} to ${rebase ? "the rebased commit" : integration.to}`] : []),
-    ...(unrecorded ? [`record that ${unrecorded.target} contains the work`] : []),
-    ...(recordTask ? ["record the task as done"] : []),
-    options.noProcesses ? `return lease ${options.leaseId}` : `retain lease ${options.leaseId}`,
-  ];
-  if (options.dryRun && deps.checks?.length) {
-    if (!outputCommit) return refused("inspect_attempt", "The exact output commit for checks cannot be read", base);
-    const refusal = await checkWorkspace(deps, deps.reads, attempt.attempt.workspace!, outputCommit);
-    if (refusal) return refused("inspect_attempt", refusal, base);
-  }
-  if (deps.caller.kind === "supervisor" && options.dryRun && !rebase && !base.acceptanceEvidence.permission.allowed) {
-    const permission = base.acceptanceEvidence.permission;
-    return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
-  }
-  if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: `Would ${steps.join(", then ")}${options.noProcesses ? "" : `. ${retainedDetail}`}`, nextAction: options.noProcesses ? "none" : "finish_attempt" });
-
-  // From here each step changes an owner; a failure leaves what is done recorded and the rest for a later run.
+  const steps: OperationStep[] = [];
   const stopped = (error: unknown, step: string) => readRefusal(error) ?? result({
     ok: false, reason: "stopped", stage: "finish", lease: leaseAfter(error), observed: {}, ...base, retention,
     detail: `Stopped while trying to ${step}: ${error instanceof Error ? error.message : String(error)}. Run finish again to complete it`, nextAction: "inspect_attempt",
   });
-  const fenced = await fenceLaunch(deps, record, options.leaseId);
-  if (fenced) return refused("inspect_attempt", fenced, base);
+  if (moving) {
+    const move = moving.output;
+    steps.push({ description: `move ${outputBranch} from ${move.rebasedFrom} to the rebased commit ${move.commit}, completing an earlier rebase`, run: async () => {
+      requireOperationAuthority(deps, ["rebase"], options);
+      await deps.reads.checkEffects();
+      await moveDetachedBranch(git, attempt.attempt.workspace!, outputBranch, move.rebasedFrom, move.commit);
+      const retained = await check();
+      if (typeof retained === "string" || !retained.retained) return refused("inspect_attempt", typeof retained === "string" ? retained : retained.findings.join("; "), base);
+      retention = retained;
+    } });
+  }
   if (rebase && integration) {
-    const change = { branch: outputBranch, upstream: rebase.upstream, onto: integration.from, original: integration.to };
-    try {
+    const target = integration;
+    const change = { branch: outputBranch, upstream: rebase.upstream, onto: target.from, original: target.to };
+    steps.push({ description: `rebase ${outputBranch} (${rebase.count} commit${rebase.count === 1 ? "" : "s"} after ${rebase.upstream}) onto ${target.target} at ${target.from}`, run: async () => {
       const current = await locate(deps, options.leaseId);
       if (!("record" in current)) return current;
       const planned = await planRebase(git, current.attempt.facts, attempt.attempt.workspace!, outputBranch, change.original, change.upstream);
@@ -333,20 +324,20 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
       } }, attempt.attempt.workspace!, change);
       if ("stopped" in outcome) {
         await deps.attempts.append(record, "rebase_aborted", { original: change.original, onto: change.onto });
-        return refused("inspect_attempt", `The rebase of ${outputBranch} onto ${integration.target} stopped, so the branch is unchanged. Switchboard does not resolve conflicts: ${outcome.stopped}`, base);
+        return refused("inspect_attempt", `The rebase of ${outputBranch} onto ${target.target} stopped, so the branch is unchanged. Switchboard does not resolve conflicts: ${outcome.stopped}`, base);
       }
       rebased = { commit: outcome.rebased, rebasedFrom: change.original, onto: change.onto };
       await deps.attempts.append(record, "output_rebased", rebased);
       requireOperationAuthority(deps, ["rebase"], options);
       await moveDetachedBranch(git, attempt.attempt.workspace!, outputBranch, change.original, rebased.commit);
-      acceptedCommit = outputCommit = integration.to = rebased.commit;
+      acceptedCommit = outputCommit = target.to = rebased.commit;
       const retained = await check();
       if (typeof retained === "string" || !retained.retained) return refused("inspect_attempt", typeof retained === "string" ? retained : retained.findings.join("; "), base);
       retention = retained;
       base.acceptanceEvidence = evidence(await deps.reads.read("Attempt records", "read rebased evidence", () => deps.attempts.read(record)), outputCommit);
-    } catch (error) { return stopped(error, `rebase ${outputBranch} onto ${integration.target}`); }
+    } });
   }
-  if (deps.checks?.length) {
+  if (deps.checks?.length) steps.push({ description: "run configured checks (reusing passing results for this commit)", run: async () => {
     const runtime = (await deps.reads.read("Runtime records", "check worker exit before checks", () => deps.runtime.discover(deps.contextId, { leaseId: options.leaseId })))
       .find(r => r.binding.input.identity.leaseId === options.leaseId);
     const stopped = runtime?.child.status === "exited" || runtime?.child.status === "operator_confirmed_stopped" ||
@@ -358,77 +349,88 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
     base.checks = checked.checks;
     base.acceptanceEvidence = evidence(await deps.attempts.read(record), outputCommit);
     if (checked.refusal) return refused("inspect_attempt", checked.refusal, base);
-  }
-  if (deps.caller.kind === "supervisor") {
+  } });
+  if (deps.caller.kind === "supervisor") steps.push({ description: "require passing checks and review for the exact output commit", run: async () => {
     base.acceptanceEvidence = evidence(await deps.attempts.read(record), outputCommit);
     const permission = base.acceptanceEvidence.permission;
     if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
     requireOperationAuthority(deps, ["acceptOutput", "completeTasks", ...(policy.kind === "local-merge" ? ["integrate" as const] : [])], options);
-  }
-  if (acceptedCommit && accepted?.scope.commit !== acceptedCommit) {
-    try {
+  } });
+  if (rebase || acceptedCommit && accepted?.scope.commit !== acceptedCommit) steps.push({
+    description: `accept ${rebase ? "the rebased commit" : `output commit ${acceptedCommit}`} as ${callerName(deps.caller)}`, run: async () => {
       const current = await locate(deps, options.leaseId);
       if (!("record" in current)) return current;
       const permission = checkCanAcceptOutput(current.attempt.facts, true);
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
       deps.reads.effectAttempted = true;
-      const scope = rebased?.commit === acceptedCommit ? rebased : { commit: acceptedCommit };
+      const scope = rebased && rebased.commit === acceptedCommit ? rebased : { commit: acceptedCommit! };
       await deps.attempts.appendConfirmed(record, "output_accepted", scope, { fact: "output_accepted", scope }, current.record);
-    }
-    catch (error) { return stopped(error, "record output acceptance"); }
-  }
+    },
+  });
   if (integration) {
-    try {
+    const target = integration;
+    steps.push({ description: `fast-forward ${target.target} to ${rebase ? "the rebased commit" : target.to}`, run: async () => {
       const retained = await check();
       const current = await locate(deps, options.leaseId);
       if (!("record" in current)) return current;
       const currentPolicy = await readPolicy(deps);
       const permission = checkCanIntegrate(current.attempt.facts, { accepting, retained: typeof retained !== "string" && retained.retained,
-        policyRefusal: currentPolicy.refusal ?? (currentPolicy.kind !== "local-merge" || currentPolicy.targetBranch !== integration.target ? "The finalisation policy changed" : undefined), fastForward: true });
+        policyRefusal: currentPolicy.refusal ?? (currentPolicy.kind !== "local-merge" || currentPolicy.targetBranch !== target.target ? "The finalisation policy changed" : undefined), fastForward: true });
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
       await fastForward({ git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository, ...gitReads(deps),
         beforeEffect: async () => {
           requireOperationAuthority(deps, ["integrate", "acceptOutput"], options);
           if (deps.caller.kind === "supervisor") {
-            const permission = evidence(await deps.attempts.read(record), integration.to).permission;
+            const permission = evidence(await deps.attempts.read(record), target.to).permission;
             if (!permission.allowed) throw new Error(permission.detail);
           }
           await deps.reads.checkEffects();
           deps.reads.effectAttempted = true;
-          await deps.attempts.append(record, "integration_started", { targetBranch: integration.target, from: integration.from, commit: integration.to });
-        } }, integration.target, integration.from, integration.to);
-      await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: integration.target, commit: integration.to });
-    } catch (error) { return stopped(error, `fast-forward ${integration.target}`); }
+          await deps.attempts.append(record, "integration_started", { targetBranch: target.target, from: target.from, commit: target.to });
+        } }, target.target, target.from, target.to);
+      await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: target.target, commit: target.to });
+    } });
   }
   if (unrecorded) {
-    try { await deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: unrecorded.target, commit: unrecorded.commit }); }
-    catch (error) { return stopped(error, `record that ${unrecorded.target} contains the work`); }
+    const target = unrecorded;
+    steps.push({ description: `record that ${target.target} contains the work`, run: () => deps.attempts.append(record, "integrated", { policy: "local-merge", targetBranch: target.target, commit: target.commit }) });
   }
-  if (recordTask) {
-    try {
-      const current = await locate(deps, options.leaseId);
-      if (!("record" in current)) return current;
-      const permission = checkCanFinish(current.attempt.facts, accepting);
-      if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
-      deps.reads.effectAttempted = true;
-      await deps.attempts.finishAttempt(record, task, current.record, retention.retained);
+  if (recordTask) steps.push({ description: "record the task as done", run: async () => {
+    const current = await locate(deps, options.leaseId);
+    if (!("record" in current)) return current;
+    const permission = checkCanFinish(current.attempt.facts, accepting);
+    if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
+    deps.reads.effectAttempted = true;
+    await deps.attempts.finishAttempt(record, task, current.record, retention.retained);
+  } });
+  steps.push({ description: `${options.noProcesses ? "return" : "retain"} lease ${options.leaseId}`, run: async () => {
+    if (!options.noProcesses) return result({ ok: true, reason: "finished", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: retainedDetail, nextAction: "finish_attempt" });
+    const finalRetention = await check();
+    if (typeof finalRetention === "string" || !finalRetention.retained) {
+      const why = typeof finalRetention === "string" ? finalRetention : finalRetention.findings.join("; ");
+      throw new Error(`The work is no longer retained: ${why}`);
     }
-    catch (error) { return stopped(error, "record the task as done"); }
+    await returnLease(deps, record, attempt, "finish", async () => { const retained = await check(); return typeof retained !== "string" && retained.retained; });
+    const outputBranchCleanup = await cleanupOutputBranch(deps, record);
+    return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: { policy, outputBranchCleanup }, ...base, retention, detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
+  } });
+  if (options.dryRun && deps.checks?.length) {
+    if (!outputCommit) return refused("inspect_attempt", "The exact output commit for checks cannot be read", base);
+    const refusal = await checkWorkspace(deps, deps.reads, attempt.attempt.workspace!, outputCommit);
+    if (refusal) return refused("inspect_attempt", refusal, base);
   }
-  if (!options.noProcesses) return result({ ok: true, reason: "finished", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: retainedDetail, nextAction: "finish_attempt" });
-  // The PRD's condition 2: retention is checked again immediately before the lease is returned.
-  const finalRetention = await check().catch((error: unknown) => {
-    if (error instanceof OwnerReadError) throw error;
-    return `The retention check failed: ${error instanceof Error ? error.message : String(error)}`;
-  });
-  if (typeof finalRetention === "string" || !finalRetention.retained) {
-    const why = typeof finalRetention === "string" ? finalRetention : finalRetention.findings.join("; ");
-    return stopped(new Error(`The work is no longer retained: ${why}`), `return lease ${options.leaseId}`);
+  if (deps.caller.kind === "supervisor" && options.dryRun && !rebase && !base.acceptanceEvidence.permission.allowed) {
+    const permission = base.acceptanceEvidence.permission;
+    return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
   }
-  try { await returnLease(deps, record, attempt, "finish", async () => { const retained = await check(); return typeof retained !== "string" && retained.retained; }); }
-  catch (error) { return stopped(error, `return lease ${options.leaseId}`); }
-  const outputBranchCleanup = await cleanupOutputBranch(deps, record);
-  return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: { policy, outputBranchCleanup }, ...base, retention, detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
+  if (!options.dryRun) {
+    const fenced = await fenceLaunch(deps, record, options.leaseId);
+    if (fenced) return refused("inspect_attempt", fenced, base);
+  }
+  const run = await runSteps(steps, { ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }), stopped });
+  if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: { policy, steps: run.descriptions }, ...base, retention,
+    detail: `Would ${run.descriptions.join(", then ")}${options.noProcesses ? "" : `. ${retainedDetail}`}`, nextAction: options.noProcesses ? "none" : "finish_attempt" });
+  return { ...run.result!, observed: { ...run.result!.observed, steps: run.descriptions } };
 }
 
 async function discardAttempt(deps: OperationDependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {

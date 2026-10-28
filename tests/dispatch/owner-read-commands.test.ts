@@ -87,7 +87,7 @@ test("finish: a failed Git read-back after fast-forward requires reconciliation 
   const count = join(f.dir, "target-reads");
   const effects = join(f.dir, "integration-effects");
   const git = join(f.dir, "git-read-back-failure");
-  writeFileSync(git, `#!/bin/sh\nif [ "$1" = rev-parse ] && [ "$4" = 'refs/heads/target^{commit}' ]; then if [ -f '${count}' ]; then echo 'target read-back output'; echo 'target read-back error' >&2; exit 23; fi; touch '${count}'; fi\nif [ "$1" = update-ref ] || [ "$1" = merge ]; then echo effect >> '${effects}'; fi\nexec '${onPath("git")}' "$@"\n`, { mode: 0o755 });
+  writeFileSync(git, `#!/bin/sh\nif [ "$1" = rev-parse ] && [ "$4" = 'refs/heads/target^{commit}' ] && [ -f '${count}' ]; then echo 'target read-back output'; echo 'target read-back error' >&2; exit 23; fi\nif [ "$1" = update-ref ] || [ "$1" = merge ]; then echo effect >> '${effects}'; touch '${count}'; fi\nexec '${onPath("git")}' "$@"\n`, { mode: 0o755 });
   const deps = { ...f.deps, policy: { git, environment: f.environment, repository: f.deps.repository, baseRef: "main",
     globalFile: join(f.dir, "no-policy"), context: { kind: "local-merge" as const, targetBranch: "target" } } };
   const first = await finish(deps, { leaseId, noProcesses: true });

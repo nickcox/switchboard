@@ -5,9 +5,10 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { callerName, type Caller } from "../../src/caller.ts";
-import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
+import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
 import { finish } from "../../src/dispatch/finish.ts";
 import { createReview } from "../../src/dispatch/review.ts";
+import { resolveReadFailure } from "../../src/dispatch/resolve.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import { ObjectiveStore, defaultPermissions } from "../../src/objectives/store.ts";
@@ -88,6 +89,7 @@ test("dry run plans the rebase, acceptance, fast-forward and outcome a run then 
   r.deps.retention = async request => { if (request.resultCommit) requests.push(request.resultCommit); return retention(request); };
   const outcome = await finish(r.deps, options(r));
   assert.equal(outcome.reason, "finished", JSON.stringify(outcome));
+  assert.deepEqual(outcome.observed.steps, plan.observed.steps);
   const rebased = r.f.run(["rev-parse", r.branch]);
   assert.notEqual(rebased, r.original);
   assert.equal(r.f.run(["rev-parse", `${rebased}^`]), target);
@@ -108,6 +110,24 @@ test("dry run plans the rebase, acceptance, fast-forward and outcome a run then 
   assert.equal(kinds(r).filter(kind => kind === "output_accepted").length, 1);
 });
 
+test("rebase can finish and return the lease in one run using the rebased commit throughout", async t => {
+  const r = await output(t);
+  const target = moveMain(r);
+  const plan = await finish(r.deps, { ...options(r), noProcesses: true, dryRun: true });
+  assert.equal(plan.reason, "planned", JSON.stringify(plan));
+  const outcome = await finish(r.deps, { ...options(r), noProcesses: true });
+  assert.equal(outcome.reason, "finished", JSON.stringify(outcome));
+  assert.deepEqual(outcome.observed.steps, plan.observed.steps);
+  assert.equal(outcome.lease, "none");
+  const commit = r.f.run(["rev-parse", "main"]);
+  assert.notEqual(commit, r.original);
+  assert.equal(r.f.run(["rev-parse", `${commit}^`]), target);
+  assert.equal(outcome.acceptanceEvidence!.commit, commit);
+  assert.equal(record(r).entries.find(e => e.kind === "integrated")!.data.commit, commit);
+  assert.equal(record(r).entries.at(-1)!.data.status, "deleted");
+  assert.equal((await r.deps.workspaces.leases()).length, 0);
+});
+
 test("a conflicting rebase is aborted without moving either branch or leaving workspace changes", async t => {
   const r = await output(t);
   const target = moveMain(r, "worker-output.txt", "conflict on main\n");
@@ -122,10 +142,10 @@ test("a conflicting rebase is aborted without moving either branch or leaving wo
 });
 
 for (const [name, change] of [
-  ["untracked file", (r: Output) => writeFileSync(join(r.workspace, "scratch.txt"), "notes\n")],
-  ["uncommitted change", (r: Output) => writeFileSync(join(r.workspace, "worker-output.txt"), "edited\n")],
-  ["staged change", (r: Output) => { writeFileSync(join(r.workspace, "tracked.txt"), "edited\n"); r.f.run(["add", "tracked.txt"], r.workspace); }],
-] as const) test(`rebase refuses a workspace with a ${name} without changing it`, async t => {
+  ["an untracked file", (r: Output) => writeFileSync(join(r.workspace, "scratch.txt"), "notes\n")],
+  ["an uncommitted change", (r: Output) => writeFileSync(join(r.workspace, "worker-output.txt"), "edited\n")],
+  ["a staged change", (r: Output) => { writeFileSync(join(r.workspace, "tracked.txt"), "edited\n"); r.f.run(["add", "tracked.txt"], r.workspace); }],
+] as const) test(`rebase refuses a workspace with ${name} without changing it`, async t => {
   const r = await output(t);
   const target = moveMain(r);
   change(r);
@@ -138,6 +158,17 @@ for (const [name, change] of [
     unchanged(r, target, entries);
     assert.equal(r.f.run(["status", "--porcelain=v1", "--untracked-files=all"], r.workspace), before);
   }
+});
+
+test("a commit that becomes empty stops the rebase rather than silently dropping the attempt's work", async t => {
+  const r = await output(t);
+  const content = readFileSync(join(r.workspace, "worker-output.txt"), "utf8");
+  const target = moveMain(r, "worker-output.txt", content);
+  const outcome = await finish(r.deps, options(r));
+  assert.equal(outcome.reason, "refused", JSON.stringify(outcome));
+  assert.match(outcome.detail!, /rebase.*stopped/);
+  unchanged(r, target);
+  assert.equal(record(r).confirmations!.length, 0);
 });
 
 test("rebase refuses commits beyond the exact result commit", async t => {
@@ -223,6 +254,7 @@ test("a recorded detached candidate is recovered by the next finish without reba
   assert.equal(r.f.run(["rev-parse", r.branch]), r.original);
   const outcome = await finish(r.deps, { leaseId: r.leaseId, noProcesses: false });
   assert.equal(outcome.reason, "finished", JSON.stringify(outcome));
+  assert.deepEqual(outcome.observed.steps, plan.observed.steps);
   assert.equal(r.f.run(["rev-parse", "main"]), candidate);
   assert.equal(r.f.run(["rev-parse", `${candidate}^`]), target);
   assert.equal(kinds(r).filter(kind => kind === "rebase_started").length, 1);
@@ -267,6 +299,30 @@ for (const command of ["symbolic-ref", "status", "rev-list"]) test(`a failed ${c
   assert.equal(kinds(r).filter(kind => kind === "rebase_started").length, 1);
 });
 
+test("a failed owner read after rebase requires reconciliation and never repeats the uncertain effect", { skip: process.platform === "win32" }, async t => {
+  const r = await output(t);
+  const target = moveMain(r);
+  const shim = join(r.f.dir, "git-after-rebase-failure");
+  const marker = join(r.f.dir, "failed");
+  writeFileSync(shim, `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = list ] && [ ! -f '${marker}' ]; then touch '${marker}'; echo 'inventory failed after rebase' >&2; exit 23; fi\nexec '${onPath("git")}' "$@"\n`, { mode: 0o755 });
+  r.deps.policy.git = shim;
+  const first = await finish(r.deps, options(r));
+  assert.equal(first.reason, "reconciliation_required", JSON.stringify(first));
+  const candidate = record(r).entries.find(e => e.kind === "output_rebased")!.data.commit as string;
+  assert.equal(r.f.run(["rev-parse", r.branch]), r.original);
+  assert.equal(r.f.run(["rev-parse", "main"]), target);
+  const failure = record(r).entries.find(e => e.kind === "owner_read_failed")!;
+  assert.equal(failure.data.classification, "effect_uncertain");
+  assert.equal((await finish(r.deps, options(r))).reason, "reconciliation_required");
+  assert.equal(kinds(r).filter(kind => kind === "rebase_started").length, 1);
+  const resolved = await resolveReadFailure(r.deps, { leaseId: r.leaseId, failureSequence: failure.sequence, outcome: "happened", note: "The detached candidate is recorded; the output branch still has its original head" });
+  assert.equal(resolved.reason, "resolved", JSON.stringify(resolved));
+  const outcome = await finish(r.deps, { leaseId: r.leaseId, noProcesses: false });
+  assert.equal(outcome.reason, "finished", JSON.stringify(outcome));
+  assert.equal(r.f.run(["rev-parse", "main"]), candidate);
+  assert.equal(kinds(r).filter(kind => kind === "rebase_started").length, 1);
+});
+
 async function supervised(r: Output) {
   const objectives = new ObjectiveStore(r.f.tasks.database, testCaller);
   await objectives.add({ id: "goal", request: "Do the work", acceptanceCriteria: ["Keep the output"] });
@@ -276,6 +332,20 @@ async function supervised(r: Output) {
   const deps = { ...r.deps, caller, checks, checkEnvironment: r.f.environment,
     attempts: new AttemptStore(r.f.tasks.database, r.f.deps.contextId, caller, checks) };
   return { deps, objectives };
+}
+
+async function reviewOutput(r: Output, deps: Dependencies, verdict: "passed" | "failed", commit: string) {
+  const review = await createReview(deps, { taskId: "rebase-a1" });
+  assert.equal(review.reason, "review_created", JSON.stringify(review));
+  assert.equal((review.observed.reviewTarget as { commit: string }).commit, commit);
+  const worker = new PiWorker(r.f.runtime, { executable: process.execPath, entrypoint: resolve("tests/fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: 5000, stopMs: 600,
+    environment: { ...r.f.environment, FAKE_PI_SCENARIO: verdict === "passed" ? "review-pass" : "review-fail", FAKE_PI_LOG: join(r.f.dir, `review-${verdict}.jsonl`) } });
+  deps.launch = (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {});
+  const reviewed = await dispatchOnce(deps, { taskId: review.task!.id });
+  assert.equal(reviewed.reason, "held", JSON.stringify(reviewed));
+  const findings = record(r).entries.filter(e => e.kind === "review_recorded");
+  assert.equal(findings.at(-1)!.data.commit, commit);
+  assert.equal(findings.at(-1)!.data.verdict, verdict);
 }
 
 test("a supervisor needs the objective's rebase permission, including on dry runs", async t => {
@@ -296,6 +366,10 @@ test("supervisor rebase records a candidate, but needs fresh passing checks and 
   const r = await output(t);
   const target = moveMain(r);
   const { deps } = await supervised(r);
+  const originalCheck = await finish({ ...deps, policy: { ...deps.policy, context: { kind: "manual" } } }, { leaseId: r.leaseId, noProcesses: false });
+  assert.equal(originalCheck.checks![0]!.status, "passed");
+  assert.equal(originalCheck.checks![0]!.commit, r.original);
+  await reviewOutput(r, deps, "passed", r.original);
   deps.checks[0]!.command = [process.execPath, "-e", "process.exit(7)"];
   const plan = await finish(deps, { ...options(r), dryRun: true });
   assert.equal(plan.reason, "planned", JSON.stringify(plan));
@@ -319,17 +393,7 @@ test("supervisor rebase records a candidate, but needs fresh passing checks and 
   assert.match(missing.detail!, /no recorded review/);
   await assert.rejects(deps.attempts.appendConfirmed(record(r), "output_accepted", scope, { fact: "output_accepted", scope }), /review_missing/);
   for (const verdict of ["failed", "passed"] as const) {
-    const review = await createReview(deps, { taskId: "rebase-a1" });
-    assert.equal(review.reason, "review_created", JSON.stringify(review));
-    assert.equal((review.observed.reviewTarget as { commit: string }).commit, candidate);
-    const worker = new PiWorker(r.f.runtime, { executable: process.execPath, entrypoint: resolve("tests/fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: 5000, stopMs: 600,
-      environment: { ...r.f.environment, FAKE_PI_SCENARIO: verdict === "passed" ? "review-pass" : "review-fail", FAKE_PI_LOG: join(r.f.dir, `review-${verdict}.jsonl`) } });
-    deps.launch = (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {});
-    const reviewed = await dispatchOnce(deps, { taskId: review.task!.id });
-    assert.equal(reviewed.reason, "held", JSON.stringify(reviewed));
-    const findings = record(r).entries.filter(e => e.kind === "review_recorded");
-    assert.equal(findings.at(-1)!.data.commit, candidate);
-    assert.equal(findings.at(-1)!.data.verdict, verdict);
+    await reviewOutput(r, deps, verdict, candidate);
     if (verdict === "failed") {
       const denied = await finish(deps, { leaseId: r.leaseId, noProcesses: false });
       assert.equal(denied.reason, "refused", JSON.stringify(denied));

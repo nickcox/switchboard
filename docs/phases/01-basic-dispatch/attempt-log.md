@@ -25,7 +25,10 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `task_recorded` | `outcome` (`done` or `hold`), `reason`, explicit `category`, and `applied` |
 | `halted` | `stage`, `reason`, optional `detail` and recovered lease identity |
 | `operator_resolved` | `action` (`worker_stopped`, `lease_returned` or `owner_read_reconciled`), optional `note` |
-| `output_accepted` | Exact accepted `commit` |
+| `rebase_started` | Exact `original`, `upstream` and target `onto` commits before the detached Git rebase |
+| `rebase_aborted` | `original` and `onto`, after verifying that a stopped rebase left the workspace clean on its original branch |
+| `output_rebased` | Candidate `commit`, original `rebasedFrom` and target `onto`, before moving the output branch |
+| `output_accepted` | Exact accepted `commit`; a rebase also names `rebasedFrom` and `onto`, matching its confirmation |
 | `integration_started` | Intended `targetBranch`, its previous `from` commit and exact output `commit` |
 | `integrated` | `policy: local-merge`, `targetBranch` and `commit` |
 | `discarded` | Optional `note` |
@@ -44,7 +47,11 @@ The named source's retained lease is allowed for this reservation only. Ordinary
 
 ## Output-branch lifecycle
 
-An attempt's exact recorded output commit is retained when reachable from its output branch or target branch. Continuations and reviews use this rule too, so integrated output remains usable after its branch has gone. The target is the recorded integration target, or otherwise the attempt's recorded base branch; a later configuration change does not choose another target for old output. Other Git references still require their named branch, except a review's exact source-output reference, which uses the source attempt's target.
+An attempt's exact recorded output commit is retained when reachable from its output branch or target branch. `finish --rebase` records `rebase_started`, rebases detached in the attempt's workspace, then records `output_rebased` before atomically moving the output branch from its original commit and attaching the workspace. A conflict is aborted and verified before `rebase_aborted` is recorded; no branch is moved. A recorded detached candidate can be attached by a later `finish` without rebasing again. If interrupted before the candidate is recorded, inspect the detached workspace and restore the original branch before trying again; Switchboard never guesses which unrecorded commit to adopt.
+
+The latest rebased candidate or confirmed acceptance is the recorded output used by checks, reviews, continuations and retention. A candidate is not an acceptance: the supervisor needs fresh passing checks and a passing review of that exact commit through `checkAcceptanceEvidence`, and only then records `output_accepted`. A person's command is their approval. The scoped confirmation retains the candidate's original, rebased and target commits. When the target moves again before integration, the next rebase starts after the previous target commit, so it replays only the attempt's own commits.
+
+Continuations and reviews use the same retention rule, so integrated output remains usable after its branch has gone. The target is the recorded integration target, or otherwise the attempt's recorded base branch; a later configuration change does not choose another target for old output. Other Git references still require their named branch, except a review's exact source-output reference, which uses the source attempt's target.
 
 After `finish` or `discard` confirms a lease return and records `lease_returned`, it deletes the output branch only if the attempt was discarded or its recorded output commit is reachable from that target. Manual finalisation keeps unintegrated output. A branch must still point at the exact recorded commit; Git checks that old value atomically during deletion. Symbolic refs, moved branches, missing commit records and failed checks or deletions are kept with a reason. An already absent branch counts as deleted. Cleanup is best effort: failure never prevents or undoes a lease return.
 
@@ -68,7 +75,7 @@ A failed read appends an immutable `owner_read_failed` entry. Its operation name
 
 Before any effect, the command refuses as `owner_read_retryable`, with next action `retry_owner_read`, naming the owner and saying the read can be tried again. Running the same command again reads the owner afresh; the historical entry does not block it. A definite retention finding, such as a missing output branch or uncommitted files, still refuses rather than promising a retry will fix the work.
 
-After an effect or a durable intent (`requested` for acquisition, `integration_started`, or `lease_return_started`), a failed read refuses as `reconciliation_required`, with next action `reconcile_owner`. It cannot start another acquisition or repeat an uncertain effect. Existing process, retention, identity and confirmation checks still apply.
+After an effect or a durable intent (`requested` for acquisition, `rebase_started`, `integration_started`, or `lease_return_started`), a failed read refuses as `reconciliation_required`, with next action `reconcile_owner`. It cannot start another acquisition or repeat an uncertain effect. Existing process, retention, identity and confirmation checks still apply.
 
 A later `finish` can settle an interrupted integration by reading the recorded target branch and proving it contains the exact intended commit. It records `owner_read_reconciled`, referring to the failure's entry sequence, and `integrated` together in one transaction, with integration recorded once. A failed read during this check refuses again and records another uncertain failure. A target that does not contain the commit does not authorise another fast-forward. A dry run does not settle an uncertain integration.
 
@@ -102,7 +109,7 @@ Recording an outcome writes `task_recorded` and closes the attempt in the same t
 
 Every confirmation has one form: the attempt identity, `fact`, `confirmedBy`, `confirmedAt` and `scope`. `confirmedBy` is always the trusted host's caller, never a request argument or display label. Supervisor acceptance requires passing exact-commit evidence; only a person can confirm a lease return or discard. Other [caller permissions and fixed limits](../../objectives.md#callers-and-permissions) apply inside operations too. Facts and scopes are:
 
-- `output_accepted`: the exact commit.
+- `output_accepted`: the exact `commit`, or for rebased output, `commit`, `rebasedFrom` and `onto` together. The original, rebased and target commits must match the acceptance entry.
 - `no_processes`: the lease ID and one return's UUID. A later return needs a new confirmation.
 - `discard`: the lease ID.
 - `worker_stopped`: the lease ID and, when known, session ID.

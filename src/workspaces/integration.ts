@@ -74,8 +74,13 @@ export async function workspaceState(options: Git, workspace: string): Promise<{
     if (result.timedOut || result.truncated || result.exitCode !== 0 && !(missing && result.exitCode === 1)) throw new CommandError(`The workspace ${workspace} cannot be read`, result);
     return result;
   });
-  const head = await command("read rebase workspace HEAD", ["rev-parse", "--verify", "HEAD^{commit}"]);
-  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head.stdout.trim())) throw new Error("The workspace returned an invalid HEAD commit");
+  const head = await read(options, "read rebase workspace HEAD", async () => {
+    const result = await git(options, ["rev-parse", "--verify", "HEAD^{commit}"], workspace);
+    if (result.exitCode !== 0 || result.timedOut || result.truncated || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.stdout.trim())) {
+      throw new CommandError("The rebase workspace HEAD could not be read", result);
+    }
+    return result;
+  });
   const status = await command("read rebase workspace changes", ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   const branch = await command("read rebase workspace branch", ["symbolic-ref", "--quiet", "HEAD"], true);
   return { branch: branch.exitCode === 0 ? branch.stdout.trim().replace(/^refs\/heads\//, "") : undefined, head: head.stdout.trim(), clean: status.stdout === "" };
@@ -113,20 +118,22 @@ export async function rebaseDetached(options: Git, workspace: string, change: { 
 }
 
 /** Atomically move the output branch only from its recorded original, then attach the workspace to it. */
-export async function moveDetachedBranch(options: Git, workspace: string, branch: string, expected: string, commit: string): Promise<void> {
+export async function moveDetachedBranch(options: Git, workspace: string, branch: string, expected: string, commit: string, dryRun = false): Promise<void> {
   const state = await workspaceState(options, workspace);
   const head = await branchHead(options, branch);
   if (state.branch === branch && state.head === commit && head === commit && state.clean) return;
   if (state.branch !== undefined || state.head !== commit || !state.clean) throw new Error(`The workspace is not clean and detached at ${commit}`);
   const checkedOut = await checkoutOf(options, branch);
   if (checkedOut) throw new Error(`${branch} is checked out in ${checkedOut}`);
+  if (head !== expected && head !== commit) throw new Error(`${branch} no longer points to ${expected} or ${commit}`);
+  if (dryRun) return;
   await options.beforeEffect?.();
   if (head !== commit) {
     const update = await git(options, ["update-ref", `refs/heads/${branch}`, commit, expected]);
-    if (update.exitCode !== 0 || update.timedOut) throw new Error(`Could not move ${branch}: ${update.stderr.trim().slice(0, 300)}`);
+    if (update.exitCode !== 0 || update.timedOut || update.truncated) throw new Error(`Could not move ${branch}: ${update.stderr.trim().slice(0, 300)}`);
   }
   const switched = await git(options, ["switch", "--quiet", branch], workspace);
-  if (switched.exitCode !== 0 || switched.timedOut) throw new Error(`Could not check out ${branch}: ${switched.stderr.trim().slice(0, 300)}`);
+  if (switched.exitCode !== 0 || switched.timedOut || switched.truncated) throw new Error(`Could not check out ${branch}: ${switched.stderr.trim().slice(0, 300)}`);
   const after = await workspaceState(options, workspace);
   if (after.branch !== branch || after.head !== commit || !after.clean) throw new Error(`The workspace is not clean on ${branch} at ${commit}`);
 }

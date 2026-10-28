@@ -293,6 +293,7 @@ export class AttemptStore {
         const record = this.read(ref);
         const failure = record.entries.find(e => e.sequence === confirmation.scope.failureSequence && e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
         const intent = [...record.entries].reverse().find(e => e.sequence < confirmation.scope.failureSequence && (e.kind === "lease_return_started" || e.kind === "integration_started" || e.kind === "rebase_started"));
+        if (intent?.kind === "rebase_started") requireAuthority(this.database, this.caller, "rebase", { taskId: ref.taskId });
         if (!failure || typeof payload.note !== "string" || !payload.note.trim() ||
           confirmation.scope.returnId !== (intent?.kind === "lease_return_started" ? intent.data.returnId : undefined)) throw new Error("The confirmation does not name this failure and its effect");
         if (record.entries.some(e => e.kind === "owner_read_reconciled" && e.data.failureSequence === confirmation.scope.failureSequence) ||

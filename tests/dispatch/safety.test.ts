@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { CheckResult } from "../../src/attempts/checks.ts";
 import type { ReviewRecord } from "../../src/attempts/reviews.ts";
 import type { AttemptFacts } from "../../src/dispatch/assess.ts";
-import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanConfirmLeaseReturned, checkCanConfirmStopped, checkCanControl, checkCanDiscard, checkCanDispatch, checkCanFinish, checkCanIntegrate, checkCanPrune, checkCanRedispatch, checkCanReturnLease, type Permission } from "../../src/dispatch/safety.ts";
+import { checkAcceptanceEvidence, checkCanAcceptOutput, checkCanConfirmLeaseReturned, checkCanConfirmStopped, checkCanControl, checkCanDiscard, checkCanDispatch, checkCanFinish, checkCanIntegrate, checkCanPrune, checkCanRedispatch, checkCanReturnLease, checkCanRebase, type Permission } from "../../src/dispatch/safety.ts";
 
 const facts = (overrides: Partial<AttemptFacts> = {}): AttemptFacts => ({
   unknown: [], hasRecord: true, possiblyRunning: false, dispatcherRunning: false, leaseHeld: true, leaseInOtherPool: false,
@@ -15,6 +15,7 @@ const done = { state: "done", held: false, holdReason: null };
 const cutoff = Date.parse("2026-02-01T00:00:00.000Z");
 const integration = { accepting: false, retained: true, fastForward: true };
 const returning = { by: "finish" as const, noProcesses: true, retained: true, confirmedDiscard: false };
+const rebase = { head: "output", original: "output", branch: "branch", workspaceBranch: "branch", workspaceHead: "output", clean: true, upstream: "start", advanced: true, merges: 0 };
 const refusal = (permission: Permission, reason: string) => {
   assert.equal(permission.allowed, false);
   if (permission.allowed) return;
@@ -30,6 +31,7 @@ const checks: Check[] = [
   { name: "finish", run: f => checkCanFinish(f, false), needsRecord: true, needsStopped: true, needsLease: true },
   { name: "accept output", run: f => checkCanAcceptOutput(f, true), needsRecord: true, needsStopped: true, needsLease: true },
   { name: "integrate", run: f => checkCanIntegrate(f, integration), needsRecord: true, needsStopped: true, needsLease: true },
+  { name: "rebase", run: f => checkCanRebase(f, rebase), needsRecord: true, needsStopped: true, needsLease: true },
   { name: "discard", run: f => checkCanDiscard(f, true), needsRecord: true, needsStopped: true, needsLease: true },
   { name: "return lease", run: f => checkCanReturnLease(f, returning), base: { task: done }, needsRecord: true, needsStopped: true, needsLease: true },
   { name: "prune", run: f => checkCanPrune(f, cutoff), base: { leaseHeld: false, task: done }, needsRecord: true, needsStopped: true },
@@ -127,6 +129,17 @@ test("integration requires retained output, a permitted policy and a fast-forwar
   refusal(checkCanIntegrate(facts(), { ...integration, policyRefusal: "protected branch" }), "policy_refused");
   refusal(checkCanIntegrate(facts(), { ...integration, fastForward: false }), "not_fast_forward");
   refusal(checkCanIntegrate(facts({ matchingHold: false }), integration), "no_completed_output");
+});
+
+test("rebasing needs the exact, clean output and only non-merge commits after its recorded upstream", () => {
+  refusal(checkCanRebase(facts(), { ...rebase, head: "later" }), "rebase_other_commits");
+  refusal(checkCanRebase(facts(), { ...rebase, head: undefined }), "rebase_other_commits");
+  refusal(checkCanRebase(facts(), { ...rebase, clean: false }), "rebase_dirty");
+  refusal(checkCanRebase(facts(), { ...rebase, workspaceBranch: undefined }), "rebase_workspace_mismatch");
+  refusal(checkCanRebase(facts(), { ...rebase, workspaceHead: "later" }), "rebase_workspace_mismatch");
+  refusal(checkCanRebase(facts(), { ...rebase, upstream: undefined }), "rebase_other_commits");
+  refusal(checkCanRebase(facts(), { ...rebase, advanced: false }), "rebase_other_commits");
+  refusal(checkCanRebase(facts(), { ...rebase, merges: 1 }), "rebase_merge_commits");
 });
 
 test("discard and lease return require explicit, operation-specific confirmations", () => {

@@ -106,6 +106,7 @@ export async function resolveReadFailure(deps: Dependencies, options: AttemptSel
     if (deps.caller.kind === "supervisor") {
       const selected = "taskId" in options ? deps.attempts.findForTask(options.taskId, options.attempt) : await deps.attempts.findByLease(options.leaseId);
       if (selected && effectBefore(selected, options.failureSequence)?.kind === "lease_return_started") requireOperationAuthority(deps, ["returnLease"], options);
+      if (selected && effectBefore(selected, options.failureSequence)?.kind === "rebase_started") requireOperationAuthority(deps, ["rebase"], options);
     }
     const observation = await observeAttempt(deps, options);
     const refuse = (detail: string) => result({ ok: false, reason: "refused", stage: "resolve", lease: "unknown", observed: {}, detail, nextAction: "inspect_attempt" });
@@ -120,6 +121,7 @@ export async function resolveReadFailure(deps: Dependencies, options: AttemptSel
     const effect = effectBefore(record, failure.sequence);
     const intent = effect?.kind === "lease_return_started" ? effect : undefined;
     if (intent) requireOperationAuthority(deps, ["returnLease"], options);
+    if (effect?.kind === "rebase_started") requireOperationAuthority(deps, ["rebase"], options);
     // A claimed return cannot overrule a lease that Treehouse still lists or cannot observe.
     if (intent && options.outcome === "happened" && (assessment.leaseHeld || assessment.leaseInOtherPool || assessment.facts.unknown.length)) return refuse("Treehouse must confirm the lease is absent before recording that the return happened");
     const current = await observeAttempt(deps, options);

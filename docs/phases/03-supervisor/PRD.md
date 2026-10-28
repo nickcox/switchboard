@@ -345,7 +345,7 @@ Each step is implemented, tested and recorded in the verification record before 
 10. **Questions from workers.** Complete.
 11. **The supervisor.** First the Pi test under [The supervisor](#the-supervisor); then the supervisor operations, briefing, notes, `wait`, detached dispatch and questions to the person; then the Pi extension and skills; then Claude Code as a second host.
 
-`finish --rebase` can be implemented at any point after step 4.
+**`finish --rebase`. Complete.** Under `local-merge`, a moved target refuses ordinary `finish` with a next action naming `--rebase`. Rebasing uses only the attempt's exact output, records a candidate for fresh checks and review, and records scoped acceptance before integration. Tests cover refusal without moving the branch, dry-run/run step agreement, classified owner-read failures, repeated rebases when the target moves again, and the supervisor's permissions and exact-commit evidence. See `tests/dispatch/rebase.test.ts`.
 
 ## Acceptance criteria
 
