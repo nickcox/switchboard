@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { CriteriaReport } from "../runtime/contracts.ts";
 import type { AttemptRecord } from "../attempts/log.ts";
 import { CommandError } from "../infra/command.ts";
 import { onPath } from "../infra/executables.ts";
@@ -119,7 +120,7 @@ const gitReads = (deps: OperationDependencies) => ({
 });
 
 /** Runs the retention check again from the worker's recorded result, as dispatch did when the attempt finished. */
-async function recheck(deps: OperationDependencies, attempt: AttemptAssessment, dryRun = false): Promise<(RetentionResult & { outputCommit?: string }) | string> {
+async function recheck(deps: OperationDependencies, attempt: AttemptAssessment, dryRun = false): Promise<(RetentionResult & { outputCommit?: string; criteriaReport?: CriteriaReport }) | string> {
   const runtime = (await deps.reads.read("Runtime records", "check worker result", () => deps.runtime.discover(deps.contextId, { leaseId: attempt.attempt.leaseId! }))).find(r => r.binding.input.identity.leaseId === attempt.attempt.leaseId);
   if (!runtime) return "The attempt has no runtime records, so its worker's result cannot be checked";
   let validated;
@@ -139,7 +140,8 @@ async function recheck(deps: OperationDependencies, attempt: AttemptAssessment, 
   });
   const output = report.workReferences.find(w => w.kind === "git" && w.branch === delivery.outputBranch);
   return { ...retention, notes: [...retention.notes, ...(discrepancy ? [discrepancy] : [])],
-    ...(output?.kind === "git" ? { outputCommit: output.commit } : {}) };
+    ...(output?.kind === "git" ? { outputCommit: output.commit } : {}),
+    ...(report.criteriaReport ? { criteriaReport: report.criteriaReport } : {}) };
 }
 
 /**
@@ -214,12 +216,13 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
     } catch (error) { return readRefusal(error) ?? refused("inspect_attempt", `The output branch cannot be checked: ${String(error)}`, base); }
   }
-  const check = (): Promise<(RetentionResult & { outputCommit?: string }) | string> => acceptedCommit ? readRetention(deps, {
+  const check = (): Promise<(RetentionResult & { outputCommit?: string; criteriaReport?: CriteriaReport }) | string> => acceptedCommit ? readRetention(deps, {
     repository: deps.repository, workspace: attempt.attempt.workspace!, outputBranch: attempt.attempt.outputBranch!,
     resultCommit: acceptedCommit, artefacts: [],
   }) : recheck(deps, attempt, options.dryRun);
   const retention = await check();
   if (typeof retention === "string") return refused("inspect_attempt", retention, base);
+  if (retention.criteriaReport) base.criteriaReport = retention.criteriaReport;
   const integrationPermission = checkCanIntegrate(attempt.facts, { accepting, retained: retention.retained, fastForward: true });
   if (!integrationPermission.allowed) return refused(integrationPermission.nextAction, `${integrationPermission.detail}: ${retention.findings.join("; ")}`, { ...base, retention, observed: { refusal: integrationPermission } });
 

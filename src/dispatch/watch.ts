@@ -1,7 +1,7 @@
-import { describeCriteriaReport } from "../runtime/criteria-report.ts";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { describeCriteriaReport } from "../runtime/criteria-report.ts";
 import { readActivity, type ActivityEntry } from "../runtime/activity.ts";
 import { dispatcherRunning } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
@@ -62,9 +62,9 @@ export async function watch(
     if (!options.follow || settled || options.signal?.aborted) {
       // Print anything written between the last read and the decision to stop.
       if (options.follow && settled) for (const entry of (await readActivity(record)).slice(printed)) options.print(entry);
-      const latest = await find();
-      for (const text of describeCriteriaReport(latest?.validatedResult?.content.criteriaReport)) {
-        options.print({ v: 1, ts: latest!.validatedResult!.validatedAt, kind: "note", text });
+      const validated = (await find())?.validatedResult;
+      if (validated) for (const text of describeCriteriaReport(validated.content.criteriaReport)) {
+        options.print({ v: 1, ts: validated.validatedAt, kind: "note", text });
       }
       return { found: true, finished };
     }

@@ -41,6 +41,10 @@ test("RPC worker uses exact cwd/session and standard tools, retains result, and 
   const prompt = (await requests(f.log)).find(r => r.type === "prompt");
   assert.ok(String(prompt?.message).includes(f.input.instructions));
   assert.ok(String(prompt?.message).includes(f.input.delivery.outputBranch));
+  assert.ok(String(prompt?.message).includes(f.input.acceptanceCriteria[0]!));
+  assert.match(String(prompt?.message), /Report every acceptanceCriteria entry exactly once in criteriaReport/);
+  assert.match(String(prompt?.message), /1-based position and exact text/);
+  assert.deepEqual(report.result?.criteriaReport?.map(entry => entry.criterion), f.input.acceptanceCriteria);
   // The worker is told that the limits are enforced for it, that there is no token budget, and when it will be stopped.
   assert.match(String(prompt?.message), /there is no separate token budget/);
   assert.match(String(prompt?.message), /Commit working progress to the output branch as you go/);

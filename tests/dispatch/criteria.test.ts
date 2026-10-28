@@ -25,7 +25,7 @@ for (const scenario of ["missing-criteria", "duplicate-criteria", "extra-criteri
   });
 }
 
-test("a complete criteria report is accepted, recorded and shown by dispatch, status, watch and finish", async () => {
+for (const legacy of [false, true]) test(`a complete criteria report is accepted, recorded and shown by dispatch, status, watch and finish (legacy: ${legacy})`, async () => {
   const f = await fixture({ tasks: [task("criteria-a1")], scenario: "commit-result" });
   try {
     await f.tasks.update("criteria-a1", { acceptanceCriteria: ["First", "Second"] });
@@ -43,6 +43,9 @@ test("a complete criteria report is accepted, recorded and shown by dispatch, st
       if (entry.kind === "note") activity.push(entry.text);
     } });
     assert.match(activity.join("\n"), /Criterion 1: met – First/);
+    if (legacy) await f.tasks.database.transaction(() => {
+      f.tasks.database.run("DELETE FROM worker_observations WHERE kind = 'validated_result'");
+    });
     const finished = await finish(f.deps, { leaseId: dispatched.attempt!.leaseId!, noProcesses: false });
     assert.equal(finished.reason, "finished", JSON.stringify(finished));
     assert.deepEqual(finished.criteriaReport, dispatched.criteriaReport);

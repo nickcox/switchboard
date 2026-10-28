@@ -113,6 +113,15 @@ test("conversion moves only safe queued sections, including held tasks, and leav
   } finally { store.close(); }
 });
 
+test("conversion preserves the bytes outside the criteria section, including mixed line endings", async () => {
+  const { store } = await fixture();
+  try {
+    await store.add({ id: "a", title: "A", body: "Intro\r\n\r\n## Acceptance criteria\r\n- First\r\n\r\n## Notes\nKeep these\r\n" });
+    assert.deepEqual(await store.convertCriteria(), [{ id: "a", status: "converted" }]);
+    assert.equal((await store.read("a"))!.body, "Intro\r\n\r\n## Notes\nKeep these\r\n");
+  } finally { store.close(); }
+});
+
 test("holds are separate from state, validate atomically, and accept parentheses", async () => {
   const { store } = await fixture();
   try {

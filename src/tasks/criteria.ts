@@ -4,7 +4,8 @@ export const acceptanceCriteriaSchema = z.array(z.string().min(1).refine(value =
 
 /** Only flat, single-line bullets are safe to move without interpreting Markdown. */
 export function criteriaSection(body: string): { body: string; acceptanceCriteria: string[] } | { reason: string } | undefined {
-  const lines = body.split(/\r?\n/);
+  const rawLines = body.split(/(?<=\n)/);
+  const lines = rawLines.map(line => line.replace(/\r?\n$/, ""));
   const headings: number[] = [];
   let fence: string | undefined;
   for (const [index, line] of lines.entries()) {
@@ -28,5 +29,5 @@ export function criteriaSection(body: string): { body: string; acceptanceCriteri
     acceptanceCriteria.push(bullet[1]!.trimEnd());
   }
   if (!acceptanceCriteria.length) return { reason: "Section has no bullet list" };
-  return { body: [...lines.slice(0, start), ...lines.slice(end)].join("\n"), acceptanceCriteria };
+  return { body: [...rawLines.slice(0, start), ...rawLines.slice(end)].join(""), acceptanceCriteria };
 }
