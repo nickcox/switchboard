@@ -106,9 +106,9 @@ Confirmation records the creator, time, note and the exact currently finished un
 
 ## Callers and permissions
 
-A caller is a host-supplied `Caller` from `src/caller.ts`: `{ kind: "person", id: "operator:<username>" }` or `{ kind: "supervisor", objectiveId: "<id>" }`. The CLI constructs the person with `node:os`'s `userInfo()`. There is no `--caller` option. Stop and steer keep `--as`, but store it as a `label` alongside the caller-derived `sender`, never as authority.
+A caller is a host-supplied `Caller` from `src/caller.ts`: `{ kind: "person", id: "operator:<username>" }` or `{ kind: "supervisor", objectiveId: "<id>" }`. Ordinary CLI commands construct the person with `node:os`'s `userInfo()`. The restricted [supervisor command](supervisor.md) constructs the supervisor for its required `--objective` instead. There is no `--caller` option. Stop and steer keep `--as`, but store it as a `label` alongside the caller-derived `sender`, never as authority.
 
-There is no supervisor host yet. Its eventual tools will call operations in-process, with dependencies created by trusted code, for example:
+Supervisor agent integrations are not implemented yet. Hosts can use the restricted command; in-process tools can also call operations with dependencies created by trusted code, for example:
 
 ```ts
 const caller: Caller = { kind: "supervisor", objectiveId: "release-notes" };

@@ -90,7 +90,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   const caller = { kind: "supervisor", objectiveId: values.objective! } as const;
   const path = databasePath(config);
   await requireRetainedStorage(path, [config.workspaces.poolRoot]);
-  const tasks = await SqliteTaskStore.open({ caller, path, repo: values.repo ?? config.tasks.repo, retryMs: config.databaseRetryMs });
+  const tasks = await SqliteTaskStore.open({ caller, path, repo: values.repo ?? (operation === "task list" ? null : config.tasks.repo), retryMs: config.databaseRetryMs });
   try {
     const objectives = new ObjectiveStore(tasks.database, caller);
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
