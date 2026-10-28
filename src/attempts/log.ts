@@ -79,8 +79,12 @@ const entrySchemas = {
    * is in a workspace pool the provider no longer lists, has been returned.
    */
   operator_resolved: z.strictObject({ action: z.enum(["worker_stopped", "lease_returned", "owner_read_reconciled"]), note: nonempty.optional() }),
-  /** `finish --accept-output`: the operator accepted committed output instead of a worker result. */
-  output_accepted: z.strictObject({ commit, acceptedBy: z.literal("operator").optional() }),
+  /** Explicit acceptance, optionally naming the original and target commits of a rebase. */
+  output_accepted: z.strictObject({ commit, rebasedFrom: commit.optional(), onto: commit.optional(), acceptedBy: z.literal("operator").optional() }),
+  rebase_started: z.strictObject({ original: commit, upstream: commit, onto: commit }),
+  rebase_aborted: z.strictObject({ original: commit, onto: commit }),
+  /** A rebased candidate, retained for exact-commit checks and review before acceptance. */
+  output_rebased: z.strictObject({ commit, rebasedFrom: commit, onto: commit }),
   /** `finish` under the local-merge policy fast-forwarded the target branch to the output branch. */
   integrated: z.strictObject({ policy: z.literal("local-merge"), targetBranch: nonempty, commit }),
   output_branch_cleanup: z.strictObject({ branch: nonempty, status: z.enum(["deleted", "kept", "planned"]), detail: nonempty.optional() }),

@@ -5,7 +5,7 @@ import { classifyFailure, OwnerReadError, readDiagnostics, type ReadFailure } fr
 import { result, type DispatchResult, type Stage } from "./result.ts";
 
 export function effectBefore(record: AttemptRecord, sequence: number): AttemptEntry | undefined {
-  return [...record.entries].reverse().find(e => e.sequence < sequence && (e.kind === "integration_started" || e.kind === "lease_return_started"));
+  return [...record.entries].reverse().find(e => e.sequence < sequence && (e.kind === "integration_started" || e.kind === "lease_return_started" || e.kind === "rebase_started"));
 }
 
 export function unsettledReads(record: AttemptRecord): AttemptEntry[] {
@@ -46,8 +46,11 @@ export class OwnerReads {
     const integrationPending = record?.entries.some(e => e.kind === "integration_started" &&
       !record.entries.some(r => r.kind === "integrated" && r.data.commit === e.data.commit && r.data.targetBranch === e.data.targetBranch) &&
       !record.confirmations?.some(c => c.fact === "owner_read_reconciled" && c.scope.outcome === "not_happened" && effectBefore(record, c.scope.failureSequence)?.sequence === e.sequence));
+    const rebasePending = record?.entries.some(e => e.kind === "rebase_started" &&
+      !record.entries.some(r => r.sequence > e.sequence && (r.kind === "output_rebased" && r.data.rebasedFrom === e.data.original || r.kind === "rebase_aborted" && r.data.original === e.data.original) && r.data.onto === e.data.onto) &&
+      !record.confirmations?.some(c => c.fact === "owner_read_reconciled" && c.scope.outcome === "not_happened" && effectBefore(record, c.scope.failureSequence)?.sequence === e.sequence));
     const effectAttempted = this.effectAttempted || (!!record && (!!pendingReturn(record) ||
-      unsettledReads(record).length > 0 || acquisitionPending || integrationPending)) ||
+      unsettledReads(record).length > 0 || acquisitionPending || integrationPending || rebasePending)) ||
       (!record && (this.operation === "finish" || this.operation === "discard"));
     const failure: ReadFailure = { owner, classification: classifyFailure(rejected && !effectAttempted ? { step: "rejection" } : { step: "read", effectAttempted }),
       operation: this.operation, step, failedAt: new Date().toISOString(), diagnostics: readDiagnostics(error) };

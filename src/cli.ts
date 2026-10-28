@@ -33,7 +33,7 @@ const usage = `Usage:
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
   switchboard resolve --task <task-id> [--attempt <n>] --lease-returned [--note <text>] [--json] [--config <path>]
   switchboard resolve (--lease <id> | --task <id> [--attempt <n>]) --read-failure <sequence> --effect-outcome <happened|not_happened> --note <text> [--json] [--config <path>]
-  switchboard finish <attempt> [--no-processes] [--accept-output] [--dry-run] [--json] [--config <path>]
+  switchboard finish <attempt> [--no-processes] [--accept-output] [--rebase] [--dry-run] [--json] [--config <path>]
   switchboard discard <attempt> --confirm --no-processes [--note <text>] [--dry-run] [--json] [--config <path>]
   switchboard watch <attempt> [--no-follow] [--json] [--config <path>]
   switchboard stop <attempt> [--as <sender>] [--wait <seconds>] [--json] [--config <path>]
@@ -70,7 +70,10 @@ The output branch must advance the starting commit and the workspace must be cle
 finish completes an attempt awaiting review or awaiting finish under the context's finalisation policy (manual,
 or local-merge, which first fast-forwards the target branch to the exact accepted commit) and records the task as done.
 Without --no-processes it retains the lease, without blocking other tasks or the task's dependents. Run finish again
-with --no-processes to return the lease, skipping completed steps. The text and JSON summary say whether the lease
+with --no-processes to return the lease, skipping completed steps.
+If the target has moved, finish refuses without changing it. finish --rebase under local-merge rebases the attempt's
+own commits onto the target first; running it is your approval. A dirty workspace, extra commits, merge commits or
+any conflict refuse the rebase without moving the branch. --dry-run reports the planned rebase without changing it. The text and JSON summary say whether the lease
 was retained or returned; JSON lease is preserved or none respectively.
 discard returns the lease of an attempt whose work is not wanted, removing the workspace's contents, and holds its
 task. Both return a lease only with --no-processes, your confirmation that no worker process remains; discard
@@ -108,7 +111,7 @@ async function main(argv: string[]): Promise<number> {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       "from-attempt": { type: "string" }, "note-file": { type: "string" }, question: { type: "string" },
       json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
-      lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, "read-failure": { type: "string" }, "effect-outcome": { type: "string" }, note: { type: "string" }, "no-follow": { type: "boolean" },
+      lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, rebase: { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, "read-failure": { type: "string" }, "effect-outcome": { type: "string" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" }, "older-than": { type: "string" },
     },
   });
@@ -129,7 +132,7 @@ async function main(argv: string[]): Promise<number> {
     review: ["task", "attempt"], answer: ["task", "question", "wait"],
     dispatch: ["once", "dry-run", "task", "request-id", "from-attempt", "note", "note-file"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
     watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
-    "cleanup-output-branches": ["dry-run"], prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
+    "cleanup-output-branches": ["dry-run"], prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "rebase", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
   };
   const misplaced = Object.keys(values).filter(name => !["json", "config", ...allowed[command]!].includes(name));
   if (misplaced.length > 0) {
@@ -282,7 +285,7 @@ async function main(argv: string[]): Promise<number> {
 
     if (command === "finish" || command === "discard") {
       const common = { leaseId: leaseId!, noProcesses: values["no-processes"] === true, dryRun: values["dry-run"] === true };
-      const value = command === "finish" ? await finish(deps, { ...common, acceptOutput: values["accept-output"] === true })
+      const value = command === "finish" ? await finish(deps, { ...common, acceptOutput: values["accept-output"] === true, rebase: values.rebase === true })
         : await discard(deps, { ...common, confirm: values.confirm === true, ...(values.note ? { note: values.note } : {}) });
       console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
       return value.ok ? 0 : 1;

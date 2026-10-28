@@ -21,7 +21,7 @@ const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 const confirmationSchema = z.discriminatedUnion("fact", [
   z.strictObject({ fact: z.literal("owner_read_reconciled"), scope: z.strictObject({ failureSequence: z.number().int().nonnegative(), outcome: z.enum(["happened", "not_happened"]), returnId: z.uuid().optional() }) }),
   z.strictObject({ fact: z.literal("no_processes"), scope: z.strictObject({ leaseId: nonempty, returnId: z.uuid() }) }),
-  z.strictObject({ fact: z.literal("output_accepted"), scope: z.strictObject({ commit }) }),
+  z.strictObject({ fact: z.literal("output_accepted"), scope: z.union([z.strictObject({ commit }), z.strictObject({ commit, rebasedFrom: commit, onto: commit })]) }),
   z.strictObject({ fact: z.literal("discard"), scope: z.strictObject({ leaseId: nonempty }) }),
   z.strictObject({ fact: z.literal("worker_stopped"), scope: z.strictObject({ leaseId: nonempty, sessionId: z.uuid().optional() }) }),
   z.strictObject({ fact: z.literal("lease_returned"), scope: z.strictObject({ outputBranch: nonempty, leaseId: nonempty.optional() }) }),
@@ -281,7 +281,8 @@ export class AttemptStore {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
       const payload = data as Record<string, unknown>;
-      const matches = kind === "output_accepted" ? confirmation.fact === "output_accepted" && confirmation.scope.commit === payload.commit
+      const matches = kind === "output_accepted" ? confirmation.fact === "output_accepted" && confirmation.scope.commit === payload.commit &&
+          ("rebasedFrom" in confirmation.scope ? confirmation.scope.rebasedFrom === payload.rebasedFrom && confirmation.scope.onto === payload.onto : payload.rebasedFrom === undefined && payload.onto === undefined)
         : kind === "lease_return_started" ? confirmation.fact === "no_processes" && confirmation.scope.leaseId === payload.leaseId && confirmation.scope.returnId === payload.returnId
         : confirmation.fact === payload.action;
       if (!matches) throw new Error("The confirmation does not name this operation");
@@ -291,7 +292,7 @@ export class AttemptStore {
       if (confirmation.fact === "owner_read_reconciled") {
         const record = this.read(ref);
         const failure = record.entries.find(e => e.sequence === confirmation.scope.failureSequence && e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
-        const intent = [...record.entries].reverse().find(e => e.sequence < confirmation.scope.failureSequence && (e.kind === "lease_return_started" || e.kind === "integration_started"));
+        const intent = [...record.entries].reverse().find(e => e.sequence < confirmation.scope.failureSequence && (e.kind === "lease_return_started" || e.kind === "integration_started" || e.kind === "rebase_started"));
         if (!failure || typeof payload.note !== "string" || !payload.note.trim() ||
           confirmation.scope.returnId !== (intent?.kind === "lease_return_started" ? intent.data.returnId : undefined)) throw new Error("The confirmation does not name this failure and its effect");
         if (record.entries.some(e => e.kind === "owner_read_reconciled" && e.data.failureSequence === confirmation.scope.failureSequence) ||
@@ -542,16 +543,17 @@ export class AttemptStore {
   /** Only immutable, recorded output is a starting point – never today's branch head or result file. */
   startingPointCommit(ref: AttemptRef): string | undefined {
     const record = this.read(ref);
-    const accepted = [...(record.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
-    if (accepted?.fact === "output_accepted" && record.entries.some(e => e.kind === "output_accepted" && e.data.commit === accepted.scope.commit)) return accepted.scope.commit;
+    const output = [...record.entries].reverse().find(e => e.kind === "output_rebased" || e.kind === "output_accepted" &&
+      record.confirmations?.some(c => c.fact === "output_accepted" && c.scope.commit === e.data.commit));
+    if (output) return output.data.commit as string;
     const launch = this.database.get("SELECT directory, binding FROM launches WHERE context = ? AND task = ? AND attempt = ? AND kind = 'launch'", ref.contextId, ref.taskId, ref.attempt);
     if (!launch) return undefined;
     const result = this.database.get("SELECT value FROM worker_observations WHERE directory = ? AND kind = 'validated_result'", String(launch.directory));
     if (!result) return undefined;
     const binding = JSON.parse(String(launch.binding)) as RuntimeBinding;
     const validated = parseValidatedResult(JSON.parse(String(result.value)), binding);
-    const output = validated.content.workReferences.find(w => w.kind === "git" && w.branch === binding.input.delivery.outputBranch);
-    return output?.kind === "git" ? output.commit : undefined;
+    const reference = validated.content.workReferences.find(w => w.kind === "git" && w.branch === binding.input.delivery.outputBranch);
+    return reference?.kind === "git" ? reference.commit : undefined;
   }
 
   /** Commits explicitly accepted, integrated, or recorded done under the attempt's delivery contract. */
@@ -619,6 +621,7 @@ export class AttemptStore {
   private insert<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>) {
     requireAuthority(this.database, this.caller, kind === "lease_returned" || kind === "lease_return_started" || kind === "discarded" || kind === "output_branch_cleanup" ? "returnLease"
       : kind === "integrated" || kind === "integration_started" || kind === "owner_read_reconciled" ? "integrate"
+      : kind === "output_rebased" || kind === "rebase_started" || kind === "rebase_aborted" ? "rebase"
       : kind === "output_accepted" || kind === "check_finished" ? "acceptOutput"
       : ["requested", "leased", "task_started", "launched"].includes(kind) ? "dispatch" : "recordAttempt", { taskId: ref.taskId });
     const sequence = Number(this.database.get("SELECT coalesce(max(sequence), -1) + 1 AS n FROM attempt_entries WHERE context = ? AND task = ? AND attempt = ?",

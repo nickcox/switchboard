@@ -77,7 +77,7 @@ export function assessAttempt(observation: AttemptObservation): AttemptAssessmen
     unfinished: facts.unfinished, task });
   const state = unknown.length ? "unknown" : classified.state;
   const code = unknown.length ? "inspect_attempt" : classified.nextAction;
-  const outputCommit = [...(record?.entries ?? [])].reverse().find(e => e.kind === "output_accepted")?.data.commit as string | undefined ?? observation.attempt.resultCommit;
+  const outputCommit = [...(record?.entries ?? [])].reverse().find(e => e.kind === "output_accepted" || e.kind === "output_rebased")?.data.commit as string | undefined ?? observation.attempt.resultCommit;
   const checks = latestChecks(record, outputCommit);
   const reviews = recordedReviews(record, outputCommit);
   return { ...(outputCommit ? { outputCommit } : {}), ...(checks.length ? { checks } : {}), ...(reviews.length ? { reviews } : {}), attempt: observation.attempt, state, nextAction: { code, description: nextActions[code] }, facts,

@@ -146,7 +146,23 @@ export function checkCanIntegrate(facts: AttemptFacts, options: { accepting: boo
   if (!check.allowed) return check;
   if (options.policyRefusal) return refuse("policy_refused", options.policyRefusal, "fix_configuration", { policyRefusal: options.policyRefusal });
   if (!options.retained) return refuse("not_retained", "The work is not retained", "inspect_attempt", { retained: false });
-  return options.fastForward ? permit : refuse("not_fast_forward", "The target cannot be fast-forwarded to the output commit", "inspect_attempt", { fastForward: false });
+  return options.fastForward ? permit : refuse("not_fast_forward", "The target branch cannot be fast-forwarded: it has commits the output branch lacks; use finish --rebase", "rebase_or_discard", { fastForward: false });
+}
+
+export function checkCanRebase(facts: AttemptFacts, options: {
+  head: string | undefined; original: string; branch: string; workspaceBranch: string | undefined; workspaceHead: string;
+  clean: boolean; upstream: string | undefined; advanced: boolean; merges: number;
+}): Permission {
+  const check = checkCanFinish(facts, true);
+  if (!check.allowed) return check;
+  if (options.head !== options.original) return refuse("rebase_other_commits", "The output branch has commits other than the attempt's own", "inspect_attempt", options);
+  if (!options.clean) return refuse("rebase_dirty", "The workspace has uncommitted or untracked files", "inspect_attempt", options);
+  if (options.workspaceBranch !== options.branch || options.workspaceHead !== options.original) {
+    return refuse("rebase_workspace_mismatch", `The workspace must be on ${options.branch} at ${options.original}; inspect any interrupted rebase before trying again`, "inspect_attempt", options);
+  }
+  if (!options.upstream || !options.advanced) return refuse("rebase_other_commits", "The commits to rebase are not exactly the attempt's own commits after its starting commit or earlier rebase target", "inspect_attempt", options);
+  if (options.merges) return refuse("rebase_merge_commits", "The output branch has merge commits; Switchboard does not rebase merge commits", "inspect_attempt", options);
+  return permit;
 }
 
 export function checkCanDiscard(facts: AttemptFacts, confirmed: boolean): Permission {

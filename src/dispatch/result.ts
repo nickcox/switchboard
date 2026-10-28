@@ -60,6 +60,7 @@ export const nextActions = {
   finish_attempt: "The task is done with its lease retained. Run `switchboard finish --lease <lease-id> --no-processes` to return the lease once no worker process remains.",
   fix_or_discard: "The work is not retained. Fix the output branch or artefacts, then run `switchboard finish --lease <lease-id>`, or discard the work with `switchboard discard --lease <lease-id> --confirm --no-processes`.",
   confirm_no_processes: "Check that no process from the attempt's worker is still running in its workspace, for example with `lsof +D <workspace>` on macOS or Linux, then run the command again with --no-processes.",
+  rebase_or_discard: "The target branch has commits the output branch does not. Review the output, then run `switchboard finish --lease <lease-id> --rebase` to rebase it onto the target branch, or discard the work with `switchboard discard --lease <lease-id> --confirm --no-processes`.",
   confirm_discard: "Discarding returns the lease and removes the workspace's contents, including uncommitted changes. If that is intended, run the command again with --confirm.",
   no_dispatcher: "No running dispatcher owns this worker. If it may still be running, stop it another way, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",
 } as const;

@@ -1,6 +1,6 @@
 import { CommandError, runCommand } from "../infra/command.ts";
 
-type Git = {
+export type Git = {
   git: string; environment: Record<string, string>; repository: string;
   read?: <T>(step: string, load: () => Promise<T>) => Promise<T>;
   beforeEffect?: () => void | Promise<void>;
@@ -58,10 +58,75 @@ export async function isAncestor(options: Git, ancestor: string, descendant: str
  */
 export async function fastForward(options: Git, branch: string, expected: string, commit: string): Promise<void> {
   const checkedOut = await checkoutOf(options, branch);
+  if (await branchHead(options, branch) !== expected) throw new Error(`${branch} moved after integration was planned; run finish --rebase again`);
   await options.beforeEffect?.();
   const result = checkedOut
     ? await git(options, ["merge", "--ff-only", "--quiet", commit], checkedOut)
     : await git(options, ["update-ref", `refs/heads/${branch}`, commit, expected]);
   if (result.exitCode !== 0) throw new Error(`Could not fast-forward ${branch}: ${(result.stderr || result.stdout).trim().slice(0, 300)}`);
   if (await branchHead(options, branch) !== commit) throw new Error(`${branch} does not point to ${commit} after the fast-forward`);
+}
+
+/** The checked-out branch, HEAD and tracked and untracked changes in the attempt's workspace. */
+export async function workspaceState(options: Git, workspace: string): Promise<{ branch: string | undefined; head: string; clean: boolean }> {
+  const command = (step: string, args: string[], missing = false) => read(options, step, async () => {
+    const result = await git(options, args, workspace);
+    if (result.timedOut || result.truncated || result.exitCode !== 0 && !(missing && result.exitCode === 1)) throw new CommandError(`The workspace ${workspace} cannot be read`, result);
+    return result;
+  });
+  const head = await command("read rebase workspace HEAD", ["rev-parse", "--verify", "HEAD^{commit}"]);
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head.stdout.trim())) throw new Error("The workspace returned an invalid HEAD commit");
+  const status = await command("read rebase workspace changes", ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const branch = await command("read rebase workspace branch", ["symbolic-ref", "--quiet", "HEAD"], true);
+  return { branch: branch.exitCode === 0 ? branch.stdout.trim().replace(/^refs\/heads\//, "") : undefined, head: head.stdout.trim(), clean: status.stdout === "" };
+}
+
+/** Commits reachable from `head` but not `base`, including any merge commits. */
+export async function commitsBetween(options: Git, base: string, head: string): Promise<{ count: number; merges: number }> {
+  const count = (extra: string[]) => read(options, "list commits to rebase", async () => {
+    const result = await git(options, ["rev-list", "--count", ...extra, `${base}..${head}`]);
+    if (result.exitCode !== 0 || result.timedOut || result.truncated || !/^\d+$/.test(result.stdout.trim())) throw new CommandError(`The commits between ${base} and ${head} cannot be listed`, result);
+    return Number(result.stdout.trim());
+  });
+  return { count: await count([]), merges: await count(["--merges"]) };
+}
+
+/** Rebase detached, leaving every branch unchanged; abort on any stop, without resolving a conflict. */
+export async function rebaseDetached(options: Git, workspace: string, change: { branch: string; upstream: string; onto: string; original: string }): Promise<{ rebased: string } | { stopped: string }> {
+  await options.beforeEffect?.();
+  const rebase = await git(options, [
+    "-c", "rerere.enabled=false", "-c", "rebase.autoStash=false", "-c", "rebase.updateRefs=false", "-c", "rebase.autoSquash=false",
+    "rebase", "--quiet", "--no-verify", "--no-fork-point", "--reapply-cherry-picks", "--keep-empty", "--empty=stop", "--onto", change.onto, change.upstream, change.original,
+  ], workspace);
+  if (rebase.exitCode === 0 && !rebase.timedOut && !rebase.truncated) {
+    const after = await workspaceState(options, workspace);
+    if (after.branch !== undefined || after.head === change.original || !after.clean) throw new Error("The rebase did not leave the workspace clean at a new detached commit");
+    return { rebased: after.head };
+  }
+  const abort = await git(options, ["rebase", "--abort"], workspace);
+  // A rebase given a commit starts detached, and abort returns to that point.
+  const aborted = await workspaceState(options, workspace);
+  if (aborted.branch === undefined && aborted.head === change.original && aborted.clean) await git(options, ["switch", "--quiet", change.branch], workspace);
+  const after = await workspaceState(options, workspace);
+  if (after.branch !== change.branch || after.head !== change.original || !after.clean) throw new Error(`The stopped rebase could not be undone (${abort.stderr.trim().slice(0, 300)}); inspect the workspace before trying again`);
+  return { stopped: (rebase.stdout + rebase.stderr).trim().slice(0, 600) || "The rebase did not complete" };
+}
+
+/** Atomically move the output branch only from its recorded original, then attach the workspace to it. */
+export async function moveDetachedBranch(options: Git, workspace: string, branch: string, expected: string, commit: string): Promise<void> {
+  const state = await workspaceState(options, workspace);
+  const head = await branchHead(options, branch);
+  if (state.branch === branch && state.head === commit && head === commit && state.clean) return;
+  if (state.branch !== undefined || state.head !== commit || !state.clean) throw new Error(`The workspace is not clean and detached at ${commit}`);
+  const checkedOut = await checkoutOf(options, branch);
+  if (checkedOut) throw new Error(`${branch} is checked out in ${checkedOut}`);
+  await options.beforeEffect?.();
+  if (head !== commit) {
+    const update = await git(options, ["update-ref", `refs/heads/${branch}`, commit, expected]);
+    if (update.exitCode !== 0 || update.timedOut) throw new Error(`Could not move ${branch}: ${update.stderr.trim().slice(0, 300)}`);
+  }
+  const switched = await git(options, ["switch", "--quiet", branch], workspace);
+  if (switched.exitCode !== 0 || switched.timedOut) throw new Error(`Could not check out ${branch}: ${switched.stderr.trim().slice(0, 300)}`);
+  const after = await workspaceState(options, workspace);
+  if (after.branch !== branch || after.head !== commit || !after.clean) throw new Error(`The workspace is not clean on ${branch} at ${commit}`);
 }
