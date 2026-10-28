@@ -8,7 +8,7 @@ import { parseBacklog } from "tasks-axi/dist/src/backends/markdown-grammar.js";
 import { isHoldActive, readyTasks } from "tasks-axi/dist/src/derive.js";
 import { AttemptLog } from "../attempts/log.ts";
 import { databasePath, loadConfig, type Config } from "../config.ts";
-import { isOpen } from "../dispatch/dispatch.ts";
+import { isOpen } from "../dispatch/attempt.ts";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { readLegacyRuntime } from "../attempts/runtime-import.ts";
 import { SqliteTaskStore } from "./sqlite.ts";

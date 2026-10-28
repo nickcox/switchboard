@@ -1,4 +1,4 @@
-import { isOpen } from "./dispatch.ts";
+import { isOpen } from "./attempt.ts";
 import { otherPool, unfinished, workerMayBeRunning, type AttemptObservation, type ContextObservation } from "./observe.ts";
 import { classify, type AttemptState, type TaskView } from "./state.ts";
 import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";

@@ -5,7 +5,8 @@ import { recordValidatedResult, resultDiscrepancy, validateResultFile } from "..
 import type { RetentionResult } from "../workspaces/retention.ts";
 import { branchHead, fastForward, isAncestor } from "../workspaces/integration.ts";
 import { WorkspaceError } from "../workspaces/provider.ts";
-import { resolvedBy, type Dependencies } from "./dispatch.ts";
+import { resolvedBy } from "./attempt.ts";
+import type { Dependencies } from "./dependencies.ts";
 import { resolvePolicy, type ResolvedPolicy } from "./policy.ts";
 import { result, type DispatchResult, type NextAction } from "./result.ts";
 import { observeAttempt } from "./observe.ts";

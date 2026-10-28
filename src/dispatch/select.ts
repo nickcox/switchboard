@@ -1,4 +1,5 @@
-import { summarise, type Dependencies } from "./dispatch.ts";
+import { summarise } from "./attempt.ts";
+import type { Dependencies } from "./dependencies.ts";
 import { result, type AttemptSummary, type DispatchResult, type NextAction } from "./result.ts";
 
 /**

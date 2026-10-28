@@ -2,7 +2,8 @@ import type { AttemptRecord } from "../attempts/log.ts";
 import { readDispatcherHeartbeat } from "../runtime/heartbeat.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
 import type { Lease } from "../workspaces/provider.ts";
-import { isOpen, leaseReturned, possibleLeasePool, resolvedBy, summarise, type Dependencies } from "./dispatch.ts";
+import { isOpen, leaseReturned, possibleLeasePool, resolvedBy, summarise } from "./attempt.ts";
+import type { Dependencies } from "./dependencies.ts";
 import type { AttemptSummary } from "./result.ts";
 import type { TaskView } from "./state.ts";
 

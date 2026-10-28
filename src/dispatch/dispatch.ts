@@ -1,47 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { type AttemptRecord, type AttemptRef, holdLabels, type OutcomeCategory } from "../attempts/log.ts";
-import { AttemptStore, AttemptStoreError, type ArchivedRequest } from "../attempts/store.ts";
-import { attemptSpecificationSchema, workerInput, type RuntimeSettings } from "../attempts/specification.ts";
-import type { DeliveryContract, WorkerInput, WorkerResult } from "../runtime/contracts.ts";
+import { AttemptStoreError, type ArchivedRequest } from "../attempts/store.ts";
+import { attemptSpecificationSchema, workerInput } from "../attempts/specification.ts";
+import type { DeliveryContract, WorkerResult } from "../runtime/contracts.ts";
 import type { PiRunReport, WorkerHooks } from "../runtime/pi/worker.ts";
-import type { RuntimeRecord, RuntimeRecords } from "../runtime/records.ts";
-import { TaskStoreError, type Task, type TaskStore } from "../tasks/store.ts";
-import { WorkspaceError, type Allocation, type Lease, type WorkspaceProvider } from "../workspaces/provider.ts";
-import type { RetentionRequest, RetentionResult } from "../workspaces/retention.ts";
-import type { PolicySources } from "./policy.ts";
+import type { RuntimeRecord } from "../runtime/records.ts";
+import { TaskStoreError, type Task } from "../tasks/store.ts";
+import { WorkspaceError, type Allocation, type Lease } from "../workspaces/provider.ts";
+import type { RetentionResult } from "../workspaces/retention.ts";
 import { result, type AttemptSummary, type DispatchResult, type NextAction, type Stage } from "./result.ts";
-
-/** The parts of a delivery contract chosen per task; the base, branch and starting commit are added per attempt. */
-export type ContractSpec = Pick<DeliveryContract, "kind" | "acceptance" | "requiredEvidence" | "requiredDeliverables">;
-export type DeliveryConfiguration = {
-  baseRef: string;
-  branchPrefix: string;
-  /** Used for a task with no kind. */
-  default: ContractSpec;
-  /** Contracts selected by task kind. A task whose kind is not listed is refused before any change. */
-  byTaskKind: Record<string, ContractSpec>;
-};
-
-export type Dependencies = {
-  contextId: string;
-  tasks: TaskStore;
-  workspaces: WorkspaceProvider;
-  attempts: AttemptStore;
-  maxAttempts?: number;
-  runtime: RuntimeRecords;
-  launch: (input: WorkerInput, signal?: AbortSignal, onRequest?: WorkerHooks["onRequest"], settings?: RuntimeSettings) => Promise<PiRunReport>;
-  runtimeSettings: RuntimeSettings;
-  configurationProvenance: Record<string, string>;
-  retention: (request: RetentionRequest) => Promise<RetentionResult>;
-  /** The repository whose refs the workspaces share, for retention checks. */
-  repository: string;
-  delivery: DeliveryConfiguration;
-  /** A possibly running worker with no activity for this long is flagged in status. Default 20 minutes. */
-  staleMs?: number;
-  /** Where the finalisation policy's layers are found (Phase 2 PRD). Without it the policy is `manual`. */
-  policy?: PolicySources;
-  progress?: (message: string) => void;
-};
+import type { Dependencies } from "./dependencies.ts";
+import { resolvedBy, summarise } from "./attempt.ts";
+import { observeAttempts } from "./observe.ts";
+import { assessAttempts, type AttemptAssessment } from "./assess.ts";
+import { checkCanDispatch, checkCanRedispatch } from "./safety.ts";
+export type { ContractSpec, DeliveryConfiguration, Dependencies } from "./dependencies.ts";
 
 /** Owner state read before dispatch. Every field comes from its owner, not from memory. */
 export type Inspection = {
@@ -65,6 +38,7 @@ export type Inspection = {
    * the operator resolves it.
    */
   openTasks: string[];
+  assessments: AttemptAssessment[];
 };
 
 type Failure = { failed: DispatchResult };
@@ -76,57 +50,27 @@ export async function inspect(deps: Dependencies): Promise<Inspection | Failure>
     try { return await load(); }
     catch (error) { return { failed: refusal("preflight", "fix_configuration", `${what} could not be read: ${message(error)}`) }; }
   };
-  const attempts = await read("The attempt log", async () => deps.attempts.list());
-  if (isFailure(attempts)) return attempts;
-  const runtime = await read("Runtime records", () => deps.runtime.discover(deps.contextId));
-  if (isFailure(runtime)) return runtime;
-  for (const record of runtime) {
-    if (record.child.status !== "unknown") continue;
-    const identity = record.binding.input.identity;
-    const attempt = attempts.find(a => a.taskId === identity.taskId && summarise(a).leaseId === identity.leaseId);
-    const confirmed = attempt && deps.attempts.confirmations(attempt).find(c => c.fact === "worker_stopped" && c.scope.leaseId === identity.leaseId &&
-      (c.scope.sessionId === undefined || c.scope.sessionId === identity.sessionId));
-    if (confirmed) record.child = { status: "operator_confirmed_stopped", confirmedAt: confirmed.confirmedAt };
+  const observation = await observeAttempts(deps);
+  const { records: attempts, runtime, leases, pool } = observation;
+  if (!attempts.known) return { failed: refusal("preflight", "fix_configuration", attempts.reason) };
+  if (!runtime.known) return { failed: refusal("preflight", "fix_configuration", runtime.reason) };
+  if (!leases.known) return { failed: refusal("preflight", "fix_configuration", leases.reason) };
+  if (!pool.known) return { failed: refusal("preflight", "fix_configuration", pool.reason) };
+  const assessments = assessAttempts(observation);
+  for (const assessment of assessments) {
+    const check = checkCanDispatch(assessment.facts);
+    if (!check.allowed && check.reason === "unknown") return { failed: refusal("preflight", check.nextAction, check.detail) };
   }
-  const leases = await read("Workspace leases", () => deps.workspaces.leases());
-  if (isFailure(leases)) return leases;
-  const pool = await read("The workspace pool", () => deps.workspaces.pool());
-  if (isFailure(pool)) return pool;
   const inFlight = await read("The task store", () => deps.tasks.inFlight());
   if (isFailure(inFlight)) return inFlight;
   const ready = await read("The task store", () => deps.tasks.ready());
   if (isFailure(ready)) return ready;
 
-  const possiblyRunning: AttemptSummary[] = [];
-  for (const record of runtime) {
-    if (record.child.status !== "unknown") continue;
-    const { contextId, taskId, leaseId, sessionId } = record.binding.input.identity;
-    const attempt = attempts.find(a => a.taskId === taskId && a.entries.some(e => e.kind === "leased" && e.data.leaseId === leaseId));
-    possiblyRunning.push({ contextId, taskId, attempt: attempt?.attempt ?? 0, leaseId, sessionId });
-  }
-  for (const attempt of attempts) {
-    const kinds = attempt.entries.map(e => e.kind);
-    // The runtime owns liveness: an observed or confirmed exit settles it even if the log never recorded the finish.
-    const leaseId = summarise(attempt).leaseId;
-    const settled = runtime.some(r => r.binding.input.identity.leaseId === leaseId && r.child.status !== "unknown");
-    if (kinds.includes("launched") && !kinds.includes("worker_finished") && !resolvedBy(attempt, "worker_stopped") && !settled &&
-      !possiblyRunning.some(p => p.taskId === attempt.taskId && p.attempt === attempt.attempt)) {
-      possiblyRunning.push(summarise(attempt));
-    }
-  }
-  const leasesInOtherPools: Inspection["leasesInOtherPools"] = [];
-  for (const attempt of attempts) {
-    const leasePool = possibleLeasePool(attempt);
-    if (leasePool !== undefined && leasePool !== pool && !leaseReturned(attempt)) {
-      leasesInOtherPools.push({ ...summarise(attempt), pool: leasePool });
-    }
-  }
-  const latest = new Map<string, AttemptRecord>();
-  for (const attempt of attempts) {
-    if ((latest.get(attempt.taskId)?.attempt ?? 0) < attempt.attempt) latest.set(attempt.taskId, attempt);
-  }
-  const openTasks = [...latest.values()].filter(isOpen).map(a => a.taskId);
-  return { attempts, runtime, leases, inFlight, ready, possiblyRunning, pool, leasesInOtherPools, openTasks };
+  const possiblyRunning = assessments.filter(a => !checkCanDispatch(a.facts).allowed).map(a => a.attempt);
+  const leasesInOtherPools = assessments.flatMap(a => a.leaseInOtherPool === undefined ? [] : [{ ...a.attempt, pool: a.leaseInOtherPool }]);
+  const openTasks = assessments.filter(a => a.facts.unfinished).map(a => a.attempt.taskId);
+  return { attempts: attempts.value, runtime: runtime.value, leases: leases.value, pool: pool.value,
+    inFlight, ready, possiblyRunning, leasesInOtherPools, openTasks, assessments };
 }
 
 /** Runs one dispatch: steps 1–8 of the Phase 1 PRD dispatch sequence. Never starts a second task. */
@@ -155,8 +99,9 @@ export async function dispatchOnce(
   const state = await inspect(deps);
   if (isFailure(state)) return state.failed;
   const observed: Record<string, unknown> = { ready: state.ready, inFlight: state.inFlight, leases: state.leases.length };
-  if (state.possiblyRunning.length > 0) {
-    return refusal("preflight", "stop_worker", "An earlier attempt's worker may still be running", { ...observed, possiblyRunning: state.possiblyRunning });
+  for (const assessment of state.assessments) {
+    const check = checkCanDispatch(assessment.facts);
+    if (!check.allowed) return refusal("preflight", check.nextAction, check.detail, { ...observed, possiblyRunning: state.possiblyRunning });
   }
 
   try { await deps.runtime.probeExclusiveCreation(); }
@@ -165,20 +110,18 @@ export async function dispatchOnce(
   }
 
   // Step 2: select one ready task with no lease and no in-flight state.
-  const unknownLease = (id: string) => state.leasesInOtherPools.some(a => a.taskId === id);
-  const open = (id: string) => state.openTasks.includes(id);
-  const blocked = (id: string) => state.leases.some(l => l.holder === id) || unknownLease(id) || state.inFlight.includes(id) || open(id);
+  const attemptChecks = (id: string) => state.assessments.filter(a => a.attempt.taskId === id).map(a => checkCanRedispatch(a.facts, id));
+  const blocked = (id: string) => state.leases.some(l => l.holder === id) || state.inFlight.includes(id) || attemptChecks(id).some(check => !check.allowed);
   let taskId = options.taskId;
   if (taskId !== undefined) {
     if (state.leases.some(l => l.holder === taskId)) return refusal("select", "choose_another_task", `Task ${taskId} already has a workspace lease from an earlier attempt`, observed);
-    if (unknownLease(taskId)) {
-      return refusal("select", "confirm_lease_returned", `Task ${taskId} has a lease from an earlier attempt in a workspace pool that is no longer listed, so whether it is still held is unknown`, observed);
-    }
+    const checks = attemptChecks(taskId);
+    const unknownLease = checks.find(check => !check.allowed && check.reason === "lease_in_other_pool");
+    if (unknownLease && !unknownLease.allowed) return refusal("select", unknownLease.nextAction, unknownLease.detail, observed);
     if (state.inFlight.includes(taskId)) return refusal("select", "choose_another_task", `Task ${taskId} is already in flight`, observed);
     if (!state.ready.includes(taskId)) return refusal("select", "choose_another_task", `Task ${taskId} is not ready`, observed);
-    if (open(taskId)) {
-      return refusal("select", "confirm_attempt_stopped", `Task ${taskId} has an earlier attempt that has not finished, and its dispatcher may still be working on it`, observed);
-    }
+    const unfinished = checks.find(check => !check.allowed);
+    if (unfinished && !unfinished.allowed) return refusal("select", unfinished.nextAction, unfinished.detail, observed);
   } else {
     taskId = state.ready.find(id => !blocked(id));
     if (taskId === undefined) return result({ ok: true, reason: "no_ready_work", stage: "select", lease: "none", observed, nextAction: "dispatch_again" });
@@ -428,55 +371,6 @@ async function existingRequest(deps: Dependencies, attempt: AttemptRecord | Arch
     ...(task ? { task: { id: task.id, state: task.state, held: task.held, holdReason: task.holdReason } } : {}),
     nextAction: running ? "stop_worker" : "inspect_attempt",
   });
-}
-
-/** An attempt is open until it records a task outcome, halts, or is resolved by the operator. */
-export function isOpen(attempt: AttemptRecord): boolean {
-  return !attempt.entries.some(e => e.kind === "task_recorded" || e.kind === "halted" || e.kind === "operator_resolved");
-}
-
-/**
- * The pool in which this attempt may hold a lease. A logged lease records its pool. Without one, the attempt may still
- * have acquired a lease in the pool recorded when it was requested, for example if its dispatcher was killed before
- * logging the lease, unless the provider refused the acquisition outright.
- */
-export function possibleLeasePool(attempt: AttemptRecord): string | undefined {
-  const leased = attempt.entries.find(e => e.kind === "leased")?.data.pool;
-  if (typeof leased === "string") return leased;
-  if (attempt.entries.some(e => e.kind === "leased")) return undefined;
-  const refused = attempt.entries.some(e => e.kind === "halted" && e.data.stage === "acquire" && e.data.reason !== "outcome_unknown");
-  const requested = attempt.entries[0]?.data.pool;
-  return !refused && typeof requested === "string" ? requested : undefined;
-}
-
-/** Whether the attempt's lease is known to be returned: by `finish` or `discard`, or as confirmed by the operator. */
-export function leaseReturned(attempt: AttemptRecord): boolean {
-  return attempt.entries.some(e => e.kind === "lease_returned") || resolvedBy(attempt, "lease_returned");
-}
-
-/** Whether the operator recorded this confirmation for the attempt with `resolve`. */
-export function resolvedBy(attempt: AttemptRecord, action: "worker_stopped" | "lease_returned"): boolean {
-  const summary = summarise(attempt);
-  return (attempt.confirmations ?? []).some(c => {
-    if (c.fact === "worker_stopped" && action === "worker_stopped") return c.scope.leaseId === summary.leaseId &&
-      (c.scope.sessionId === undefined || c.scope.sessionId === summary.sessionId);
-    if (c.fact === "lease_returned" && action === "lease_returned") return (summary.leaseId === undefined || c.scope.leaseId === summary.leaseId) &&
-      (summary.outputBranch === undefined || c.scope.outputBranch === summary.outputBranch);
-    return false;
-  });
-}
-
-export function summarise(attempt: AttemptRecord): AttemptSummary {
-  const summary: AttemptSummary = { contextId: attempt.contextId, taskId: attempt.taskId, attempt: attempt.attempt };
-  for (const entry of attempt.entries) {
-    const d = entry.data as Record<string, string | undefined>;
-    if (entry.kind === "requested" && d.requestId) summary.requestId = d.requestId;
-    if (entry.kind === "leased") Object.assign(summary, { leaseId: d.leaseId, workspace: d.workspace, outputBranch: d.outputBranch, startingCommit: d.startingCommit });
-    if (entry.kind === "halted" && d.leaseId) Object.assign(summary, { leaseId: d.leaseId, workspace: d.workspace, outputBranch: d.outputBranch });
-    if (entry.kind === "launched" && d.sessionId) summary.sessionId = d.sessionId;
-    if (entry.kind === "worker_finished" && d.resultCommit) summary.resultCommit = d.resultCommit;
-  }
-  return summary;
 }
 
 /** Refused before any change: nothing to preserve or undo. */

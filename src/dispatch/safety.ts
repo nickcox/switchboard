@@ -27,6 +27,19 @@ function listedLease(facts: AttemptFacts): Permission {
   return permit;
 }
 
+/** A possibly running worker blocks the whole context, even with a fresh dispatcher heartbeat. */
+export function checkCanDispatch(facts: AttemptFacts): Permission {
+  if (facts.unknown.length) return refuse("unknown", facts.unknown.join("; "), "fix_configuration", facts.unknown);
+  return facts.possiblyRunning ? refuse("possibly_running", "An earlier attempt's worker may still be running", "stop_worker", { possiblyRunning: true }) : permit;
+}
+
+/** A stopped attempt can still block its own task until its lease or unfinished dispatch is reconciled. */
+export function checkCanRedispatch(facts: AttemptFacts, taskId: string): Permission {
+  if (facts.leaseInOtherPool) return refuse("lease_in_other_pool", `Task ${taskId} has a lease from an earlier attempt in a workspace pool that is no longer listed, so whether it is still held is unknown`, "confirm_lease_returned", { leaseInOtherPool: true });
+  if (facts.unfinished) return refuse("unfinished", `Task ${taskId} has an earlier attempt that has not finished, and its dispatcher may still be working on it`, "confirm_attempt_stopped", { unfinished: true });
+  return permit;
+}
+
 export function checkCanFinish(facts: AttemptFacts, accepting: boolean): Permission {
   const check = listedLease(facts);
   if (!check.allowed) return check;

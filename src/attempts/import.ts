@@ -4,7 +4,7 @@ import { readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { databasePath, type Config } from "../config.ts";
 import { Database } from "../database.ts";
-import { isOpen, summarise } from "../dispatch/dispatch.ts";
+import { isOpen, summarise } from "../dispatch/attempt.ts";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { key, readJsonFile, RuntimeRecords } from "../runtime/records.ts";
 import { readLegacyRuntime } from "./runtime-import.ts";

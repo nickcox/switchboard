@@ -1,4 +1,5 @@
-import { resolvedBy, type Dependencies } from "./dispatch.ts";
+import { resolvedBy } from "./attempt.ts";
+import type { Dependencies } from "./dependencies.ts";
 import { observeAttempt, type AttemptSelector } from "./observe.ts";
 import { assessAttempt } from "./assess.ts";
 import { checkCanConfirmLeaseReturned, checkCanConfirmStopped } from "./safety.ts";
