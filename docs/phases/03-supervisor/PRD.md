@@ -1,6 +1,6 @@
 # Phase 3: A supervisor that completes one objective
 
-Status: agreed on 21 October 2026 as "Multiple workers and runtimes"; implementation steps 1 to 9 are complete. **Revised on 28 October 2026, under review:** an agent supervisor that completes one objective comes before concurrency, a second runtime and the pull-request policy, which move to Phase 4, and correctness fixes from a whole-project review come first. Requirements, not a description of existing behaviour.
+Status: agreed on 21 October 2026 as "Multiple workers and runtimes"; implementation steps 1 to 10 are complete. **Revised on 28 October 2026, under review:** an agent supervisor that completes one objective comes before concurrency, a second runtime and the pull-request policy, which move to Phase 4, and correctness fixes from a whole-project review come first. Requirements, not a description of existing behaviour.
 
 ## Objective and scope
 
@@ -322,7 +322,7 @@ Each step is implemented, tested and recorded in the verification record before 
 7. **Starting from an earlier attempt.** Complete.
 8. **Checks, review and repair.** Complete. Checks are advisory for a person's `finish`; the supervisor's acceptance requires passing checks and a passing review of the exact commit.
 9. **Objectives**, and **caller identity, permissions and budget.** Complete.
-10. **Questions from workers.**
+10. **Questions from workers.** Complete.
 11. **The supervisor**, once ADR-0003's remaining checks, listed under [Pi Durable checkpoint](#pi-durable-checkpoint), have passed.
 
 `finish --rebase` can be implemented at any point after step 4.
