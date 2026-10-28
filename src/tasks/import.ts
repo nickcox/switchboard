@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { commandLineCaller, type Caller } from "../caller.ts";
+import { requireImportAuthority } from "../dispatch/safety.ts";
 import { randomUUID } from "node:crypto";
 import { link, lstat, readFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -20,9 +22,6 @@ const exists = async (path: string) => lstat(path).then(() => true, error => { i
  * Import is offline: every attempt must be settled and no dispatcher may be running, so no Switchboard process can be
  * writing the old records. The import reads these files only; workers' outputs and transcripts stay where they are.
  */
-import { commandLineCaller, type Caller } from "../caller.ts";
-import { requireImportAuthority } from "../dispatch/safety.ts";
-
 export async function requireSettled(config: Config): Promise<void> {
   const attempts = await new AttemptLog(config.runtimeRoot, config.contextId).list();
   if (attempts.some(isOpen)) throw new TaskStoreError("rejected", "Import requires every attempt to be settled");

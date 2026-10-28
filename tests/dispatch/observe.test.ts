@@ -154,7 +154,7 @@ for (const evidence of ["unknown", "unknown_with_finish", "exited", "confirmed",
       await f.deps.attempts.recordConfirmation(ref, { fact: "worker_stopped", scope: {
         leaseId: evidence === "wrong_lease" ? "another-lease" : leaseId,
         sessionId: evidence === "wrong_session" ? randomUUID() : sessionId,
-      } }, "operator");
+      } });
     }
     if (evidence !== "log_only" && evidence !== "log_confirmed") {
       const reserved = await f.runtime.reserve({ identity: { contextId: f.deps.contextId, taskId: ref.taskId, leaseId, sessionId },

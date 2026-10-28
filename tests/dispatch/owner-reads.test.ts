@@ -190,7 +190,7 @@ for (const intent of [false, true]) {
       const record = (await f.deps.attempts.findByLease(leaseId))!;
       const returnId = randomUUID();
       await f.deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by: "finish", returnId },
-        { fact: "no_processes", scope: { leaseId, returnId } }, "operator:fixture");
+        { fact: "no_processes", scope: { leaseId, returnId } });
     }
     const deps = { ...f.deps, policy: { git, environment: f.environment, repository: f.deps.repository, baseRef: "main",
       globalFile: join(f.dir, "no-global-policy"), context: { kind: "local-merge" as const, targetBranch: "target" } } };
@@ -228,7 +228,7 @@ for (const operation of ["finish", "discard"] as const) {
       const record = (await f.deps.attempts.findByLease(leaseId))!;
       const returnId = randomUUID();
       await f.deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by: operation, returnId },
-        { fact: "no_processes", scope: { leaseId, returnId } }, "operator:fixture");
+        { fact: "no_processes", scope: { leaseId, returnId } });
       throw new WorkspaceError("unreadable", "Read failed after another command's intent", describeCommand(command));
     });
     assert.equal((await run(operation, injected.deps, leaseId)).reason, "reconciliation_required");

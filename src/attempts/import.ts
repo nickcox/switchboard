@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { callerName, type Caller } from "../caller.ts";
+import { requireImportAuthority } from "../dispatch/safety.ts";
 import { randomUUID } from "node:crypto";
 import { readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -161,6 +163,8 @@ async function writeSnapshot(config: Config, copy: Database, before: Awaited<Ret
         copy!.run("INSERT INTO archived_attempts VALUES(?,?,?,?)", config.contextId, archive.taskId, archive.attempt, JSON.stringify(archive));
       }
       migrateRequestRecords(copy);
+      for (const taskId of new Set(before.numbers.map(number => number.taskId))) copy.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
+        taskId, "import-attempts", callerName(caller), new Date().toISOString(), JSON.stringify({ contextId: config.contextId }));
     });
     for (const { record, confirmations } of before.records) {
       const imported = store.read(record);
@@ -194,9 +198,6 @@ function compareSnapshots(before: Awaited<ReturnType<typeof snapshot>>, after: A
   assert.deepEqual(after.original, before.original, "Attempt files changed during import");
   assert.deepEqual(after.runtimeRecords, before.runtimeRecords, "Runtime files changed during import");
 }
-
-import type { Caller } from "../caller.ts";
-import { requireImportAuthority } from "../dispatch/safety.ts";
 
 /** Adds and validates every legacy record before a new task database is activated. */
 export async function importLegacyRecords(config: Config, database: Database, caller: Caller) {
@@ -289,6 +290,8 @@ export async function importRuntime(config: Config, caller: Caller) {
     }
     await copy.transaction(() => {
       for (const record of attempts) {
+        copy!.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
+          record.taskId, "import-runtime", callerName(caller), new Date().toISOString(), JSON.stringify({ contextId: context, attempt: record.attempt }));
         const summary = summarise(record);
         if (!summary.leaseId) continue;
         const runtime = legacy.records.find(r => r.binding.input.identity.leaseId === summary.leaseId);

@@ -67,7 +67,7 @@ test("version 4 bindings migrate once without borrowing missing facts from the c
     assert.equal(entry.specificationComplete, false);
     assert.equal(entry.allocation!.leaseId, "unused");
     await attempts.appendConfirmed(incomplete, "operator_resolved", { action: "lease_returned" },
-      { fact: "lease_returned", scope: { leaseId: "unused", outputBranch: "unused" } }, "operator");
+      { fact: "lease_returned", scope: { leaseId: "unused", outputBranch: "unused" } });
     assert.equal(attempts.read(incomplete).entries.at(-1)!.kind, "operator_resolved");
   } finally { tasks.close(); }
 });

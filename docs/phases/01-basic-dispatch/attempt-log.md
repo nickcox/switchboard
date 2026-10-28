@@ -6,9 +6,9 @@ Attempts link tasks, leases, sessions, commits and outcomes. Tasks and attempts 
 
 ## Database records
 
-Schema version 9 holds attempts, entries, separate request records, retained attempt numbers, confirmations, archive summaries, pending directory deletions, runtime records, attempt specifications, acceptance criteria and immutable review-task targets. Opening an older database migrates it automatically. Version 3 removed the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context and never expire. Each new request record stores a versioned fingerprint of explicit selection inputs and the selected attempt; archiving switches it to the archived summary. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID. Historical requests with unknown explicit inputs remain excluded, and conflicting historical mappings refuse migration. See the [request-record contract](../../task-store.md#request-records-and-pruning).
+Schema version 11 holds attempts, entries, separate request records, retained attempt numbers, confirmations, archive summaries, pending directory deletions, runtime records, attempt specifications, acceptance criteria, immutable review-task targets, objectives and append-only task-change history. Opening an older database migrates it automatically. Version 3 removed the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context and never expire. Each new request record stores a versioned fingerprint of explicit selection inputs and the selected attempt; archiving switches it to the archived summary. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID. Historical requests with unknown explicit inputs remain excluded, and conflicting historical mappings refuse migration. See the [request-record contract](../../task-store.md#request-records-and-pruning).
 
-Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequence`, `kind`, `recordedAt` (an ISO time) and validated `data`. Database references enforce ownership, and a trigger refuses entry updates. Corrections are new entries.
+Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequence`, `kind`, `recordedAt` (an ISO time) and validated `data`. New entries also have `askedBy`, derived from the host-supplied caller (`operator:<username>` or `supervisor:<objective-id>`); older entries may lack it. Database references enforce ownership, and a trigger refuses entry updates. Corrections are new entries.
 
 | Kind | Data |
 | --- | --- |
@@ -16,7 +16,7 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `leased` | `leaseId`, `workspace`, `baseRef`, `outputBranch`, `startingCommit`, and acquisition `pool` |
 | `task_started` | No fields |
 | `launched` | `sessionId` |
-| `operator_request` | Request `id`, `kind`, `sender`, `outcome`, optional `message` and `error` |
+| `operator_request` | Request `id`, `kind`, caller-derived `sender`, `outcome`, optional display `label` (`--as`), `message` and `error` |
 | `worker_finished` | Runtime `status`, `runtimeDirectory`, optional `reason`, `detail`, `outcome` and `resultCommit` |
 | `retention_checked` | `retained`, `findings` and `notes` |
 | `review_recorded` | Review `taskId`, review `attempt`, exact reviewed `commit`, `verdict` (`passed` or `failed`) and per-criterion `findings` |
@@ -87,7 +87,7 @@ Recording an outcome writes `task_recorded` and closes the attempt in the same t
 
 ## Confirmations
 
-Every operator confirmation has one form: the attempt identity, `fact`, `confirmedBy`, `confirmedAt` and `scope`. Facts and scopes are:
+Every confirmation has one form: the attempt identity, `fact`, `confirmedBy`, `confirmedAt` and `scope`. `confirmedBy` is always the trusted host's caller, never a request argument or display label. Supervisor acceptance requires passing exact-commit evidence; only a person can confirm a lease return or discard. Other [caller permissions and fixed limits](../../objectives.md#callers-and-permissions) apply inside operations too. Facts and scopes are:
 
 - `output_accepted`: the exact commit.
 - `no_processes`: the lease ID and one return's UUID. A later return needs a new confirmation.
@@ -96,11 +96,11 @@ Every operator confirmation has one form: the attempt identity, `fact`, `confirm
 - `lease_returned`: the output branch and, when known, lease ID.
 - `owner_read_reconciled`: one `failureSequence`, the established `outcome` (`happened` or `not_happened`), and the return UUID when the failure followed a return intent.
 
-Confirmation records, not old `acceptedBy` or `noProcessesConfirmedBy` entry fields, carry the operator's decision. A worker-stop confirmation is not an observed process exit, and neither proves that background processes are gone.
+Confirmation records, not old `acceptedBy` or `noProcessesConfirmedBy` entry fields, carry the caller's decision. A worker-stop confirmation is not an observed process exit, and neither proves that background processes are gone.
 
 ## Pruning
 
-Pruning checks external owners before archiving. Its transaction compares the observed entries and confirmations, writes an archive summary, keeps the request record pointing to that summary, removes the attempt and its entries, and records runtime directories to delete. Retained attempt numbers never go away, so output-branch names are never reused. Directory deletion follows outside the transaction. The archive summary's `cleanup` map, keyed by directory, keeps append-only cleanup evidence with its own sequences and times: `deletion_started`, `owner_read_failed` (the same failure payload as live attempt entries), and `deletion_confirmed` with the directory and the uncertain failure sequences its observed absence settles. A read failure before any effect is retryable; one after archiving or a deletion intent requires reconciliation. A later prune reads the directory again. Absence completes pending deletion without repeating it; if an earlier deletion is uncertain and the directory still exists, prune refuses rather than repeating a potentially partial removal. The operator must inspect and remove that directory manually, then run prune again. Diagnostics remain in the archive after cleanup. There is no prune lock or stale lock to remove. Summaries live in `archived_attempts`, not archive files.
+Pruning checks external owners before archiving. Its transaction compares the observed entries and confirmations, writes an archive summary, keeps the request record pointing to that summary, removes the attempt and its entries, and records runtime directories to delete. Retained attempt numbers never go away, so output-branch names are never reused. Directory deletion follows outside the transaction. The archive records `archivedBy` from its host caller. Its `cleanup` map, keyed by directory, keeps append-only cleanup evidence with its own sequences, times and `askedBy` callers: `deletion_started`, `owner_read_failed` (the same failure payload as live attempt entries), and `deletion_confirmed` with the directory and the uncertain failure sequences its observed absence settles. A read failure before any effect is retryable; one after archiving or a deletion intent requires reconciliation. A later prune reads the directory again. Absence completes pending deletion without repeating it; if an earlier deletion is uncertain and the directory still exists, prune refuses rather than repeating a potentially partial removal. The operator must inspect and remove that directory manually, then run prune again. Diagnostics remain in the archive after cleanup. There is no prune lock or stale lock to remove. Summaries live in `archived_attempts`, not archive files.
 
 ## Importing the old files
 

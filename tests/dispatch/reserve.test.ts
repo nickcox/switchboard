@@ -91,7 +91,7 @@ test("an accepted commit takes precedence over a recorded worker result and late
     const workspace = ref.allocation!.workspace;
     f.run(["commit", "--allow-empty", "--no-gpg-sign", "-m", "Accepted later work"], workspace);
     const accepted = f.run(["rev-parse", "HEAD"], workspace);
-    await f.deps.attempts.appendConfirmed(ref, "output_accepted", { commit: accepted }, { fact: "output_accepted", scope: { commit: accepted } }, "operator");
+    await f.deps.attempts.appendConfirmed(ref, "output_accepted", { commit: accepted }, { fact: "output_accepted", scope: { commit: accepted } });
     f.run(["commit", "--allow-empty", "--no-gpg-sign", "-m", "Unaccepted branch head"], workspace);
     const outcome = await reserveFromAttempt(f.deps, options);
     assert.equal(outcome.reason, "reserved", JSON.stringify(outcome));
@@ -104,7 +104,7 @@ test("a confirmed stop permits a source whose runtime has no observed exit", asy
   try {
     const ref = f.deps.attempts.findForTask(taskId, 1)!;
     await f.tasks.database.transaction(() => f.tasks.database.run("DELETE FROM worker_observations WHERE kind = 'exit'"));
-    await f.deps.attempts.recordConfirmation(ref, { fact: "worker_stopped", scope: { leaseId: ref.allocation!.leaseId, sessionId: f.first.attempt!.sessionId! } }, "operator");
+    await f.deps.attempts.recordConfirmation(ref, { fact: "worker_stopped", scope: { leaseId: ref.allocation!.leaseId, sessionId: f.first.attempt!.sessionId! } });
     assert.equal((await reserveFromAttempt(f.deps, options)).reason, "reserved");
   } finally { f.tasks.close(); }
 });
@@ -125,7 +125,7 @@ test("a done task must be reopened before continuation, even when its output was
   try {
     const ref = f.deps.attempts.findForTask(taskId, 1)!;
     const commit = f.first.attempt!.resultCommit!;
-    await f.deps.attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }, "operator");
+    await f.deps.attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
     await f.tasks.done(taskId);
     assert.equal((await reserveFromAttempt(f.deps, options)).observed.reason, "not_ready");
     await f.tasks.reopen(taskId);

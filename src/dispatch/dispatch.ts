@@ -255,6 +255,7 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
     const startingCommit = specification.startingPoint?.commit ?? specification.reviewTarget?.commit;
     let allocation: Allocation;
     try {
+      requireOperationAuthority(deps, ["dispatch", ...(options.startingPoint ? ["continueAttempts" as const] : [])], { taskId });
       allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.baseRef, branch: outputBranch,
         ...(startingCommit ? { startingCommit } : {}),
       });
@@ -302,6 +303,7 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
     const delivery = input.delivery;
     const sessionId = input.identity.sessionId;
     summary.sessionId = sessionId;
+    requireOperationAuthority(deps, ["dispatch", ...(options.startingPoint ? ["continueAttempts" as const] : [])], { taskId });
     await deps.attempts.append(ref, "launched", { sessionId });
     deps.progress?.(`Session ${sessionId}`);
     let report: RunReport;
@@ -317,7 +319,10 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
       });
     };
     const unrecorded: { id: string; kind: string; sender: string; error: string }[] = [];
-    try { report = await deps.launch(input, options.signal, onRequest, specification.runtime); }
+    try {
+      requireOperationAuthority(deps, ["dispatch", ...(options.startingPoint ? ["continueAttempts" as const] : [])], { taskId });
+      report = await deps.launch(input, options.signal, onRequest, specification.runtime);
+    }
     catch (error) {
       // The runtime reserves its records before starting a worker, so a worker can exist only if they do. Without an
       // observed or confirmed exit, the error leaves the attempt unresolved, like any launch whose worker may be running.

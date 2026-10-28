@@ -95,6 +95,7 @@ test("schema 6 observations survive migration and can gain a validated result", 
         BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END`);
       database.run("DROP INDEX tasks_by_objective");
       database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+      database.run("DROP TABLE task_changes");
       database.run("DROP TABLE objective_changes");
       database.run("DROP TABLE objectives");
       database.run("PRAGMA user_version = 6");

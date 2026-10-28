@@ -1,4 +1,4 @@
-import { callerName } from "../caller.ts";
+import { TaskStoreError } from "../tasks/store.ts";
 import { resolvedBy } from "./attempt.ts";
 import type { Dependencies } from "./dependencies.ts";
 import { observeAttempt, type AttemptSelector } from "./observe.ts";
@@ -9,7 +9,7 @@ import { effectBefore, OwnerReads, pendingReturn, readRefusal, unsettledReads } 
 import { result, type DispatchResult } from "./result.ts";
 
 
-/** Operator-only stop confirmation. It never changes the task or returns a lease. */
+/** Scoped stop confirmation. It never changes the task or returns a lease. */
 export async function resolveStopped(
   deps: Dependencies, options: { leaseId: string; confirmed: boolean; note?: string },
 ): Promise<DispatchResult> {
@@ -42,7 +42,7 @@ async function confirmStopped(deps: Dependencies, options: { leaseId: string; co
   if (!rechecked || !rechecked.allowed) return result({ ...common, ok: false, reason: "refused", detail: rechecked ? rechecked.detail : "The attempt disappeared", nextAction: rechecked ? rechecked.nextAction : "inspect_attempt" });
   reads.effectAttempted = true;
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "worker_stopped", ...(options.note ? { note: options.note } : {}) },
-    { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(assessment.attempt.sessionId ? { sessionId: assessment.attempt.sessionId } : {}) } }, callerName(deps.caller), current?.record.known ? current.record.value : undefined);
+    { fact: "worker_stopped", scope: { leaseId: options.leaseId, ...(assessment.attempt.sessionId ? { sessionId: assessment.attempt.sessionId } : {}) } }, current?.record.known ? current.record.value : undefined);
   const confirmed = await observeAttempt(deps, { leaseId: options.leaseId });
   if (confirmed) await reads.attempt(confirmed, "read back worker confirmation");
   return result({ ...common, ok: true, reason: "resolved", nextAction: "apply_task_outcome" });
@@ -87,22 +87,26 @@ async function confirmLeaseReturned(deps: Dependencies, options: ({ leaseId: str
   if (!fresh.allowed) return result({ ...common, ok: false, reason: "refused", detail: fresh.detail, nextAction: fresh.nextAction });
   reads.effectAttempted = true;
   await deps.attempts.appendConfirmed(attempt, "operator_resolved", { action: "lease_returned", ...(options.note ? { note: options.note } : {}) },
-    { fact: "lease_returned", scope: { outputBranch, ...(summary.leaseId ? { leaseId: summary.leaseId } : {}) } }, callerName(deps.caller), current.record.known ? current.record.value : undefined);
+    { fact: "lease_returned", scope: { outputBranch, ...(summary.leaseId ? { leaseId: summary.leaseId } : {}) } }, current.record.known ? current.record.value : undefined);
   const confirmed = await observeAttempt(deps, selector);
   if (confirmed) await reads.attempt(confirmed, "read back lease confirmation");
   return result({ ...common, ok: true, reason: "resolved", nextAction: "dispatch_again" });
 }
 
-const unexpected = (error: unknown) => result({ ok: false, reason: "stopped", stage: "resolve", lease: "unknown", observed: {},
+const unexpected = (error: unknown) => result({ ok: false, reason: error instanceof TaskStoreError ? "refused" : "stopped", stage: "resolve", lease: "unknown", observed: {},
   detail: `Resolution stopped: ${error instanceof Error ? error.message : String(error)}`, nextAction: "inspect_attempt" });
 
-/** Records what the operator established about one failure. It never performs the uncertain effect. */
+/** Records what the caller established about one failure. It never performs the uncertain effect. */
 export async function resolveReadFailure(deps: Dependencies, options: AttemptSelector & {
   failureSequence: number; outcome: "happened" | "not_happened"; note: string;
 }): Promise<DispatchResult> {
   const reads = new OwnerReads(deps, "resolve", "leaseId" in options ? options.leaseId : undefined);
   try {
     requireOperationAuthority(deps, ["integrate"], options);
+    if (deps.caller.kind === "supervisor") {
+      const selected = "taskId" in options ? deps.attempts.findForTask(options.taskId, options.attempt) : await deps.attempts.findByLease(options.leaseId);
+      if (selected && effectBefore(selected, options.failureSequence)?.kind === "lease_return_started") requireOperationAuthority(deps, ["returnLease"], options);
+    }
     const observation = await observeAttempt(deps, options);
     const refuse = (detail: string) => result({ ok: false, reason: "refused", stage: "resolve", lease: "unknown", observed: {}, detail, nextAction: "inspect_attempt" });
     if (!observation) return refuse("No attempt matches this reconciliation");
@@ -128,7 +132,7 @@ export async function resolveReadFailure(deps: Dependencies, options: AttemptSel
       intent && options.outcome === "happened" && (fresh.leaseHeld || fresh.leaseInOtherPool || fresh.facts.unknown.length)) return refuse("The worker or lease changed while reconciling; inspect the owners again");
     await deps.attempts.appendConfirmed(record, "operator_resolved", { action: "owner_read_reconciled", note: options.note },
       { fact: "owner_read_reconciled", scope: { failureSequence: options.failureSequence, outcome: options.outcome, ...(intent ? { returnId: intent.data.returnId as string } : {}) } },
-      callerName(deps.caller), current.record.known ? current.record.value : undefined);
+      current.record.known ? current.record.value : undefined);
     return result({ ok: true, reason: "resolved", stage: "resolve", lease: fresh.leaseHeld ? "preserved" : "none", attempt: fresh.attempt,
       observed: { failureSequence: options.failureSequence, outcome: options.outcome }, nextAction: "inspect_attempt" });
   } catch (error) { return readRefusal(error) ?? unexpected(error); }

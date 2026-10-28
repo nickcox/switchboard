@@ -1,3 +1,4 @@
+import { requireOperationAuthority } from "./safety.ts";
 import { performance } from "node:perf_hooks";
 import type { AttemptRecord } from "../attempts/log.ts";
 import { latestChecks, type CheckResult } from "../attempts/checks.ts";
@@ -25,6 +26,7 @@ export async function checkWorkspace(deps: Dependencies, reads: OwnerReads, work
 
 /** Check failures are advisory facts, not uncertain acceptance or integration effects. */
 export async function runChecks(deps: Dependencies, reads: OwnerReads, record: AttemptRecord, workspace: string, commit: string): Promise<{ checks: CheckResult[]; refusal?: string }> {
+  requireOperationAuthority(deps, ["acceptOutput"], record);
   let current = await deps.attempts.read(record);
   let checks = latestChecks(current, commit);
   const refusal = await checkWorkspace(deps, reads, workspace, commit);
@@ -33,6 +35,7 @@ export async function runChecks(deps: Dependencies, reads: OwnerReads, record: A
     if (checks.some(result => result.name === check.name && result.status === "passed")) continue;
     const refusal = await checkWorkspace(deps, reads, workspace, commit);
     if (refusal) return { checks, refusal };
+    requireOperationAuthority(deps, ["acceptOutput"], record);
     const start = performance.now();
     let fact: CheckResult;
     try {

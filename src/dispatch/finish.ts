@@ -1,3 +1,4 @@
+import { TaskStoreError } from "../tasks/store.ts";
 import { callerName } from "../caller.ts";
 import { randomUUID } from "node:crypto";
 import { checkWorkspace, runChecks } from "./checks.ts";
@@ -71,7 +72,7 @@ async function returnLease(deps: OperationDependencies, record: AttemptRecord, a
   const returnId = randomUUID();
   deps.reads.effectAttempted = true;
   await deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by, returnId },
-    { fact: "no_processes", scope: { leaseId, returnId } }, callerName(deps.caller));
+    { fact: "no_processes", scope: { leaseId, returnId } });
   const retention = await retained();
   const current = await locate(deps, leaseId);
   if (!("record" in current)) throw new Error(current.detail ?? "The attempt cannot be read before returning its lease");
@@ -153,8 +154,8 @@ async function recheck(deps: OperationDependencies, attempt: AttemptAssessment, 
  * the lease's state is unknown only in the sense that this handler does not know which step failed.
  */
 const unexpected = (command: "finish" | "discard") => (error: unknown) => readRefusal(error) ?? result({
-  ok: false, reason: "stopped", stage: "finish", lease: "unknown", observed: {},
-  detail: `${command} failed unexpectedly: ${error instanceof Error ? error.message : String(error)}. Check status, then run ${command} again`, nextAction: "inspect_attempt",
+  ok: false, reason: error instanceof TaskStoreError ? "refused" : "stopped", stage: "finish", lease: error instanceof TaskStoreError ? "preserved" : "unknown", observed: {},
+  detail: `${command} ${error instanceof TaskStoreError ? "refused" : "failed unexpectedly"}: ${error instanceof Error ? error.message : String(error)}. Check status, then run ${command} again`, nextAction: "inspect_attempt",
 });
 
 export async function finish(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; dryRun?: boolean; acceptOutput?: boolean }): Promise<DispatchResult> {
@@ -315,9 +316,9 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
       const permission = checkCanAcceptOutput(current.attempt.facts, true);
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
       deps.reads.effectAttempted = true;
-      await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, callerName(deps.caller), current.record);
+      await deps.attempts.appendConfirmed(record, "output_accepted", { commit: acceptedCommit }, { fact: "output_accepted", scope: { commit: acceptedCommit } }, current.record);
     }
-    catch (error) { return stopped(error, "record the operator's output acceptance"); }
+    catch (error) { return stopped(error, "record output acceptance"); }
   }
   if (integration) {
     try {
@@ -330,6 +331,11 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
       await fastForward({ git: deps.policy!.git, environment: deps.policy!.environment, repository: deps.repository, ...gitReads(deps),
         beforeEffect: async () => {
+          requireOperationAuthority(deps, ["integrate", "acceptOutput"], options);
+          if (deps.caller.kind === "supervisor") {
+            const permission = evidence(await deps.attempts.read(record), integration.to).permission;
+            if (!permission.allowed) throw new Error(permission.detail);
+          }
           await deps.reads.checkEffects();
           deps.reads.effectAttempted = true;
           await deps.attempts.append(record, "integration_started", { targetBranch: integration.target, from: integration.from, commit: integration.to });
@@ -397,7 +403,7 @@ async function discardAttempt(deps: OperationDependencies, options: { leaseId: s
     const permission = checkCanDiscard(current.attempt.facts, options.confirm);
     if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
     deps.reads.effectAttempted = true;
-    await deps.attempts.discardAttempt(record, task, callerName(deps.caller), options.leaseId, options.note, current.record);
+    await deps.attempts.discardAttempt(record, task, options.leaseId, options.note, current.record);
   } catch (error) { return stopped(error, "record the discard"); }
   try { await returnLease(deps, record, attempt, "discard", async () => false); }
   catch (error) { return stopped(error, `return lease ${options.leaseId}`); }

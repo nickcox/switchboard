@@ -174,12 +174,12 @@ for (const action of ["stopped", "returned"] as const) {
         const f = await orphan();
         if (action === "returned") {
           await f.deps.attempts.appendConfirmed(f.ref, "operator_resolved", { action: "worker_stopped" },
-            { fact: "worker_stopped", scope: { leaseId: f.leaseId } }, "operator:fixture");
+            { fact: "worker_stopped", scope: { leaseId: f.leaseId } });
         }
         if (point === "intent") {
           const returnId = randomUUID();
           await f.deps.attempts.appendConfirmed(f.ref, "lease_return_started", { leaseId: f.leaseId, by: "finish", returnId },
-            { fact: "no_processes", scope: { leaseId: f.leaseId, returnId } }, "operator:fixture");
+            { fact: "no_processes", scope: { leaseId: f.leaseId, returnId } });
         }
         let pending = true;
         const deps = inject(f.deps, owner, () => {

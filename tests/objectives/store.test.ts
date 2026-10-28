@@ -20,7 +20,7 @@ async function acceptedTask(f: Awaited<ReturnType<typeof fixture>>, taskId = "wo
   await f.tasks.add({ id: taskId, title: "Work", objectiveId: "goal" });
   const { ref } = await f.attempts.reserveAttempt({ taskId, requested: {}, maximum: 10, specification: specificationFor });
   const commit = "a".repeat(40);
-  await f.attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }, "operator:creator");
+  await f.attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
   return { ref, commit };
 }
 

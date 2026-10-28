@@ -26,7 +26,7 @@ All objective commands accept `--config <path>` and `--json`. Add takes either t
 - `availableReferences`, the accepted commits and recorded reviews that completion statements can cite
 - `history`, an ordered record of who changed what and when
 
-The command-line actor is the operating-system user, recorded as `operator:<username>`, not a command argument. Objective operations take their actor from the hosting code. Caller permissions and creator-only changes are **not enforced yet**; the later caller-identity task will enforce them.
+The command-line caller is the operating-system user, recorded as `operator:<username>`, not a command argument or the `USER`/`USERNAME` environment variables. Every changing operation takes its caller from trusted hosting code. Objective history, task changes, attempt entries and scoped confirmations record that caller. See [callers and permissions](#callers-and-permissions).
 
 `status` briefly shows each open objective's request and done/total task counts, as well as its existing attempt information. JSON status includes an `objectives` list. A done task count is progress, not objective completion.
 
@@ -54,7 +54,7 @@ switchboard objective update release-notes --clear-deadline
 
 Update can replace criteria, scope, constraints, permissions, budget or deadline. It cannot replace the person's original request or creator, or set a state directly. Each effective update is transactional with an append-only history entry containing the actor, time and the old and new values of each changed field. No-op updates do not add history. Creation, completion, abandonment and reopening are recorded too.
 
-Permissions and budgets are **recorded only in this step**. They do not yet refuse dispatch, stop workers, restrict commands or enforce creator-only changes. In particular, recording a zero budget, a past deadline or `dispatch: false` is not a way to stop work today. Use the existing hold and stop commands for that.
+Permissions are enforced inside operations, including their dry runs. Only the person who created an objective can change its permissions, budget or criteria, or abandon it. Other person callers retain their normal task and attempt authority. Budgets and deadlines are still recorded only: a zero budget or past deadline does not yet refuse dispatch or stop a worker. `dispatch: false` refuses new supervisor dispatches, not a person's dispatch and not an already running worker.
 
 The default permissions record grants the extensive authority described in the [Phase 3 PRD](phases/03-supervisor/PRD.md#caller-identity-permissions-and-budget). `--permissions-file` replaces the whole JSON record, with exactly these boolean fields:
 
@@ -74,7 +74,7 @@ The default permissions record grants the extensive authority described in the [
 }
 ```
 
-`manageTasks` records authority to create, change, order, hold and release tasks within the objective. `continueAttempts` covers starting from kept earlier output; `integrate` and `rebase` cover local-merge integration and `finish --rebase`. The other fields name the corresponding operations. Some operations, such as answering worker questions, will arrive in later tasks. None grants authority outside the objective, to change the supervisor's own authority, or to return a lease. Existing safety rules and the person's `--no-processes` confirmation for lease return are unchanged.
+`manageTasks` permits creating, changing, ordering, holding and releasing tasks within the objective, creating reviews, pruning its eligible attempts, and updating its scope or constraints or reopening it. `completeTasks` separately permits marking tasks done. Starting from kept output requires both `dispatch` and `continueAttempts`; stop confirmations use `stopWorkers`. `acceptOutput` permits acceptance only with passing evidence for the exact commit, and `integrate` additionally permits local-merge integration. `rebase` and `answerQuestions` reserve authority for operations that will arrive later; neither `finish --rebase` nor worker questions is implemented yet. The other fields name the corresponding operations. None grants authority outside the objective, to change the supervisor's own authority, or to return a lease. Existing safety rules and the person's `--no-processes` confirmation for lease return are unchanged.
 
 `--budget-file` also replaces the whole JSON record:
 
@@ -83,6 +83,28 @@ The default permissions record grants the extensive authority described in the [
 ```
 
 Both values must be finite nonnegative numbers or `null` for no limit, the default. `maxCost` uses the worker runtime's reported cost units, as the existing attempt limit does. `maxWorkerTimeMs` records elapsed worker time in milliseconds across the objective's attempts, not the supervisor's conversation time. Accounting and enforcement come later. A deadline must be an ISO timestamp with `Z` or an explicit timezone offset. It defaults to `null`; `--clear-deadline` clears it.
+
+## Callers and permissions
+
+A caller is a host-supplied `Caller` from `src/caller.ts`: `{ kind: "person", id: "operator:<username>" }` or `{ kind: "supervisor", objectiveId: "<id>" }`. The CLI constructs the person with `node:os`'s `userInfo()`. There is no `--caller` option. Stop and steer keep `--as`, but store it as a `label` alongside the caller-derived `sender`, never as authority.
+
+There is no supervisor host yet. Its eventual tools will call operations in-process, with dependencies created by trusted code, for example:
+
+```ts
+const caller: Caller = { kind: "supervisor", objectiveId: "release-notes" };
+const deps = await createDependencies(config, caller);
+try {
+  await dispatchOnce(deps, { taskId: "release-notes-write", requestId: "stable-request" });
+} finally { deps.close(); }
+```
+
+Task and objective stores also take their caller from the host, when opened or constructed, not from task data or update arguments. A manually assembled dependency bundle must bind the same caller to its attempt store. Model arguments, worker output and display labels cannot substitute a person caller. This is an application boundary, not a sandbox against trusted host code or workers with unrestricted filesystem access.
+
+The checks live in `src/dispatch/safety.ts`, and operations re-read the objective's current permissions before effects, including inside their database transactions. A person is not restricted by the permission booleans. A supervisor must name an existing objective, and cannot act on, move, unlink or create tasks outside it. Automatic dispatch selects only its objective's ready tasks; bulk conversion and pruning leave other tasks alone. Database-wide imports require a person.
+
+Three limits cannot be granted away: the supervisor cannot change any objective's permissions, budget or criteria or abandon it; it cannot change tasks outside its objective or create them there; and it cannot return a lease, including `finish --no-processes`, `discard`, `resolve --lease-returned` or reconciliation of a lease-return effect. Finishing without lease return still lets dependent tasks progress. Acceptance additionally requires `checkAcceptanceEvidence` to pass for the exact commit: every currently configured check and the latest review of that commit must have passed, even when accepting output without a worker result. A later commit needs its own evidence. A review verdict can be recorded without accepting the review task's output.
+
+Schema version 11 adds append-only `task_changes` with the caller, action, time and changes. New attempt entries carry `askedBy`; confirmations retain `confirmedBy`, and archive and cleanup records retain their callers too. Older records are still readable without inventing a missing caller. Imports preserve historical entries and record the importing caller separately in task history.
 
 ## Completing, abandoning and reopening
 

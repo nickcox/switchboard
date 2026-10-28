@@ -50,9 +50,9 @@ test("requests still being forwarded as the worker finishes are answered and rec
   const dispatching = dispatchOnce(f.deps);
   const record = await running(f, "drain-a1");
   // The steer ends the run; the follow-up is answered only after a delay, while the worker is finishing.
-  await submitRequest(record, { kind: "steer", message: "Finish now", sender: "operator:one" });
+  await submitRequest(record, { kind: "person", id: "operator:one" }, { kind: "steer", message: "Finish now" });
   await sleep(5);
-  await submitRequest(record, { kind: "follow_up", message: "Then tidy up", sender: "operator:two" });
+  await submitRequest(record, { kind: "person", id: "operator:two" }, { kind: "follow_up", message: "Then tidy up" });
   const outcome = await dispatching;
   assert.equal(outcome.reason, "held");
   const rows = f.tasks.database.all("SELECT id, result FROM control_requests WHERE claim_id = ? AND claimed_by = 'dispatcher'", record.claimId);

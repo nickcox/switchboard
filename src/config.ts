@@ -1,4 +1,5 @@
 import { constants } from "node:fs";
+import { callerSchema, type Caller } from "./caller.ts";
 import { access, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -115,8 +116,6 @@ function inherited(names: string[]): Record<string, string> {
   return Object.fromEntries(names.flatMap(name => (process.env[name] === undefined ? [] : [[name, process.env[name]!]])));
 }
 
-import { callerSchema, type Caller } from "./caller.ts";
-
 /** Opens local records, deferring external owners unless dispatch needs its preflight before reservation. */
 export async function createDependencies(config: Config, caller: Caller, options: { dispatch?: boolean; progress?: (message: string) => void } = {}): Promise<Dependencies & { close(): void }> {
   caller = callerSchema.parse(caller);
@@ -163,7 +162,7 @@ export async function createDependencies(config: Config, caller: Caller, options
       maxAttempts: config.maxAttempts,
       maxAttemptsPerTask: config.maxAttemptsPerTask,
       workspaces,
-      attempts: new AttemptStore(tasks.database, config.contextId, caller),
+      attempts: new AttemptStore(tasks.database, config.contextId, caller, config.checks),
       runtime,
       runtimeSettings, configurationProvenance: configurationProvenance(config),
       launch: (input, signal, onRequest, settings) => {

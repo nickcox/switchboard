@@ -2,6 +2,7 @@ import type { AttemptRecord } from "../attempts/log.ts";
 import { onPath } from "../infra/executables.ts";
 import { removeStartingPoint, startingPointBranch, type StartingPointCleanup } from "../workspaces/starting-point.ts";
 import { isOpen } from "./attempt.ts";
+import { requireOperationAuthority } from "./safety.ts";
 import type { Dependencies } from "./dependencies.ts";
 
 /** An allocation no longer needs its base ref. Without one, wait until the attempt is closed. */
@@ -11,6 +12,7 @@ export async function cleanupStartingPoint(deps: Dependencies, record: AttemptRe
   if (!point || !specification?.outputBranch || !specification.backingRepository || !record.allocation && isOpen(record)) return;
   const { outputBranch, backingRepository: repository } = specification;
   try {
+    requireOperationAuthority(deps, ["recordAttempt"], record);
     return await removeStartingPoint(deps.policy?.git ?? onPath("git"), deps.policy?.environment ?? {}, {
       repository, outputBranch, commit: point.commit, dryRun,
     });

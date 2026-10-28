@@ -82,8 +82,8 @@ test("database operations reject an attempt that changed while the command was w
   const expectedTask = (await f.tasks.read("boundary-a1"))!;
   await f.deps.attempts.append(ref, "integrated", { policy: "local-merge", targetBranch: "main", commit: "a".repeat(40) });
   await assert.rejects(f.deps.attempts.finishAttempt(ref, expectedTask, snapshot), { reason: "attempt_changed" });
-  await assert.rejects(f.deps.attempts.discardAttempt(ref, expectedTask, "operator", "lease", undefined, snapshot), { reason: "attempt_changed" });
-  await assert.rejects(f.deps.attempts.appendConfirmed(ref, "output_accepted", { commit: "a".repeat(40) }, { fact: "output_accepted", scope: { commit: "a".repeat(40) } }, "operator", snapshot), { reason: "attempt_changed" });
+  await assert.rejects(f.deps.attempts.discardAttempt(ref, expectedTask, "lease", undefined, snapshot), { reason: "attempt_changed" });
+  await assert.rejects(f.deps.attempts.appendConfirmed(ref, "output_accepted", { commit: "a".repeat(40) }, { fact: "output_accepted", scope: { commit: "a".repeat(40) } }, snapshot), { reason: "attempt_changed" });
   assert.equal((await f.tasks.read("boundary-a1"))?.state, "queued");
   assert.deepEqual(f.deps.attempts.confirmations(ref), []);
 });

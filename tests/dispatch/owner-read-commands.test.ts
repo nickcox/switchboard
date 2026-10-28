@@ -31,7 +31,7 @@ for (const command of ["rev-parse", "merge-base", "rev-list", "status"]) {
         const record = (await f.deps.attempts.findByLease(leaseId))!;
         const returnId = randomUUID();
         await f.deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by: "finish", returnId },
-          { fact: "no_processes", scope: { leaseId, returnId } }, "operator:fixture");
+          { fact: "no_processes", scope: { leaseId, returnId } });
       }
       let returns = 0;
       const workspaces = Object.assign(Object.create(Object.getPrototypeOf(f.deps.workspaces)), f.deps.workspaces, {

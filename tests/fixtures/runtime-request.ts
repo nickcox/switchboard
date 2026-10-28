@@ -7,7 +7,7 @@ const record = (await new RuntimeRecords(root, path).discover(context)).find(rec
 if (mode === "foreign") {
   console.log(JSON.stringify({ dispatcher: await claimRequest(record, requestId!, "dispatcher"), withdrawn: await claimRequest(record, requestId!, "withdrawn") }));
 } else {
-  const request = await submitRequest(record, { kind: "stop", sender: "operator:subprocess" });
+  const request = await submitRequest(record, { kind: "person", id: "operator:subprocess" }, { kind: "stop" });
   process.send!({ id: request.id });
   process.once("message", () => {
     void claimRequest(record, request.id, "withdrawn").then(won => {

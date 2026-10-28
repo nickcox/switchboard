@@ -86,6 +86,7 @@ export class SqliteTaskStore implements TaskStore {
   }
   async convertCriteria(): Promise<{ id: string; status: "converted" | "unconverted"; reason?: string }[]> {
     return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "manageTasks", { objectiveId: this.caller.kind === "supervisor" ? this.caller.objectiveId : null });
       const reports: { id: string; status: "converted" | "unconverted"; reason?: string }[] = [];
       for (const row of this.database.all("SELECT id FROM tasks WHERE (? IS NULL OR repo = ?) ORDER BY position", this.repo, this.repo)) {
         const task = this.require(String(row.id));

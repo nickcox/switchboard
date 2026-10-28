@@ -88,7 +88,7 @@ for (const verdict of ["passed", "failed"] as const) test(`a ${verdict} review s
     assert.equal((await dispatchOnce(f.deps, { taskId: reviewId, requestId: "review-request" })).reason, "existing_request");
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1);
     const commit = f.run(["rev-parse", "HEAD"], f.source.allocation!.workspace);
-    await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }, "operator:fixture");
+    await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
     const changed = await status(f.deps);
     assert.equal(changed.attempts.find(attempt => attempt.attempt.taskId === taskId)!.reviews, undefined, "Old findings do not apply to a later output commit");
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1, "Historical findings are kept");
@@ -229,7 +229,7 @@ test("dispatch refuses when the reviewed output changes after review task creati
     const created = await createReview(f.deps, { taskId });
     f.run(["commit", "--allow-empty", "--no-gpg-sign", "-m", "Changed accepted output"], f.source.allocation!.workspace);
     const commit = f.run(["rev-parse", "HEAD"], f.source.allocation!.workspace);
-    await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }, "operator:fixture");
+    await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
     const outcome = await dispatchOnce(f.deps, { taskId: created.task!.id });
     assert.equal(outcome.reason, "refused", JSON.stringify(outcome));
     assert.match(outcome.detail!, /exact recorded target/);
@@ -277,7 +277,7 @@ test("a changed recorded output during review cannot receive findings for the ol
       const report = await launch(input, ...rest);
       f.run(["commit", "--allow-empty", "--no-gpg-sign", "-m", "Changed accepted output"], f.source.allocation!.workspace);
       const commit = f.run(["rev-parse", "HEAD"], f.source.allocation!.workspace);
-      await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }, "operator:fixture");
+      await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
       return report;
     };
     const outcome = await dispatchOnce(f.deps, { taskId: created.task!.id });

@@ -14,7 +14,7 @@ test("a request is forwarded once or withdrawn, never both; claims and results c
   const f = fixture();
   const record = await f.records.reserve(f.input);
   for (let index = 0; index < 8; index += 1) {
-    const request = await submitRequest(record, { kind: "steer", message: "Keep the fix small", sender: "operator" });
+    const request = await submitRequest(record, { kind: "person", id: "operator" }, { kind: "steer", message: "Keep the fix small" });
     const [forwarded, withdrawn] = await Promise.all([
       claimRequest(record, request.id, "dispatcher"), claimRequest(record, request.id, "withdrawn"),
     ]);
@@ -43,7 +43,7 @@ test("submitting with an old runtime snapshot refuses an observed exit or a stop
     if (stopped) await f.records.recordOperatorStop(record);
     else await f.records.recordChildExit(record, { started: true, code: 0, signal: null });
     assert.equal(record.child.status, "unknown", "the caller still has its old snapshot");
-    await assert.rejects(submitRequest(record, { kind: "stop", sender: "operator" }), /not running/);
+    await assert.rejects(submitRequest(record, { kind: "person", id: "operator" }, { kind: "stop" }), /not running/);
     assert.deepEqual(await unclaimedRequests(record), []);
   }
 });
@@ -51,7 +51,7 @@ test("submitting with an old runtime snapshot refuses an observed exit or a stop
 test("only the owning dispatcher or the original sender can claim a request", async () => {
   const f = fixture();
   const record = await f.records.reserve(f.input);
-  const request = await submitRequest(record, { kind: "stop", sender: "operator:parent" });
+  const request = await submitRequest(record, { kind: "person", id: "operator:parent" }, { kind: "stop" });
   const result = await run(process.execPath, [peer, join(f.dir, "runtime"), f.records.databasePath, f.input.identity.contextId, record.claimId, "foreign", request.id]);
   assert.deepEqual(JSON.parse(result.stdout), { dispatcher: false, withdrawn: false });
   assert.equal(await claimRequest({ ...record, claimId: "a-different-claim" }, request.id, "dispatcher"), false);
@@ -87,7 +87,7 @@ test("a sender in another process racing the owning dispatcher has exactly one w
 test("a claimed request with no result is reported but never forwarded again, even after claim release", async () => {
   const f = fixture();
   const record = await f.records.reserve(f.input);
-  const request = await submitRequest(record, { kind: "stop", sender: "operator" });
+  const request = await submitRequest(record, { kind: "person", id: "operator" }, { kind: "stop" });
   assert.equal(await claimRequest(record, request.id, "dispatcher"), true);
   await record.storage.releaseClaim(record.claimId);
   assert.deepEqual(await awaitDelivery(record, request.id, 1, 1), { state: "claimed" });

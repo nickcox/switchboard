@@ -25,7 +25,7 @@ export const reasons = {
   request_input_mismatch: "The request ID has already been used with different explicit inputs. Nothing was changed or launched.",
   reserved: "A new attempt was reserved from an earlier attempt's retained output. No workspace was acquired or worker launched.",
   existing_request: "An attempt with this request ID already exists; its current state is reported instead.",
-  resolved: "The operator's confirmation was recorded. The attempt no longer blocks dispatch.",
+  resolved: "The caller's confirmation was recorded. The attempt no longer blocks dispatch.",
   delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",
   undelivered: "No running dispatcher took the request in time, so it was withdrawn. It will never be forwarded.",
   finished: "The attempt was finished under the context's finalisation policy: its task is recorded as done.",

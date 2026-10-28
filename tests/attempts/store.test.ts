@@ -186,11 +186,11 @@ test("finish and discard refuse a changed task without inserting their entries o
     const expected = (await tasks.read("task"))!;
     await tasks.hold("task", "new decision");
     await assert.rejects(attempts.finishAttempt(ref, expected), { reason: "task_changed" });
-    await assert.rejects(attempts.discardAttempt(ref, expected, "operator", "lease"), { reason: "task_changed" });
+    await assert.rejects(attempts.discardAttempt(ref, expected, "lease"), { reason: "task_changed" });
     assert.deepEqual(attempts.read(ref).entries.map(e => e.kind), ["requested"]);
     assert.deepEqual(attempts.confirmations(ref), []);
     const now = (await tasks.read("task"))!;
-    await attempts.discardAttempt(ref, now, "operator", "lease", "discarded work");
+    await attempts.discardAttempt(ref, now, "lease", "discarded work");
     assert.equal((await tasks.read("task"))!.holdReason, "Switchboard attempt 1 discarded");
     assert.equal(attempts.confirmations(ref)[0]!.fact, "discard");
     await attempts.finishAttempt(ref, (await tasks.read("task"))!);
@@ -204,11 +204,11 @@ test("confirmation records name their attempt, person, time and exact scope", as
   try {
     const { ref } = await reserve(attempts);
     const confirmation = { fact: "no_processes" as const, scope: { leaseId: "lease", returnId: "3c33c74e-3214-440e-af1a-d2ab26d336f7" } };
-    await attempts.recordConfirmation(ref, confirmation, "operator:nick");
+    await attempts.recordConfirmation(ref, confirmation);
     const [record] = attempts.confirmations(ref);
     assert.deepEqual(record, { ...ref, ...confirmation, confirmedBy: "operator:test", confirmedAt: record!.confirmedAt });
     assert.ok(Number.isFinite(Date.parse(record!.confirmedAt)));
-    await assert.rejects(attempts.recordConfirmation(ref, { fact: "output_accepted", scope: { commit: "bad" } }, "operator"));
+    await assert.rejects(attempts.recordConfirmation(ref, { fact: "output_accepted", scope: { commit: "bad" } }));
     assert.equal(attempts.confirmations(ref).length, 1);
   } finally { tasks.close(); }
 });
@@ -220,14 +220,14 @@ test("confirmations authorise only the exact operation and lease return they nam
     const returnId = "3c33c74e-3214-440e-af1a-d2ab26d336f7";
     const otherReturn = "b861179a-8303-47af-adb8-d3cac4e08b10";
     await assert.rejects(attempts.appendConfirmed(ref, "output_accepted", { commit: "a".repeat(40) },
-      { fact: "output_accepted", scope: { commit: "b".repeat(40) } }, "operator"));
+      { fact: "output_accepted", scope: { commit: "b".repeat(40) } }));
     assert.deepEqual(attempts.confirmations(ref), []);
     await attempts.appendConfirmed(ref, "lease_return_started", { leaseId: "lease", by: "finish", returnId },
-      { fact: "no_processes", scope: { leaseId: "lease", returnId } }, "operator");
+      { fact: "no_processes", scope: { leaseId: "lease", returnId } });
     await assert.rejects(attempts.append(ref, "lease_returned", { leaseId: "lease", by: "finish", returnId: otherReturn }));
     await assert.rejects(attempts.append(ref, "lease_returned", { leaseId: "another-lease", by: "finish", returnId }));
     await assert.rejects(attempts.appendConfirmed(ref, "lease_return_started", { leaseId: "lease", by: "finish", returnId },
-      { fact: "no_processes", scope: { leaseId: "lease", returnId } }, "operator"));
+      { fact: "no_processes", scope: { leaseId: "lease", returnId } }));
     assert.equal(attempts.confirmations(ref).length, 1);
     await attempts.append(ref, "lease_returned", { leaseId: "lease", by: "finish", returnId });
   } finally { tasks.close(); }

@@ -1,4 +1,4 @@
-import type { Caller } from "../caller.ts";
+import { callerSchema, type Caller } from "../caller.ts";
 import type { Database } from "../database.ts";
 import type { Objective } from "../objectives/store.ts";
 import { TaskStoreError } from "../tasks/store.ts";
@@ -36,7 +36,7 @@ export function checkCaller(caller: Caller, operation: AuthorityOperation, objec
 }
 
 export function requireImportAuthority(caller: Caller): void {
-  const permission = checkCaller(caller, "import");
+  const permission = checkCaller(callerSchema.parse(caller), "import");
   if (!permission.allowed) throw new TaskStoreError("rejected", `${permission.reason}: ${permission.detail}`);
 }
 
@@ -51,6 +51,8 @@ export function requireAuthority(database: Database, caller: Caller, operation: 
 
 /** Resolve only local identity before any observation can record diagnostics or an effect. */
 export function requireOperationAuthority(deps: Dependencies, operations: AuthorityOperation[], selector: { taskId?: string; leaseId?: string } = {}): void {
+  const caller = callerSchema.parse(deps.caller);
+  if (JSON.stringify(caller) !== JSON.stringify(deps.attempts.caller)) throw new TaskStoreError("rejected", "The host must bind the same caller to the operation and its attempt store");
   const taskId = selector.taskId ?? (selector.leaseId === undefined ? undefined : deps.attempts.database.get(`SELECT task FROM attempt_entries WHERE context = ?
     AND json_extract(entry, '$.kind') IN ('leased','halted') AND json_extract(entry, '$.data.leaseId') = ?`, deps.contextId, selector.leaseId)?.task as string | undefined);
   for (const operation of operations) requireAuthority(deps.attempts.database, deps.caller, operation, taskId === undefined

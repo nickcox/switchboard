@@ -2,12 +2,14 @@ import { isAbsolute } from "node:path";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { z } from "zod";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
-import { requireAuthority } from "../dispatch/safety.ts";
+import { latestChecks, type CheckCommand } from "./checks.ts";
+import { recordedReviews } from "./reviews.ts";
+import { requireAuthority, checkAcceptanceEvidence } from "../dispatch/safety.ts";
 import { Database } from "../database.ts";
 import { childExitSchema, type RuntimeBinding } from "../runtime/records.ts";
 import { parseValidatedResult } from "../runtime/validated-result.ts";
 import { reviewTargetSchema, validateWorkerResult, type ReviewTarget } from "../runtime/contracts.ts";
-import type { Task, TaskState } from "../tasks/store.ts";
+import { TaskStoreError, type Task, type TaskState } from "../tasks/store.ts";
 import { attemptSpecificationSchema, startingPointSchema, storedSpecificationSchema, type AttemptSpecification, type StartingPoint } from "./specification.ts";
 import { requestFingerprint, type RequestInputs } from "./requests.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
@@ -47,7 +49,10 @@ export class AttemptStore {
   readonly database: Database;
   readonly contextId: string;
   readonly caller: Caller;
-  constructor(database: Database, contextId: string, caller: Caller) { this.database = database; this.contextId = nonempty.parse(contextId); this.caller = callerSchema.parse(caller); }
+  readonly checks: Pick<CheckCommand, "name">[];
+  constructor(database: Database, contextId: string, caller: Caller, checks: Pick<CheckCommand, "name">[] = []) {
+    this.database = database; this.contextId = nonempty.parse(contextId); this.caller = callerSchema.parse(caller); this.checks = checks;
+  }
 
   async checkStorage(roots: string[]): Promise<void> { await requireRetainedStorage(this.database.path, roots); }
   async forTask(taskId: string): Promise<AttemptRecord[]> {
@@ -205,6 +210,7 @@ export class AttemptStore {
     return this.database.transaction(() => {
       this.requireOpen(ref);
       requireAuthority(this.database, this.caller, outcome.outcome === "done" ? "completeTasks" : "recordAttempt", { taskId: ref.taskId });
+      if (outcome.outcome === "done") this.checkAcceptance(ref, this.startingPointCommit(this.read(ref)));
       if (!this.read(ref).entries.some(e => e.kind === "task_started")) throw new AttemptStoreError("not_ready", "The attempt has not started its task");
       const row = this.database.get("SELECT state, hold_revision, started_hold_revision FROM tasks WHERE id = ?", ref.taskId)!;
       const applied = row.state === "in_flight" && row.hold_revision === row.started_hold_revision;
@@ -221,6 +227,7 @@ export class AttemptStore {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
       requireAuthority(this.database, this.caller, "completeTasks", { taskId: ref.taskId });
+      this.checkAcceptance(ref, this.startingPointCommit(this.read(ref)));
       this.expectTask(ref.taskId, expected);
       this.writeOutcome(ref.taskId, "done", "finished");
       this.recordReview(ref, reviewRetained);
@@ -230,13 +237,13 @@ export class AttemptStore {
     });
   }
 
-  async discardAttempt(ref: AttemptRef, expected: ExpectedTask, confirmedBy: string, leaseId: string, note?: string, expectedRecord?: AttemptRecord): Promise<Task> {
+  async discardAttempt(ref: AttemptRef, expected: ExpectedTask, leaseId: string, note?: string, expectedRecord?: AttemptRecord): Promise<Task> {
     return this.database.transaction(() => {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
       requireAuthority(this.database, this.caller, "returnLease", { taskId: ref.taskId });
       const task = this.expectTask(ref.taskId, expected);
-      this.confirm(ref, { fact: "discard", scope: { leaseId } }, confirmedBy);
+      this.confirm(ref, { fact: "discard", scope: { leaseId } });
       if (task.state !== "done") this.writeOutcome(ref.taskId, "hold", `Switchboard attempt ${ref.attempt} discarded`);
       this.insert(ref, "discarded", note === undefined ? {} : { note });
       this.closeAttempt(ref);
@@ -260,7 +267,7 @@ export class AttemptStore {
     });
   }
 
-  async appendConfirmed<K extends "output_accepted" | "lease_return_started" | "operator_resolved">(ref: AttemptRef, kind: K, data: EntryData<K>, confirmation: Confirmation, confirmedBy: string, expectedRecord?: AttemptRecord): Promise<void> {
+  async appendConfirmed<K extends "output_accepted" | "lease_return_started" | "operator_resolved">(ref: AttemptRef, kind: K, data: EntryData<K>, confirmation: Confirmation, expectedRecord?: AttemptRecord): Promise<void> {
     await this.database.transaction(() => {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
@@ -283,7 +290,7 @@ export class AttemptStore {
           throw new AttemptStoreError("attempt_changed", "The read failure was already reconciled");
         }
       }
-      this.confirm(ref, confirmation, confirmedBy);
+      this.confirm(ref, confirmation);
       this.insert(ref, kind, data);
       if (kind === "operator_resolved") this.closeAttempt(ref);
     });
@@ -305,8 +312,8 @@ export class AttemptStore {
     });
   }
 
-  async recordConfirmation(ref: AttemptRef, confirmation: Confirmation, confirmedBy: string): Promise<void> {
-    await this.database.transaction(() => { this.requireAttempt(ref); this.confirm(ref, confirmation, confirmedBy); });
+  async recordConfirmation(ref: AttemptRef, confirmation: Confirmation): Promise<void> {
+    await this.database.transaction(() => { this.requireAttempt(ref); this.confirm(ref, confirmation); });
   }
 
   confirmations(ref: AttemptRef): ConfirmationRecord[] {
@@ -340,6 +347,7 @@ export class AttemptStore {
   async archiveAttempt(expected: AttemptRecord, summary: Record<string, unknown>, directories: string[], expectedTask?: { state: string; held: boolean; holdReason: string | null }): Promise<void> {
     if (directories.some(directory => !isAbsolute(directory))) throw new Error("Deletion paths must be absolute");
     await this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "prune", { taskId: expected.taskId });
       const current = this.expectRecord(expected);
       if (expectedTask) {
         const task = this.task(expected.taskId);
@@ -353,7 +361,7 @@ export class AttemptStore {
         expected.contextId, expected.taskId, expected.attempt);
       const archive = {
         ...identity(expected), summary, entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
-        archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected), acceptedCommits: this.acceptedCommits(expected),
+        archivedAt: new Date().toISOString(), archivedBy: callerName(this.caller), confirmations: this.confirmations(expected), acceptedCommits: this.acceptedCommits(expected),
         ...(current.entries.some(e => e.kind === "owner_read_failed") ? { readFailures: current.entries.filter(e => e.kind === "owner_read_failed" || e.kind === "owner_read_reconciled") } : {}),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
         ...(current.entries.some(entry => entry.kind === "review_recorded") ? { reviews: current.entries.filter(entry => entry.kind === "review_recorded").map(entry => entry.data) } : {}),
@@ -386,12 +394,13 @@ export class AttemptStore {
   async appendCleanup(deletion: PendingDeletion, kind: "deletion_started" | "deletion_confirmed" | "owner_read_failed", data: Record<string, unknown>): Promise<void> {
     this.checkContext(deletion);
     await this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "prune", { taskId: deletion.taskId });
       const row = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", deletion.contextId, deletion.taskId, deletion.attempt);
       if (!row) throw new Error("The cleanup archive is missing");
       const archive = JSON.parse(String(row.summary));
       archive.cleanup ??= {};
       const entries = archive.cleanup[deletion.directory] ??= [];
-      entries.push({ sequence: entries.length, kind, recordedAt: new Date().toISOString(), data });
+      entries.push({ sequence: entries.length, kind, recordedAt: new Date().toISOString(), askedBy: callerName(this.caller), data });
       this.database.run("UPDATE archived_attempts SET summary = ? WHERE context = ? AND task = ? AND attempt = ?", JSON.stringify(archive), deletion.contextId, deletion.taskId, deletion.attempt);
     });
   }
@@ -399,8 +408,11 @@ export class AttemptStore {
   /** Called only after the caller has removed the directory or found it absent. */
   async completeDeletion(deletion: PendingDeletion): Promise<void> {
     this.checkContext(deletion);
-    await this.database.transaction(() => this.database.run("DELETE FROM pending_attempt_deletions WHERE context = ? AND task = ? AND attempt = ? AND directory = ?",
-      deletion.contextId, deletion.taskId, deletion.attempt, deletion.directory));
+    await this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "prune", { taskId: deletion.taskId });
+      this.database.run("DELETE FROM pending_attempt_deletions WHERE context = ? AND task = ? AND attempt = ? AND directory = ?",
+        deletion.contextId, deletion.taskId, deletion.attempt, deletion.directory);
+    });
   }
 
   reviewTask(taskId: string): { target: ReviewTarget; acceptanceCriteria: string[]; backingRepository: string } | undefined {
@@ -435,7 +447,10 @@ export class AttemptStore {
         taskId, `Review ${target.taskId} attempt ${target.attempt}`, instructions, specification.repository, JSON.stringify(specification.acceptanceCriteria), objectiveId);
       this.database.run("INSERT INTO review_tasks VALUES(?,?,?,?,?,?,?)", taskId, this.contextId, target.taskId, target.attempt, JSON.stringify(target),
         JSON.stringify(specification.acceptanceCriteria), specification.backingRepository);
-      return this.task(taskId)!;
+      const added = this.task(taskId)!;
+      this.database.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
+        taskId, "review", callerName(this.caller), new Date().toISOString(), JSON.stringify({ before: null, after: added }));
+      return added;
     });
   }
 
@@ -518,7 +533,7 @@ export class AttemptStore {
     if (current.length !== expected.length) throw new AttemptStoreError("attempt_changed", "The task's attempts changed before reservation; inspect them and retry");
     for (const record of expected) this.expectRecord(record);
     const taskRecords = this.database.all("SELECT context, number FROM attempts WHERE task = ? AND number IS NOT NULL", taskId)
-      .map(row => new AttemptStore(this.database, String(row.context), this.caller).read({ contextId: String(row.context), taskId, attempt: Number(row.number) }));
+      .map(row => new AttemptStore(this.database, String(row.context), this.caller, this.checks).read({ contextId: String(row.context), taskId, attempt: Number(row.number) }));
     for (const record of taskRecords) {
       const launch = this.database.get("SELECT * FROM launches WHERE context = ? AND task = ? AND attempt = ? AND kind = 'launch'", record.contextId, taskId, record.attempt);
       const leaseId = launch ? String(launch.lease_id) : record.allocation?.leaseId;
@@ -569,12 +584,21 @@ export class AttemptStore {
     if (kind === "task_recorded" && entry.data.category === undefined) throw new Error("New outcomes require an explicit category");
     this.database.run("INSERT INTO attempt_entries VALUES(?,?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, sequence, JSON.stringify(entry));
   }
-  private confirm(ref: AttemptRef, confirmation: Confirmation, _confirmedBy: string) {
+  private confirm(ref: AttemptRef, confirmation: Confirmation) {
     const value = confirmationSchema.parse(confirmation);
+    if (value.fact === "output_accepted") this.checkAcceptance(ref, value.scope.commit);
+    if (value.fact === "owner_read_reconciled" && value.scope.returnId) requireAuthority(this.database, this.caller, "returnLease", { taskId: ref.taskId });
     requireAuthority(this.database, this.caller, ["no_processes", "lease_returned", "discard"].includes(value.fact) ? "returnLease"
       : value.fact === "output_accepted" ? "acceptOutput" : value.fact === "worker_stopped" ? "stopWorkers" : "integrate", { taskId: ref.taskId });
     this.database.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope) VALUES(?,?,?,?,?,?,?)",
       ref.contextId, ref.taskId, ref.attempt, value.fact, callerName(this.caller), new Date().toISOString(), JSON.stringify(value.scope));
+  }
+  private checkAcceptance(ref: AttemptRef, commit: string | undefined) {
+    if (this.caller.kind === "person") return;
+    requireAuthority(this.database, this.caller, "acceptOutput", { taskId: ref.taskId });
+    const record = this.read(ref);
+    const permission = checkAcceptanceEvidence(commit, this.checks, latestChecks(record, commit), recordedReviews(record, commit));
+    if (!permission.allowed) throw new TaskStoreError("rejected", `${permission.reason}: ${permission.detail}`);
   }
   private task(id: string): Task | undefined {
     const row = this.database.get(`SELECT *, EXISTS(SELECT 1 FROM dependencies d JOIN tasks b ON b.id = d.blocker

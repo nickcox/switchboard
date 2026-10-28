@@ -84,7 +84,7 @@ test("task CLI links and clears objectives with definition revisions; complete c
   const attempts = new AttemptStore(tasks.database, "fixture");
   const { ref } = await attempts.reserveAttempt({ taskId: "work", requested: {}, maximum: 1, specification: specificationFor });
   const commit = "c".repeat(40);
-  await attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }, "operator:fixture");
+  await attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
   tasks.close();
   const file = join(f.dir, "completion.json");
   await writeFile(file, JSON.stringify([{ position: 1, statement: "It works", references: [] }]));

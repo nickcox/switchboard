@@ -29,8 +29,8 @@ async function fixture(stopped = true, accepted = true) {
   await attempts.append(ref, "leased", { leaseId: "old-lease", workspace: "/fixture", backingRepository: "/fixture", baseRef: "main", outputBranch: "output", startingCommit: "a".repeat(40) });
   await attempts.append(ref, "launched", { sessionId: "00000000-0000-4000-8000-000000000001" });
   await attempts.append(ref, "halted", { stage: "launch", reason: "interrupted" });
-  if (stopped) await attempts.recordConfirmation(ref, { fact: "worker_stopped", scope: { leaseId: "old-lease", sessionId: "00000000-0000-4000-8000-000000000001" } }, "operator");
-  if (accepted) await attempts.appendConfirmed(ref, "output_accepted", { commit: output }, { fact: "output_accepted", scope: { commit: output } }, "operator");
+  if (stopped) await attempts.recordConfirmation(ref, { fact: "worker_stopped", scope: { leaseId: "old-lease", sessionId: "00000000-0000-4000-8000-000000000001" } });
+  if (accepted) await attempts.appendConfirmed(ref, "output_accepted", { commit: output }, { fact: "output_accepted", scope: { commit: output } });
   const options = () => ({
     taskId: "task", requested: { requestId: "continue" }, maximum: 2, startingPoint: point,
     startingPointEvidence: { records: attempts.list(), unknown: [] as string[], retainedCommit: output },

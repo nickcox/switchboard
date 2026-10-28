@@ -1,3 +1,5 @@
+import { callerName, type Caller } from "../caller.ts";
+import { requireAuthority } from "../dispatch/safety.ts";
 import { randomUUID } from "node:crypto";
 import { Database } from "../database.ts";
 import { attemptSpecificationSchema } from "../attempts/specification.ts";
@@ -144,13 +146,15 @@ export class RuntimeStore {
     return this.use(database => database.all("SELECT entry FROM worker_activity WHERE directory = ? ORDER BY sequence", directory).map(row => JSON.parse(String(row.entry))));
   }
 
-  async submit(claimId: string, request: ControlRequest): Promise<void> {
+  async submit(claimId: string, request: ControlRequest, caller: Caller): Promise<void> {
     await this.use(database => database.transaction(() => {
       const launch = database.get("SELECT directory, context, task, attempt, lease_id FROM launches WHERE claim_id = ?", claimId);
       if (!launch || database.get("SELECT 1 FROM worker_observations WHERE directory = ? AND kind = 'exit'", String(launch.directory)) ||
         database.get(`SELECT 1 FROM confirmations WHERE context = ? AND task = ? AND attempt = ? AND fact = 'worker_stopped'
           AND json_extract(scope, '$.leaseId') = ? AND (json_extract(scope, '$.sessionId') IS NULL OR json_extract(scope, '$.sessionId') = ?)`,
         String(launch.context), String(launch.task), Number(launch.attempt), String(launch.lease_id), request.identity.sessionId)) throw new Error("The worker is not running");
+      if (request.sender !== callerName(caller)) throw new Error("The request sender differs from its host caller");
+      requireAuthority(database, caller, request.kind === "stop" ? "stopWorkers" : "steerWorkers", { taskId: String(launch.task) });
       database.run("INSERT INTO control_requests(id,claim_id,request,created_at,sender_pid,sender_started_at) VALUES(?,?,?,?,?,?)",
         request.id, claimId, JSON.stringify(request), request.createdAt, process.pid, ownerStartedAt);
     }));
