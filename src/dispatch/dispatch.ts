@@ -15,6 +15,7 @@ import { observeAttempts } from "./observe.ts";
 import { assessAttempts, type AttemptAssessment } from "./assess.ts";
 import { checkCanDispatch, checkCanRedispatch } from "./safety.ts";
 import { OwnerReads, readRefusal } from "./owner-reads.ts";
+import { specificationFactory } from "./specification.ts";
 export type { ContractSpec, DeliveryConfiguration, Dependencies } from "./dependencies.ts";
 
 /** Owner state read before dispatch. Every field comes from its owner, not from memory. */
@@ -150,6 +151,7 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
   }
 
   if (options.dryRun) {
+    if (await reads.read("Attempt records", "check task attempt limit", () => deps.attempts.taskAttemptCount(taskId!)) >= (deps.maxAttemptsPerTask ?? 3)) return refusal("select", "inspect_attempt", "The task's attempt limit has been reached; review its earlier attempts before raising maxAttemptsPerTask", { ...observed, reason: "attempt_limit" });
     if (await reads.read("Attempt records", "check capacity", () => deps.attempts.activeCount()) >= (deps.maxAttempts ?? 1)) return refusal("select", "inspect_attempt", "The context's attempt maximum has been reached", { ...observed, reason: "capacity" });
     return result({
       ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
@@ -158,24 +160,11 @@ async function dispatchAttempt(deps: Dependencies, options: { taskId?: string; r
   }
 
   // Copy configuration before reservation; neither later edits nor acquisition may change this attempt's inputs.
-  const configuration = structuredClone({ delivery: deps.delivery, runtime: deps.runtimeSettings, repository: deps.repository, provenance: deps.configurationProvenance });
-  const resolvedContract = structuredClone(contract);
+  const specification = specificationFactory(deps, contract);
   let ref: AttemptRef;
   try {
-    const reservation = await deps.attempts.reserveAttempt({ taskId, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, repo: selected.repo, definitionRevision: selected.definitionRevision,
-      specification: (task, ref) => ({
-        version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
-        title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: task.acceptanceCriteria, repository: task.repo, kind: task.kind,
-        backingRepository: configuration.repository, baseRef: configuration.delivery.baseRef,
-        outputBranch: `${configuration.delivery.branchPrefix}${task.id}/attempt-${ref.attempt}`,
-        delivery: resolvedContract, runtime: configuration.runtime, provenance: {
-          ...configuration.provenance,
-          definitionRevision: `task:${task.id}.definitionRevision`, title: `task:${task.id}.title`, acceptanceCriteria: `task:${task.id}.acceptanceCriteria`,
-          instructions: `task:${task.id}.${task.body.trim() === "" ? "title" : "body"}`, kind: `task:${task.id}.kind`,
-          ...Object.fromEntries(Object.keys(resolvedContract).map(key => [`delivery.${key}`,
-            configuration.provenance[`delivery.${task.kind === null ? "default" : `byTaskKind.${task.kind}`}.${key}`] ?? "unknown"])),
-        },
-      }), requested: {
+    const reservation = await deps.attempts.reserveAttempt({ taskId, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, maximumPerTask: deps.maxAttemptsPerTask ?? 3, repo: selected.repo, definitionRevision: selected.definitionRevision,
+      specification, requested: {
       ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
     } });
     ref = reservation.ref;

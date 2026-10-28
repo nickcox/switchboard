@@ -39,6 +39,12 @@ export class RuntimeStore {
         return undefined;
       }
       if (binding) {
+        if (database.get(`SELECT 1 FROM (
+          SELECT context, task, specification FROM attempt_specifications
+          UNION ALL SELECT context, task, json_extract(summary, '$.specification') AS specification FROM archived_attempts
+        ) WHERE context = ? AND task = ? AND json_extract(specification, '$.startingPoint.taskId') = ?
+          AND json_extract(specification, '$.startingPoint.attempt') = ?`,
+        launch.context, launch.task, launch.task, launch.attempt)) throw new Error("A later attempt already starts from this attempt; its launch permission is closed");
         const row = database.get("SELECT specification FROM attempt_specifications WHERE context = ? AND task = ? AND attempt = ?", launch.context, launch.task, launch.attempt);
         const specification = attemptSpecificationSchema.safeParse(row && JSON.parse(String(row.specification)));
         if (!specification.success) throw new Error("The stored attempt specification is incomplete; this attempt cannot be launched");

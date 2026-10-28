@@ -4,12 +4,16 @@ import { runtimeSettingsSchema } from "../runtime/settings.ts";
 export type { RuntimeSettings } from "../runtime/settings.ts";
 
 const nonempty = z.string().min(1);
+export const startingPointSchema = z.strictObject({ taskId: nonempty, attempt: z.number().int().positive() });
+export type StartingPoint = z.infer<typeof startingPointSchema>;
+export const recordedStartingPointSchema = startingPointSchema.extend({ commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/) });
 const contractSchema = deliverySchema.omit({ baseRef: true, outputBranch: true, startingCommit: true });
 export const attemptSpecificationSchema = z.strictObject({
   version: z.literal(1), taskId: nonempty, contextId: nonempty,
   definitionRevision: z.number().int().positive(), title: z.string(), instructions: z.string(), acceptanceCriteria: z.array(nonempty),
   repository: nonempty.nullable(), backingRepository: nonempty, kind: nonempty.nullable(),
   baseRef: nonempty, outputBranch: nonempty, delivery: contractSchema, runtime: runtimeSettingsSchema,
+  startingPoint: recordedStartingPointSchema.optional(),
   /** Configuration selectors, or unknown for values that older bindings did not retain. */
   provenance: z.record(z.string(), nonempty),
 });
@@ -24,7 +28,8 @@ export type AttemptAllocation = {
 
 export function workerInput(specification: AttemptSpecification, allocation: AttemptAllocation, sessionId: string): WorkerInput {
   if (!allocation.backingRepository || allocation.backingRepository !== specification.backingRepository ||
-    allocation.baseRef !== specification.baseRef || allocation.outputBranch !== specification.outputBranch) {
+    allocation.baseRef !== specification.baseRef || allocation.outputBranch !== specification.outputBranch ||
+    specification.startingPoint !== undefined && allocation.startingCommit !== specification.startingPoint.commit) {
     throw new Error("The allocation does not match the stored attempt specification");
   }
   return {

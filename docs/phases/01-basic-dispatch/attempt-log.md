@@ -32,6 +32,14 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 
 Outcome categories are `done`, `review_required`, `not_retained`, `held_by_worker`, `failed`, `interrupted` and `over_budget`. Classification reads the category, never a category inferred from a hold reason. Task instructions are not changed to carry attempt evidence; the result and attempt records retain it.
 
+## Starting-point reservations
+
+A reservation starting from kept output uses a fresh `requested` entry and request ID. Its immutable attempt specification additionally stores `startingPoint: { taskId, attempt, commit }`, linking the same task's earlier attempt and exact recorded output commit. Output acceptance takes precedence over the validated worker result; a current branch head or result file is never substituted. The explicit source task and attempt participate in the request fingerprint, so replay cannot change the starting point. The source's entries, confirmations, lease, session and branch are left unchanged.
+
+`reserveFromAttempt` performs owner and retention checks, then `AttemptStore.reserveAttempt` atomically checks the source snapshot, observed exits or scoped stop confirmations, task-wide worker exclusion, readiness, context capacity and `maxAttemptsPerTask` (default 3), and writes the new number, request, attempt and specification. Retained numbers, including archives and other contexts, count towards the per-task limit. Replays return the original reservation even at the limit. Refusals change nothing; a transaction crash leaves either all reservation records or none. A reserved continuation prevents the source from obtaining fresh launch permission, even after archiving.
+
+The named source's retained lease is allowed for this reservation only. Ordinary dispatch and other earlier leases retain their existing exclusions. The operation stops at reservation: there is no new `leased` or `launched` entry yet, no task start and no reused worker identity. A later workspace-preparation step must allocate a fresh branch, lease and session from the stored commit. See the [task-store contract](../../task-store.md#starting-from-an-earlier-attempt).
+
 ## Failed owner reads
 
 `dispatch`, `resolve`, `prune`, `finish` and `discard` classify failures at declared read boundaries, from evidence held by the operation, not by treating every exception as retryable. The shared classification has four kinds: `owner_read` (a failed read before any effect was attempted), `approval_required` (a missing or expired approval or confirmation), `effect_uncertain` (an external effect may have happened), and `rejected` (an invalid request or definite rejection).

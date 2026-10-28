@@ -20,6 +20,7 @@ export const reasons = {
   reconciliation_required: "An owner read failed after an effect or its intent. Reconciliation is required before any further effect.",
   task_definition_changed: "The task definition changed during acquisition. The attempt is held without launching and its lease is retained.",
   request_input_mismatch: "The request ID has already been used with different explicit inputs. Nothing was changed or launched.",
+  reserved: "A new attempt was reserved from an earlier attempt's retained output. No workspace was acquired or worker launched.",
   existing_request: "An attempt with this request ID already exists; its current state is reported instead.",
   resolved: "The operator's confirmation was recorded. The attempt no longer blocks dispatch.",
   delivered: "The dispatcher that owns the worker took the request. The detail says what happened to it, if known.",

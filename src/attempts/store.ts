@@ -2,8 +2,10 @@ import { isAbsolute } from "node:path";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { z } from "zod";
 import { Database } from "../database.ts";
+import { childExitSchema, type RuntimeBinding } from "../runtime/records.ts";
+import { parseValidatedResult } from "../runtime/validated-result.ts";
 import type { Task, TaskState } from "../tasks/store.ts";
-import { attemptSpecificationSchema, storedSpecificationSchema, type AttemptSpecification } from "./specification.ts";
+import { attemptSpecificationSchema, startingPointSchema, storedSpecificationSchema, type AttemptSpecification, type StartingPoint } from "./specification.ts";
 import { requestFingerprint, type RequestInputs } from "./requests.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
 
@@ -21,12 +23,20 @@ export type Confirmation = z.infer<typeof confirmationSchema>;
 export type ConfirmationRecord = AttemptRef & Confirmation & { confirmedBy: string; confirmedAt: string };
 export type PendingDeletion = AttemptRef & { directory: string };
 export type ArchivedRequest = AttemptRef & { archived: true; summary: Record<string, unknown> };
+export type StartingPointEvidence = {
+  records: AttemptRecord[];
+  unknown: string[];
+  retainedCommit?: string;
+};
 type ExpectedTask = Pick<Task, "state" | "holdReason" | "holdRevision">;
 const identity = (ref: AttemptRef): AttemptRef => ({ contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt });
 
 export class AttemptStoreError extends Error {
-  readonly reason: "not_ready" | "capacity" | "request_reserved" | "request_input_mismatch" | "attempt_closed" | "task_changed" | "attempt_changed" | "task_definition_changed" | "specification_incomplete";
-  constructor(reason: AttemptStoreError["reason"], message: string) { super(message); this.reason = reason; }
+  readonly reason: "not_ready" | "capacity" | "request_reserved" | "request_input_mismatch" | "attempt_closed" | "task_changed" | "attempt_changed" | "task_definition_changed" | "specification_incomplete" | "starting_point_wrong_task" | "starting_point_unknown" | "possibly_running" | "output_not_recorded" | "not_retained" | "attempt_limit";
+  readonly nextAction: "inspect_attempt" | "stop_worker" | "fix_or_discard";
+  constructor(reason: AttemptStoreError["reason"], message: string, nextAction: AttemptStoreError["nextAction"] = "inspect_attempt") {
+    super(message); this.reason = reason; this.nextAction = nextAction;
+  }
 }
 
 /** Transactional task/attempt operations. External checks and directory deletion belong to the caller. */
@@ -53,6 +63,9 @@ export class AttemptStore {
   latestNumber(taskId: string): number | undefined {
     const row = this.database.get("SELECT max(number) AS n FROM attempts WHERE context = ? AND task = ?", this.contextId, taskId);
     return row?.n == null ? undefined : Number(row.n);
+  }
+  taskAttemptCount(taskId: string): number {
+    return Number(this.database.get("SELECT count(*) AS n FROM attempt_numbers WHERE task = ?", taskId)!.n);
   }
   activeCount(): number {
     return Number(this.database.get("SELECT count(*) AS n FROM attempts WHERE context = ? AND number IS NOT NULL AND closed = 0", this.contextId)!.n);
@@ -85,19 +98,30 @@ export class AttemptStore {
     taskId: string; requested: EntryData<"requested">; maximum: number; repo?: string | null;
     definitionRevision?: number;
     requestInputs?: RequestInputs;
+    maximumPerTask?: number;
+    startingPoint?: StartingPoint;
+    startingPointEvidence?: StartingPointEvidence;
     specification: (task: Task, ref: AttemptRef) => AttemptSpecification;
   }): Promise<{ created: boolean; ref: AttemptRef }> {
     z.number().int().positive().parse(options.maximum);
+    const maximumPerTask = z.number().int().positive().parse(options.maximumPerTask ?? 3);
+    const startingPoint = options.startingPoint && startingPointSchema.parse(options.startingPoint);
+    const inputs = { ...(options.requestInputs ?? { taskId: options.taskId }), ...(startingPoint ? { startingPoint } : {}) };
+    if (!startingPoint && inputs.startingPoint) throw new Error("Starting-point inputs require a starting point");
+    if (startingPoint && !options.requested.requestId) throw new Error("Starting from an earlier attempt requires a stable request ID");
     return this.database.transaction(() => {
       const requestId = options.requested.requestId;
       if (requestId !== undefined) {
         nonempty.parse(requestId);
-        const existing = this.request(requestId, options.requestInputs ?? { taskId: options.taskId });
+        const existing = this.request(requestId, inputs);
         if (existing) {
           if (existing.attempt === null) throw new AttemptStoreError("request_reserved", "The request ID was imported without an attempt");
           return { created: false, ref: { contextId: this.contextId, taskId: String(existing.task), attempt: Number(existing.attempt) } };
         }
       }
+      const total = this.taskAttemptCount(options.taskId);
+      if (total >= maximumPerTask) throw new AttemptStoreError("attempt_limit", `Task ${options.taskId} has reached its limit of ${maximumPerTask} attempts; review the earlier attempts before raising maxAttemptsPerTask`);
+      const source = startingPoint ? this.checkStartingPoint(options.taskId, startingPoint, options.startingPointEvidence) : undefined;
       const count = this.activeCount();
       if (count >= options.maximum) throw new AttemptStoreError("capacity", "The context's attempt maximum has been reached");
       const task = this.task(options.taskId);
@@ -114,9 +138,17 @@ export class AttemptStore {
       this.database.run("INSERT INTO attempts(context,task,number,request_id,reserved_at) VALUES(?,?,?,?,?)",
         ref.contextId, ref.taskId, ref.attempt, null, new Date().toISOString());
       if (requestId !== undefined) this.database.run("INSERT INTO request_records VALUES(?,?,?,?,?,?,?,0)", ref.contextId, requestId, ref.taskId, ref.attempt,
-        new Date().toISOString(), 1, requestFingerprint(options.requestInputs ?? { taskId: options.taskId }));
+        new Date().toISOString(), 1, requestFingerprint(inputs));
       this.insert(ref, "requested", options.requested);
-      const specification = attemptSpecificationSchema.parse(options.specification(task, ref));
+      const supplied = options.specification(task, ref);
+      if (!source && supplied.startingPoint) throw new Error("A starting point requires a checked reservation");
+      const specification = attemptSpecificationSchema.parse({ ...supplied, ...(source ? { startingPoint: source } : {}) });
+      if (source) {
+        const previous = this.findForTask(source.taskId, source.attempt)!;
+        if (specification.outputBranch === previous.specification?.outputBranch || specification.outputBranch === previous.allocation?.outputBranch) {
+          throw new Error("A new attempt must have its own output branch");
+        }
+      }
       if (specification.taskId !== task.id || specification.contextId !== ref.contextId || specification.definitionRevision !== task.definitionRevision ||
         specification.title !== task.title || specification.instructions !== (task.body.trim() === "" ? task.title : task.body) ||
         specification.repository !== task.repo || specification.kind !== task.kind) throw new Error("Specification differs from the reserved task");
@@ -345,6 +377,49 @@ export class AttemptStore {
     this.checkContext(deletion);
     await this.database.transaction(() => this.database.run("DELETE FROM pending_attempt_deletions WHERE context = ? AND task = ? AND attempt = ? AND directory = ?",
       deletion.contextId, deletion.taskId, deletion.attempt, deletion.directory));
+  }
+
+  /** Only immutable, recorded output is a starting point – never today's branch head or result file. */
+  startingPointCommit(ref: AttemptRef): string | undefined {
+    const record = this.read(ref);
+    const accepted = [...(record.confirmations ?? [])].reverse().find(c => c.fact === "output_accepted");
+    if (accepted?.fact === "output_accepted" && record.entries.some(e => e.kind === "output_accepted" && e.data.commit === accepted.scope.commit)) return accepted.scope.commit;
+    const launch = this.database.get("SELECT directory, binding FROM launches WHERE context = ? AND task = ? AND attempt = ? AND kind = 'launch'", ref.contextId, ref.taskId, ref.attempt);
+    if (!launch) return undefined;
+    const result = this.database.get("SELECT value FROM worker_observations WHERE directory = ? AND kind = 'validated_result'", String(launch.directory));
+    if (!result) return undefined;
+    const binding = JSON.parse(String(launch.binding)) as RuntimeBinding;
+    const validated = parseValidatedResult(JSON.parse(String(result.value)), binding);
+    const output = validated.content.workReferences.find(w => w.kind === "git" && w.branch === binding.input.delivery.outputBranch);
+    return output?.kind === "git" ? output.commit : undefined;
+  }
+
+  private checkStartingPoint(taskId: string, point: StartingPoint, evidence?: StartingPointEvidence) {
+    if (point.taskId !== taskId) throw new AttemptStoreError("starting_point_wrong_task", "The starting attempt belongs to another task; name an earlier attempt of this task");
+    const source = this.findForTask(point.taskId, point.attempt);
+    if (!source || !evidence || evidence.unknown.length) throw new AttemptStoreError("starting_point_unknown", evidence?.unknown.join("; ") || "The starting attempt's state is unknown; inspect its owner records");
+    const current = this.list().filter(r => r.taskId === taskId);
+    const expected = evidence.records.filter(r => r.taskId === taskId);
+    if (current.length !== expected.length) throw new AttemptStoreError("attempt_changed", "The task's attempts changed before reservation; inspect them and retry");
+    for (const record of expected) this.expectRecord(record);
+    const taskRecords = this.database.all("SELECT context, number FROM attempts WHERE task = ? AND number IS NOT NULL", taskId)
+      .map(row => new AttemptStore(this.database, String(row.context)).read({ contextId: String(row.context), taskId, attempt: Number(row.number) }));
+    for (const record of taskRecords) {
+      const launch = this.database.get("SELECT * FROM launches WHERE context = ? AND task = ? AND attempt = ? AND kind = 'launch'", record.contextId, taskId, record.attempt);
+      const leaseId = launch ? String(launch.lease_id) : record.allocation?.leaseId;
+      const sessionId = launch ? (JSON.parse(String(launch.binding)) as RuntimeBinding).input.identity.sessionId : record.entries.find(e => e.kind === "launched")?.data.sessionId;
+      const confirmed = record.confirmations?.some(c => c.fact === "worker_stopped" && c.scope.leaseId === leaseId &&
+        (c.scope.sessionId === undefined || c.scope.sessionId === sessionId));
+      const exit = launch && this.database.get("SELECT value FROM worker_observations WHERE directory = ? AND kind = 'exit'", String(launch.directory));
+      const exited = exit && childExitSchema.safeParse(JSON.parse(String(exit.value))).success;
+      if (!confirmed && !exited && (record.contextId === this.contextId && record.attempt === point.attempt || launch || record.entries.some(e => e.kind === "launched"))) {
+        throw new AttemptStoreError("possibly_running", "A worker for this task has neither an observed exit nor a confirmed stop", "stop_worker");
+      }
+    }
+    const output = this.startingPointCommit(source);
+    if (!output) throw new AttemptStoreError("output_not_recorded", "The earlier attempt has no recorded output commit; inspect its result or explicitly accept its output");
+    if (evidence.retainedCommit !== output) throw new AttemptStoreError("not_retained", "The earlier attempt's exact recorded output commit is not retained", "fix_or_discard");
+    return { ...point, commit: output };
   }
 
   private expectRecord(expected: AttemptRecord): AttemptRecord {

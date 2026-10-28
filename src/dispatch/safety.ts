@@ -42,6 +42,16 @@ export function checkCanRedispatch(facts: AttemptFacts, taskId: string): Permiss
   return permit;
 }
 
+/** A retained source lease is allowed, but it is never evidence that its worker stopped. */
+export function checkCanStartFrom(facts: AttemptFacts): Permission {
+  const check = stopped(facts);
+  if (!check.allowed) return check;
+  if (facts.taskWorkerMayBeRunning) return refuse("possibly_running", "A worker for this task may still be running", "stop_worker", { taskWorkerMayBeRunning: true });
+  if (facts.leaseInOtherPool) return refuse("unknown", "The starting attempt's lease state is unknown in another pool", "confirm_lease_returned", { leaseInOtherPool: true });
+  if (facts.open) return refuse("unfinished", "The starting attempt has not finished or been resolved", "confirm_attempt_stopped", { open: true });
+  return permit;
+}
+
 export function checkCanFinish(facts: AttemptFacts, accepting: boolean): Permission {
   const check = listedLease(facts);
   if (!check.allowed) return check;

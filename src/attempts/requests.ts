@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
+import { startingPointSchema, type StartingPoint } from "./specification.ts";
 import type { Database } from "../database.ts";
 
-export type RequestInputs = { taskId?: string };
+export type RequestInputs = { taskId?: string; startingPoint?: StartingPoint };
 
 /** Only caller inputs belong here – selected tasks and resolved configuration are not explicit inputs. */
 export function requestFingerprint(inputs: RequestInputs): string {
-  return createHash("sha256").update(JSON.stringify({ taskId: inputs.taskId ?? null })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ taskId: inputs.taskId ?? null,
+    ...(inputs.startingPoint ? { startingPoint: startingPointSchema.parse(inputs.startingPoint) } : {}),
+  })).digest("hex");
 }
 
 /** Historical records did not retain the caller's selection mode. Keep that uncertainty, never invent a fingerprint. */

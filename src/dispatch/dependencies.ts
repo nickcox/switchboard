@@ -25,6 +25,7 @@ export type Dependencies = {
   workspaces: WorkspaceProvider;
   attempts: AttemptStore;
   maxAttempts?: number;
+  maxAttemptsPerTask?: number;
   runtime: RuntimeRecords;
   launch: (input: WorkerInput, signal?: AbortSignal, onRequest?: WorkerHooks["onRequest"], settings?: RuntimeSettings) => Promise<RunReport>;
   runtimeSettings: RuntimeSettings;
