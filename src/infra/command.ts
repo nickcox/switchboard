@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 
 export type CommandResult = {
+  /** Executable and arguments only; environment and stdin are never diagnostic fields. */
+  command?: { executable: string; args: string[] };
   /** Null when the process ended on a signal, including a timeout kill. */
   exitCode: number | null;
   stdout: string;
@@ -56,16 +58,35 @@ export async function runCommand(
       });
       child.once("close", (code, signal) => resolve(signal ? null : code));
     });
-    return { exitCode, stdout, stderr, timedOut, truncated };
+    return { command: { executable, args: [...args] }, exitCode, stdout, stderr, timedOut, truncated };
+  } catch (error) {
+    throw new CommandError(error instanceof Error ? error.message : String(error), {
+      command: { executable, args: [...args] }, exitCode: null, stdout, stderr, timedOut, truncated,
+    });
   } finally {
     clearTimeout(timer);
     clearTimeout(drain);
   }
 }
 
+export class CommandError extends Error {
+  readonly detail: string;
+  constructor(message: string, result: CommandResult) {
+    super(message);
+    this.detail = describeCommand(result);
+  }
+}
+
+export function redactDiagnostics(text: string): string {
+  return text.replace(/(https?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi, "$1[redacted]@")
+    .replace(/\b(authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s"']+/gi, "$1[redacted]")
+    .replace(/\b((?:access_token|api_key|password|secret|token)\s*[:=]\s*)[^\s&"']+/gi, "$1[redacted]");
+}
+
 export function describeCommand(result: CommandResult): string {
   return JSON.stringify({
+    ...(result.command ? { command: { executable: redactDiagnostics(result.command.executable), args: result.command.args.map(redactDiagnostics) } } : {}),
     exitCode: result.exitCode, timedOut: result.timedOut, ...(result.truncated ? { truncated: true } : {}),
-    stdout: result.stdout.slice(-2000), stderr: result.stderr.slice(-2000),
+    stdout: redactDiagnostics(result.stdout).slice(-2000), stderr: redactDiagnostics(result.stderr).slice(-2000),
   });
 }

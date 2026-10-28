@@ -1,6 +1,11 @@
-import { runCommand } from "../infra/command.ts";
+import { CommandError, runCommand } from "../infra/command.ts";
 
-type Git = { git: string; environment: Record<string, string>; repository: string };
+type Git = {
+  git: string; environment: Record<string, string>; repository: string;
+  read?: <T>(step: string, load: () => Promise<T>) => Promise<T>;
+  beforeEffect?: () => void;
+};
+const read = <T>(options: Git, step: string, load: () => Promise<T>): Promise<T> => options.read ? options.read(step, load) : load();
 
 async function git(options: Git, args: string[], cwd = options.repository) {
   return runCommand(options.git, args, { cwd, env: options.environment, timeoutMs: 30000 });
@@ -12,26 +17,38 @@ async function git(options: Git, args: string[], cwd = options.repository) {
  * is NUL-separated, so worktree paths may contain newlines.
  */
 async function checkoutOf(options: Git, branch: string): Promise<string | undefined> {
+  return read(options, "list target worktrees", async () => {
   const listed = await git(options, ["worktree", "list", "--porcelain", "-z"]);
-  if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new Error(`The repository's worktrees could not be listed: ${(listed.stderr || listed.stdout).trim().slice(0, 300)}`);
+  if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new CommandError("The repository's worktrees could not be listed", listed);
   // Each record is a run of NUL-terminated lines, ended by an empty line.
   const records = listed.stdout.split("\0\0").filter(record => record !== "").map(record => record.split("\0").filter(line => line !== ""));
-  if (records.length === 0 || records.some(lines => !lines[0]?.startsWith("worktree "))) throw new Error("The repository's worktree list is not in the expected format");
+  if (records.length === 0 || records.some(lines => !lines[0]?.startsWith("worktree "))) throw new CommandError("The repository's worktree list is not in the expected format", listed);
   return records.find(lines => lines.includes(`branch refs/heads/${branch}`))?.[0]!.slice("worktree ".length);
+  });
 }
 
 /** The commit a branch points to in the backing repository, or undefined if it does not exist. */
 export async function branchHead(options: Git, branch: string): Promise<string | undefined> {
-  const result = await git(options, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
-  return result.exitCode === 0 ? result.stdout.trim() : undefined;
+  return read(options, `read branch ${branch}`, async () => {
+    const result = await git(options, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+    if (result.timedOut || result.truncated || result.exitCode !== 0 && result.exitCode !== 1) throw new CommandError(`Branch ${branch} could not be read`, result);
+    if (result.exitCode === 1) return undefined;
+    const commit = result.stdout.trim();
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new CommandError(`Branch ${branch} returned an invalid commit`, result);
+    return commit;
+  });
 }
 
 /** Whether `ancestor` is an ancestor of, or the same commit as, `descendant`. */
 export async function isAncestor(options: Git, ancestor: string, descendant: string): Promise<boolean> {
-  const result = await git(options, ["merge-base", "--is-ancestor", ancestor, descendant]);
-  if (result.exitCode === 0) return true;
-  if (result.exitCode === 1) return false;
-  throw new Error(`Could not compare ${ancestor} with ${descendant}`);
+  return read(options, "compare commits", async () => {
+    const result = await git(options, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    if (!result.timedOut && !result.truncated) {
+      if (result.exitCode === 0) return true;
+      if (result.exitCode === 1) return false;
+    }
+    throw new CommandError(`Could not compare ${ancestor} with ${descendant}`, result);
+  });
 }
 
 /**
@@ -41,6 +58,7 @@ export async function isAncestor(options: Git, ancestor: string, descendant: str
  */
 export async function fastForward(options: Git, branch: string, expected: string, commit: string): Promise<void> {
   const checkedOut = await checkoutOf(options, branch);
+  options.beforeEffect?.();
   const result = checkedOut
     ? await git(options, ["merge", "--ff-only", "--quiet", commit], checkedOut)
     : await git(options, ["update-ref", `refs/heads/${branch}`, commit, expected]);

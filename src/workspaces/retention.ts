@@ -1,6 +1,6 @@
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { describeCommand, runCommand } from "../infra/command.ts";
+import { CommandError, describeCommand, runCommand } from "../infra/command.ts";
 import { inside, requireRetainedStorage } from "../infra/storage.ts";
 
 export type RetentionRequest = {
@@ -28,6 +28,8 @@ export type RetentionRequest = {
 export type RetentionResult = {
   /** True only when every check passed. A check that could not run counts as not retained. */
   retained: boolean;
+  /** Failed read commands, distinct from definite findings such as a dirty workspace. */
+  readFailures?: { message: string; detail: string }[];
   /** Reasons the work is not retained. Empty when `retained` is true. */
   findings: string[];
   /** Ignored files present in the workspace. Returning the workspace may remove some of them. */
@@ -44,13 +46,18 @@ const gitTimeoutMs = 15000;
  */
 export async function checkRetention(git: string, environment: Record<string, string>, request: RetentionRequest): Promise<RetentionResult> {
   const findings: string[] = [];
+  const readFailures: { message: string; detail: string }[] = [];
   const notes: string[] = [];
   const workspaceFinding = (text: string) => (request.scratchWorkspace ? notes.push(`Scratch workspace: ${text}`) : findings.push(text));
   // A command that cannot even start (for example a missing workspace) is a check that could not run.
   const run = (cwd: string, args: string[]) => runCommand(git, args, { cwd, env: environment, timeoutMs: gitTimeoutMs })
-    .catch((error: unknown) => ({ exitCode: null, stdout: "", stderr: String(error), timedOut: false, truncated: false }));
-  const unable = (what: string, result?: Awaited<ReturnType<typeof run>>) =>
-    findings.push(`Could not check ${what}${result ? `: ${describeCommand(result)}` : ""}`);
+    .catch((error: unknown) => error instanceof CommandError ? JSON.parse(error.detail) as Awaited<ReturnType<typeof runCommand>>
+      : { command: { executable: git, args }, exitCode: null, stdout: "", stderr: String(error), timedOut: false, truncated: false });
+  const unable = (what: string, result?: Awaited<ReturnType<typeof run>>) => {
+    const message = `Could not check ${what}`;
+    findings.push(`${message}${result ? `: ${describeCommand(result)}` : ""}`);
+    if (result) readFailures.push({ message, detail: describeCommand(result) });
+  };
 
   const references = request.gitReferences ?? (request.resultCommit === undefined ? [] : [
     { name: "output", branch: request.outputBranch, commit: request.resultCommit },
@@ -58,25 +65,27 @@ export async function checkRetention(git: string, environment: Record<string, st
   for (const reference of references) {
     const ref = `refs/heads/${reference.branch}`;
     const exists = await run(request.repository, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    if (exists.exitCode === 1) findings.push(`Output branch ${reference.branch} does not exist (${reference.name})`);
+    if (exists.timedOut || exists.truncated) unable("the output branch", exists);
+    else if (exists.exitCode === 1) findings.push(`Output branch ${reference.branch} does not exist (${reference.name})`);
     else if (exists.exitCode !== 0) unable("the output branch", exists);
     else {
       const contained = await run(request.repository, ["merge-base", "--is-ancestor", reference.commit, ref]);
-      if (contained.exitCode === 1) findings.push(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
+      if (contained.timedOut || contained.truncated) unable("whether the output branch contains the result commit", contained);
+      else if (contained.exitCode === 1) findings.push(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
       else if (contained.exitCode !== 0) unable("whether the output branch contains the result commit", contained);
     }
   }
 
   // Commits reachable from the workspace's HEAD but from no local branch become unreachable when it is recycled.
   const orphaned = await run(request.workspace, ["rev-list", "HEAD", "--not", "--branches"]);
-  if (orphaned.exitCode !== 0) unable("for commits on no branch", orphaned);
+  if (orphaned.exitCode !== 0 || orphaned.timedOut || orphaned.truncated) unable("for commits on no branch", orphaned);
   else {
     const commits = orphaned.stdout.split("\n").filter(Boolean);
     if (commits.length > 0) workspaceFinding(`${commits.length} commit(s) in the workspace are on no branch: ${commits.slice(0, listLimit).join(", ")}`);
   }
 
   const status = await run(request.workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"]);
-  if (status.exitCode !== 0) unable("the workspace's files", status);
+  if (status.exitCode !== 0 || status.timedOut || status.truncated) unable("the workspace's files", status);
   else {
     const changed: string[] = [];
     const ignored: string[] = [];
@@ -149,5 +158,5 @@ export async function checkRetention(git: string, environment: Record<string, st
     await checkPath(artefact, new Set());
   }
 
-  return { retained: findings.length === 0, findings, notes };
+  return { retained: findings.length === 0, findings, notes, ...(readFailures.length ? { readFailures } : {}) };
 }

@@ -56,7 +56,7 @@ test("integration refuses owner uncertainty that appeared after planning", async
     workspaces: workspacesWith(f, { leases: async () => { if (unavailable) throw new Error("inventory offline"); return f.deps.workspaces.leases(); } }),
   };
   const outcome = await finish(deps, { leaseId, noProcesses: true });
-  assert.equal(outcome.reason, "refused");
+  assert.equal(outcome.reason, "owner_read_retryable");
   assert.match(outcome.detail ?? "", /inventory offline/);
   assert.equal(f.run(["rev-parse", "main"]), before);
   assert.notEqual((await f.tasks.read("boundary-a1"))?.state, "done");

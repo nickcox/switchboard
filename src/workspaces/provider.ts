@@ -36,10 +36,12 @@ export type WorkspaceFailure =
 export class WorkspaceError extends Error {
   readonly reason: WorkspaceFailure;
   readonly detail: string | undefined;
-  constructor(reason: WorkspaceFailure, message: string, detail?: string) {
+  readonly readFailure: { owner: string; error: unknown } | undefined;
+  constructor(reason: WorkspaceFailure, message: string, detail?: string, readFailure?: { owner: string; error: unknown }) {
     super(message);
     this.reason = reason;
     this.detail = detail;
+    this.readFailure = readFailure;
   }
 }
 

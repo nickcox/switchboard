@@ -19,6 +19,7 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `operator_request` | Request `id`, `kind`, `sender`, `outcome`, optional `message` and `error` |
 | `worker_finished` | Runtime `status`, `runtimeDirectory`, optional `reason`, `detail`, `outcome` and `resultCommit` |
 | `retention_checked` | `retained`, `findings` and `notes` |
+| `owner_read_failed` | `owner`, `classification`, `operation`, `step`, `failedAt` and bounded command `diagnostics` |
 | `task_recorded` | `outcome` (`done` or `hold`), `reason`, explicit `category`, and `applied` |
 | `halted` | `stage`, `reason`, optional `detail` and recovered lease identity |
 | `operator_resolved` | `action` (`worker_stopped` or `lease_returned`), optional `note` |
@@ -28,6 +29,18 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `lease_return_started`, `lease_returned` | `leaseId`, `by` (`finish` or `discard`) and the return's unique `returnId` |
 
 Outcome categories are `done`, `review_required`, `not_retained`, `held_by_worker`, `failed`, `interrupted` and `over_budget`. Classification reads the category, never a category inferred from a hold reason. Task instructions are not changed to carry attempt evidence; the result and attempt records retain it.
+
+## Failed owner reads
+
+`finish` and `discard` classify failures at declared read boundaries, from evidence held by the operation, not by treating every exception as retryable. The shared classification has four kinds: `owner_read` (a failed read before any effect was attempted), `approval_required` (a missing or expired approval or confirmation), `effect_uncertain` (an external effect may have happened), and `rejected` (an invalid request or definite rejection).
+
+A failed read appends an immutable `owner_read_failed` entry. Its operation is `finish` or `discard`; its step names the read being checked. `failedAt` is the failure time, distinct from the entry's `recordedAt`. Diagnostics keep the error message and, when a command ran, its executable, arguments, exit status, timeout and truncation flags, and the last 2,000 characters of each output stream. Environment, stdin, arbitrary error properties and stacks are not copied. Credential-bearing URLs and common authentication fields are redacted.
+
+Before any effect, the command refuses as `owner_read_retryable`, with next action `retry_owner_read`, naming the owner and saying the read can be tried again. Running the same command again reads the owner afresh; the historical entry does not block it. A definite retention finding, such as a missing output branch or uncommitted files, still refuses rather than promising a retry will fix the work.
+
+After an effect or `lease_return_started`, a failed read refuses as `reconciliation_required`, with next action `reconcile_owner`. The recorded failure blocks further effects on later invocations too. Inspect the owner and reconcile the outcome; do not repeat a return whose outcome is uncertain. If a later invocation can safely establish that the lease is absent from its recorded pool, it can complete the existing `lease_returned` record without returning it again. Existing process, retention, identity and confirmation checks still apply.
+
+`status` shows the latest recorded failure, including its diagnostics; JSON uses `latestReadFailure`. It remains visible after a successful retry. A dry run changes no external owner, but still records failed-read diagnostics with the attempt.
 
 ## Validated worker results
 

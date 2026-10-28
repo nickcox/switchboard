@@ -313,7 +313,7 @@ async function finalise(
     // For a non-code contract the workspace is scratch; reported deliverables are still checked.
     ...(delivery.kind === "artefact" ? { scratchWorkspace: true } : {}),
   });
-  await deps.attempts.append(ref, "retention_checked", retention);
+  await deps.attempts.append(ref, "retention_checked", { retained: retention.retained, findings: retention.findings, notes: retention.notes });
 
   const outcome = decide(report, delivery, retention);
   const holdReason = `Switchboard attempt ${ref.attempt} ${holdLabels[outcome.category]}`;

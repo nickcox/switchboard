@@ -7,7 +7,7 @@ import type { Dependencies } from "./dependencies.ts";
 import type { AttemptSummary } from "./result.ts";
 import type { TaskView } from "./state.ts";
 
-export type Observation<T> = { known: true; value: T } | { known: false; reason: string };
+export type Observation<T> = { known: true; value: T } | { known: false; reason: string; error?: unknown };
 export type AttemptSelector = { leaseId: string } | { taskId: string; attempt?: number };
 export type AttemptObservation = {
   attempt: AttemptSummary;
@@ -30,7 +30,9 @@ export type ContextObservation = {
 
 async function read<T>(owner: string, load: () => Promise<T> | T): Promise<Observation<T>> {
   try { return { known: true, value: await load() }; }
-  catch (error) { return { known: false, reason: `${owner} could not be read: ${error instanceof Error ? error.message : String(error)}` }; }
+  catch (error) {
+    return Object.defineProperty({ known: false as const, reason: `${owner} could not be read: ${error instanceof Error ? error.message : String(error)}` }, "error", { value: error });
+  }
 }
 
 async function observe(deps: Dependencies, selector?: AttemptSelector): Promise<ContextObservation> {

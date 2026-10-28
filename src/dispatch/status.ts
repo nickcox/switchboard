@@ -1,3 +1,4 @@
+import type { ReadFailure } from "./failure.ts";
 import { readActivity } from "../runtime/activity.ts";
 import { attemptSpecificationSchema, type StoredSpecification, type AttemptAllocation } from "../attempts/specification.ts";
 import type { RuntimeRecord } from "../runtime/records.ts";
@@ -12,6 +13,7 @@ import { nextActions, type AttemptSummary, type NextAction } from "./result.ts";
 
 export type AttemptStatus = {
   taskDisagreement?: boolean;
+  latestReadFailure?: ReadFailure;
   validatedResult?: RuntimeRecord["validatedResult"];
   resultDiscrepancy?: string;
   specification?: StoredSpecification;
@@ -122,7 +124,9 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   for (const { facts, ...assessment } of assessed) {
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
     const record = records.find(r => r.taskId === assessment.attempt.taskId && r.attempt === assessment.attempt.attempt);
+    const latestReadFailure = [...(record?.entries ?? [])].reverse().find(e => e.kind === "owner_read_failed");
     attempts.push({ ...assessment,
+      ...(latestReadFailure ? { latestReadFailure: latestReadFailure.data as ReadFailure } : {}),
       specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,
       ...(worker?.validatedResult ? { validatedResult: worker.validatedResult } : {}),
       ...(record?.specification ? { specification: record.specification } : {}), ...(record?.allocation ? { allocation: record.allocation } : {}),
@@ -180,6 +184,11 @@ export function describeStatus(value: StatusResult): string {
     if (!a.specificationComplete) lines.push("  Stored specification incomplete – this attempt cannot be launched; inspect and resolve it");
     if (a.specification) lines.push(`  Specification: ${a.specification.title ?? "unknown title"}, revision ${a.specification.definitionRevision ?? "unknown"}; ${a.specification.runtime?.profile ?? "unknown profile"}`);
     if (a.unknownOwners) for (const reason of a.unknownOwners) lines.push(`  Unknown: ${reason}`);
+    if (a.latestReadFailure) {
+      const f = a.latestReadFailure;
+      lines.push(`  Latest read failure: ${f.owner}; ${f.classification}; ${f.operation}/${f.step}; ${f.failedAt}`);
+      lines.push(`  Read diagnostics: ${JSON.stringify(f.diagnostics)}`);
+    }
     if (a.resultDiscrepancy) lines.push(`  Result discrepancy: ${a.resultDiscrepancy}`);
     if (a.taskDisagreement) lines.push("  Task unchanged: a newer operator decision disagrees with the attempt outcome");
     const thinking = `thinking ${a.thinkingLevel ?? "unknown"}`;

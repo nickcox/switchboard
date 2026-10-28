@@ -49,6 +49,16 @@ const entrySchemas = {
     applied: z.boolean().optional(),
   }),
   retention_checked: z.strictObject({ retained: z.boolean(), findings: z.array(nonempty), notes: z.array(nonempty) }),
+  owner_read_failed: z.strictObject({
+    owner: nonempty, classification: z.enum(["owner_read", "approval_required", "effect_uncertain", "rejected"]),
+    operation: z.enum(["finish", "discard"]), step: nonempty, failedAt: z.iso.datetime(),
+    diagnostics: z.strictObject({
+      message: z.string(), command: z.strictObject({
+        command: z.strictObject({ executable: nonempty, args: z.array(z.string()) }).optional(),
+        exitCode: z.number().int().nullable(), stdout: z.string(), stderr: z.string(), timedOut: z.boolean(), truncated: z.boolean(),
+      }).optional(),
+    }),
+  }),
   halted: z.strictObject({
     stage: nonempty, reason: nonempty, detail: nonempty.optional(),
     leaseId: nonempty.optional(), workspace: nonempty.optional(), outputBranch: nonempty.optional(),

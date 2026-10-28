@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { describeCommand, runCommand } from "../infra/command.ts";
+import { CommandError, describeCommand, runCommand } from "../infra/command.ts";
 import { inside } from "../runtime/records.ts";
 import { WorkspaceError, type Allocation, type Lease, type LeaseIdentity, type WorkspaceProvider } from "./provider.ts";
 
@@ -86,17 +86,21 @@ export class TreehouseProvider implements WorkspaceProvider {
   async recyclableRoots(): Promise<string[]> { return [this.options.poolRoot]; }
 
   async returnLease(lease: LeaseIdentity, options: { discardChanges: boolean }): Promise<void> {
-    await this.validateRepository();
+    const read = async <T>(owner: string, load: () => Promise<T>): Promise<T> => {
+      try { return await load(); }
+      catch (error) { throw new WorkspaceError("outcome_unknown", `${owner} could not be read while returning the lease`, undefined, { owner, error }); }
+    };
+    await read("Git repository", () => this.validateRepository());
     const holder = argument.parse(lease.holder);
     const leaseId = argument.parse(lease.leaseId);
     if (!isAbsolute(lease.path)) throw new WorkspaceError("rejected", "Workspace path must be absolute");
     // Treehouse asks before discarding uncommitted changes. Without `discardChanges` its input is closed, so it declines.
-    const poolBefore = await this.pool().catch(() => undefined);
+    const poolBefore = await read("Git workspace pool", () => this.pool());
     const result = await this.treehouse(["return", "--if-lease-holder", holder, "--if-lease-id", leaseId, lease.path], options.discardChanges ? "y\n" : undefined);
     // Absence from the listing proves a return only if Treehouse reported success and the listing is of the same pool:
     // a lease in a pool that is no longer listed, or a wrong lease ID, is also absent.
-    const poolAfter = await this.pool().catch(() => undefined);
-    const listing = poolBefore !== undefined && poolAfter === poolBefore ? await this.leases().catch(() => undefined) : undefined;
+    const poolAfter = await read("Git workspace pool", () => this.pool());
+    const listing = poolAfter === poolBefore ? await read("Treehouse leases", () => this.leases()) : undefined;
     const completed = !result.timedOut && result.exitCode !== null;
     if (listing && completed && result.exitCode === 0 && !listing.some(l => l.leaseId === leaseId || l.path === lease.path)) return;
     if (listing && completed && result.exitCode !== 0 && listing.some(l => l.path === lease.path)) {
@@ -108,7 +112,7 @@ export class TreehouseProvider implements WorkspaceProvider {
 
   async leases(): Promise<Lease[]> {
     const result = await this.treehouse(["status", "--json"]);
-    if (result.timedOut || result.exitCode !== 0) {
+    if (result.timedOut || result.truncated || result.exitCode !== 0) {
       throw new WorkspaceError("unreadable", "Treehouse status failed", describeCommand(result));
     }
     let rows: z.infer<typeof statusSchema>;
@@ -128,7 +132,7 @@ export class TreehouseProvider implements WorkspaceProvider {
   async pool(): Promise<string> {
     const { git, repository, environment, poolRoot } = this.options;
     const origin = await runCommand(resolveExecutable(git), ["remote", "get-url", "origin"], { cwd: repository, env: environment, timeoutMs: gitTimeoutMs });
-    if (origin.timedOut || origin.exitCode === null) throw new WorkspaceError("unreadable", "The repository's origin remote could not be read", describeCommand(origin));
+    if (origin.timedOut || origin.truncated || origin.exitCode === null) throw new WorkspaceError("unreadable", "The repository's origin remote could not be read", describeCommand(origin));
     return JSON.stringify(origin.exitCode === 0 ? { root: poolRoot, origin: origin.stdout.trim() } : { root: poolRoot, repository });
   }
 
@@ -157,7 +161,7 @@ export class TreehouseProvider implements WorkspaceProvider {
 
   private async git(cwd: string, args: string[]): Promise<string> {
     const result = await runCommand(resolveExecutable(this.options.git), args, { cwd, env: this.options.environment, timeoutMs: gitTimeoutMs });
-    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${describeCommand(result)}`);
+    if (result.exitCode !== 0 || result.timedOut || result.truncated) throw new CommandError(`git ${args.join(" ")} failed`, result);
     return result.stdout.trim();
   }
 }

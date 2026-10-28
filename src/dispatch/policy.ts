@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { runCommand } from "../infra/command.ts";
+import { CommandError, runCommand } from "../infra/command.ts";
 
 /**
  * Finalisation policy (Phase 2 PRD, finishing an attempt). The kinds are built in, because each is a sequence of steps
@@ -97,15 +97,16 @@ async function readRepository(sources: PolicySources): Promise<z.infer<typeof re
   const run = (args: string[]) => runCommand(sources.git, args, { cwd: sources.repository, env: sources.environment, timeoutMs: 15000 });
   const ref = sources.baseRef.startsWith("refs/heads/") ? sources.baseRef : `refs/heads/${sources.baseRef}`;
   const base = await run(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-  if (base.exitCode !== 0 || base.timedOut) throw new Error(`Base branch ${sources.baseRef} cannot be read in the backing repository`);
+  if (base.timedOut || base.truncated || base.exitCode !== 0 && base.exitCode !== 1) throw new CommandError(`Base branch ${sources.baseRef} cannot be read in the backing repository`, base);
+  if (base.exitCode === 1) throw new Error(`Base branch ${sources.baseRef} cannot be read in the backing repository`);
   const commit = base.stdout.trim();
   const listed = await run(["ls-tree", "-z", commit, "--", repositoryPolicyPath]);
-  if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new Error(`Could not check for ${repositoryPolicyPath} on ${sources.baseRef}: its tree cannot be read`);
+  if (listed.exitCode !== 0 || listed.timedOut || listed.truncated) throw new CommandError(`Could not check for ${repositoryPolicyPath} on ${sources.baseRef}: its tree cannot be read`, listed);
   if (listed.stdout === "") return undefined;
   const entry = /^\d+ blob ([0-9a-f]+)\t/.exec(listed.stdout);
   if (!entry) throw new Error(`${repositoryPolicyPath} on ${sources.baseRef} is not a regular file`);
   const shown = await run(["cat-file", "blob", entry[1]!]);
-  if (shown.exitCode !== 0 || shown.timedOut || shown.truncated) throw new Error(`${repositoryPolicyPath} on ${sources.baseRef} cannot be read`);
+  if (shown.exitCode !== 0 || shown.timedOut || shown.truncated) throw new CommandError(`${repositoryPolicyPath} on ${sources.baseRef} cannot be read`, shown);
   return parseLayer("repository", `${sources.baseRef}:${repositoryPolicyPath} (commit ${commit})`, shown.stdout, repositoryPolicySchema);
 }
 
