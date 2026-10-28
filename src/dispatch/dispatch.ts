@@ -328,7 +328,7 @@ export async function dispatchOnce(
     }
     await requests;
     if (unrecorded.length > 0) observed.unrecordedRequests = unrecorded;
-    if (report.result && report.childExit) {
+    if (report.result) {
       const runtime = (await deps.runtime.discover(deps.contextId, { leaseId: allocation.leaseId }))[0];
       if (!runtime?.validatedResult) throw new Error("The validated worker result was not recorded");
       report.result = runtime.validatedResult.content;
