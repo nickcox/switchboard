@@ -12,6 +12,14 @@ The worker is a separate Pi process using Pi's standard RPC mode and a worker-wr
 
 **Platforms.** Real dispatch has been verified on macOS only. The test suite also passes on Linux and Windows in CI, and `dispatch` prints a warning on any platform other than macOS.
 
+## Trust and limits
+
+- **Workers are trusted, not sandboxed.** They run as the operator's operating-system user. Private Pi settings and environment allowlists control configuration and inherited variables; they do not stop access to the user's files or credentials. Leased workspaces isolate working copies, not permissions.
+- **Usage limits are checked by observation and can be exceeded.** Switchboard requests a stop when reported usage exceeds `maxCost` or `maxTokens`; it cannot impose a hard provider-side spending cap. A request can exceed a limit before the next observation, failed usage snapshots are skipped, and subscription providers may report zero cost.
+- **Result validation is not independent verification of the work.** Schema, identity and retention checks validate the worker's report and references, not its claims of correctness or test success. Review and independent checks remain the operator's responsibility.
+- **Restoring a backup is not an ordinary restart.** External workers and effects may survive records rolled back by a restore. [ADR-0007 requires dispatch to remain fenced until application identities and external owners have been reconciled](docs/adr/0007-one-sqlite-database.md#decision). A full operator disaster-recovery procedure is still required; do not blindly resume a restored database or supervisor backup.
+- **A direct child's exit does not show that every process a worker started has stopped.** Stop requests and valid results do not establish that either. Lease return still requires the operator's `--no-processes` confirmation; dispatch never returns leases automatically.
+
 ## Development
 
 Use Node.js 26.7.0 (see `.node-version`) and npm. From this directory, using PowerShell:
@@ -85,7 +93,7 @@ npm run switchboard -- dispatch --once --config ./switchboard.json
 - **Long runs.** `dispatch --once` prints each tool call as the worker makes it and stays in the foreground until the worker finishes. Run it under tmux or `nohup` for long tasks, because closing its terminal ends the dispatcher.
 - **Thinking.** Optional `worker.thinking` pins Pi's reasoning level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Switchboard checks the reported level before prompting and fails on a mismatch, including model capability clamping. If omitted, Pi selects the level from its settings. Each session's reported startup level is retained and shown beside usage in `status`.
 - **Selecting an attempt.** `watch`, `stop`, `steer`, `finish` and `discard` act on one attempt, given as `--lease <lease-id>` or as `--task <task-id>`, which selects the task's latest attempt; add `--attempt <n>` to select an earlier one. `status` shows each attempt's task and lease ID.
-- **Watching.** From another terminal, `watch --lease <lease-id>` follows a worker's activity, and `status` shows its last activity, usage, transcript path and whether it has gone quiet. `maxCost` and `maxTokens` stop a worker that exceeds them.
+- **Watching.** From another terminal, `watch --lease <lease-id>` follows a worker's activity, and `status` shows its last activity, usage, transcript path and whether it has gone quiet. Observed usage above `maxCost` or `maxTokens` triggers a stop request, subject to the [limits above](#trust-and-limits).
 - **Stopping and steering.** `stop --lease <lease-id>` asks the dispatcher that owns a worker to stop it. `steer --lease <lease-id> "<message>"` passes it a message, and `--after` waits until it finishes its current work. A request that no running dispatcher takes is withdrawn and reported as undelivered.
 - **A worker that may still be running.** If `status` reports one, check it has stopped, then run `resolve --lease <lease-id> --worker-stopped`. That attempt then stops blocking dispatch.
 - **A lease in a pool that is no longer listed.** Adding or changing the repository's `origin` remote moves Treehouse to a new pool. `status` reports leases left in the old pool as unknown, and their tasks are not dispatched again. Return each one through Treehouse by its workspace path, then run `resolve --lease <lease-id> --lease-returned`. If acquisition never learned the lease ID, use `resolve --task <task-id> --lease-returned` instead. This selects the task's latest attempt; add `--attempt <n>` to select an earlier one.

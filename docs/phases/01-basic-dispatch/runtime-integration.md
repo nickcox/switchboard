@@ -6,11 +6,11 @@ Decision: [ADR-0005](../../adr/0005-pi-rpc-worker-and-result-file.md). The selec
 
 ## Implemented boundary
 
-`src/runtime/pi/worker.ts` runs one assigned instruction snapshot through a separately launched Pi RPC subprocess. The caller supplies an absolute executable, optional Node entrypoint, explicit provider and exact model ID, optional thinking level, controlled environment, shell-tool selection, exact workspace, identity and delivery contract. No arbitrary caller-supplied Pi flags are appended. The intended real invocation uses Node.js plus the pinned Pi CLI entrypoint; tests use Node.js plus a synthetic peer written in TypeScript.
+`src/runtime/supervisor.ts` owns provider-independent lifecycle supervision, control requests, usage observations and result recording. `src/runtime/pi/worker.ts` supplies the Pi RPC session adapter to run one assigned instruction snapshot through a separately launched subprocess. The caller supplies an absolute executable, optional Node entrypoint, explicit provider and exact model ID, optional thinking level, controlled environment, shell-tool selection, exact workspace, identity and delivery contract. No arbitrary caller-supplied Pi flags are appended. The intended real invocation uses Node.js plus the pinned Pi CLI entrypoint; tests use Node.js plus a synthetic peer written in TypeScript.
 
 The adapter:
 
-1. Reserves one runtime directory for the context/lease and writes the expected binding before spawning.
+1. Through the supervisor, commits the launch row and expected binding in the database, then creates the context/lease runtime directory before spawning.
 2. Supplies the exact session ID and a session directory outside the leased workspace.
 3. Disables discovered extensions, MCP, skills, prompt templates, themes and context files (`AGENTS.md`, `CLAUDE.md`). Project resource approval is disabled; this is configuration control, not a sandbox.
 4. Requests structured state and checks session identity, session-file location and the exact selected provider/model. Records the reported startup thinking level before checking an optional configured level. Idle startup does not establish task completion.
@@ -20,6 +20,8 @@ The adapter:
 8. On interruption/failure, requests queue clearing and abort when the channel permits, closes stdin, and escalates direct-child termination within a bounded stop budget. Sending a signal is never treated as an observed exit.
 
 Optional `worker.thinking` accepts exactly `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` and supplies `--thinking <level>`. Pi 1.2.0's `get_state` reports the actual level as `thinkingLevel`; the adapter reads it before prompting, whether configured or not. A configured mismatch fails with `thinking_identity` without sending a prompt, just as a model mismatch does. Pi clamps levels to model capabilities, so an unsupported configured level fails rather than silently using another level. The final idle-state check also checks the configured level. Without configuration, no flag is passed and Pi's own settings select the level.
+
+Usage limits are observation-based, not hard spending caps. The supervisor samples usage periodically and after turns, requests a stop on reported excess, and skips failed snapshots. A request may exceed a limit before the next observation; subscription providers may report zero cost. See the [trust model and limits](../../../README.md#trust-and-limits).
 
 The write-once startup observation retains the reported level even on a configured mismatch; `status` shows it beside usage. Attempts that never obtained valid startup state, and older attempts without this record, show `thinking unknown` – no level is inferred from configuration or usage.
 
@@ -41,7 +43,7 @@ Completed results must contain required evidence/deliverable names and, for code
 
 The result JSON Schema is generated from the host's Zod schema and supplied in the prompt. The prompt also tells the worker that Switchboard enforces its time and cost limits, that it cannot see its usage and has no separate token budget to manage, to commit working progress as it goes, and the local time at which the run is stopped. Workers have been seen to assume a small token budget and stop early without this. The same resolved delivery contract is included in worker instructions and validation. A `completed` report does not override `review_or_integration`; no task-state transition is made by this module.
 
-The worker writes `result.json` with the standard write tool, without a custom extension. JSON input is read from a bounded regular file, not through executable content; symlinked results are refused. Missing, partial, oversized, identity-mismatched or schema-invalid files are failures. Instruction snapshots and provider identities are validated without trimming their text.
+The worker writes `result.json` with the standard write tool, without a custom extension. After a successful child exit, the supervisor validates and records its content and digest in the database; subsequent dispatch, finish and retention checks use that immutable observation, not a later file version. Status reports a changed, missing or unreadable source file as a discrepancy. See [validated worker results](attempt-log.md#validated-worker-results). JSON input is read from a bounded regular file, not through executable content; symlinked results are refused. Missing, partial, oversized, identity-mismatched or schema-invalid files are failures. Instruction snapshots and provider identities are validated without trimming their text.
 
 `PiRunReport.status = reported` means a valid worker report was obtained after direct-child exit, not that the task is accepted or its workspace may be returned. A valid `failed` or `hold` worker result is still a reported outcome. Callers must inspect the result and remaining runtime obligations separately.
 
@@ -63,11 +65,11 @@ What the runtime records about each worker is kept in Switchboard's database ([A
 
 The launch row is the attempt-identity guard: a lease is never launched twice, even with a different session ID or after the child exited. Preventing a task from being dispatched twice is the job of the attempt store's reservation transaction.
 
-Discovery starts from the configured root/context, not saved in-memory session IDs. A binding without an exit receipt returns child liveness as unknown. Invalid, incomplete, identity-conflicting or uninspectable records cause refusal rather than an empty inventory. Discovery does not kill or adopt processes by PID, resume a session or reset task state.
+Discovery queries database launch rows for the configured context, not saved in-memory session IDs or legacy binding files. A launch without an exit observation or operator stop confirmation returns child liveness as unknown. Invalid, incomplete, identity-conflicting or uninspectable records cause refusal rather than an empty inventory. Discovery does not kill or adopt processes by PID, resume a session or reset task state.
 
-The records are input snapshots and process observations. The [attempt log](attempt-log.md) refers to them for each attempt's launch input and observed exit, rather than copying them. No selected/leased/running/finalising workflow stages, retry state or queue are persisted. Write-once files are written to a temporary file, flushed, and then hard-linked to their final name, so a reader sees either no file or the complete file, and an existing file is never replaced. They are flushed before their write completes, but host power-loss durability and directory-entry persistence have not been qualified. Loss of runtime evidence does not clear an unresolved authoritative task or lease.
+The runtime records are launch input snapshots, process observations, diagnostic activity and control requests in SQLite. The [attempt log](attempt-log.md) records reservation, allocation, start and finalisation facts alongside them; no persisted workflow runner position or automatic replay queue is used. Database writes use the durability settings in [configuration](../../configuration.md#tasks-and-database), not the old write-once binding/exit-file protocol. Worker files still need their own retention checks. Loss of runtime evidence does not clear an unresolved authoritative task or lease; backup restore requires reconciliation under ADR-0007.
 
-These files are not protected from a malicious worker running as the same OS user. Their directory placement prevents workspace recycling, not arbitrary filesystem access. A stronger adversarial isolation model requires a separate design.
+Neither the database nor these files are protected from a malicious worker running as the same OS user. Their directory placement prevents workspace recycling, not arbitrary filesystem access. A stronger adversarial isolation model requires a separate design.
 
 ## Unresolved process-ownership gate
 
@@ -117,7 +119,7 @@ Later runs went through `switchboard dispatch --once` with tasks-axi and Treehou
 
 ## Tests and limitations
 
-Run `npm run check` and `npm test` from the repository root. The root suite uses a synthetic RPC peer, not Pi, credentials or a model provider. Tests cover framing, response identity, startup idleness, prompt acknowledgement loss, unexpected session/response state, model errors, result-file faults, observed child exit, interruption, stop requests and messages, usage limits, activity recording, stale results and restart discovery from runtime files.
+Run `npm run check` and `npm test` from the repository root. The root suite uses a synthetic RPC peer, not Pi, credentials or a model provider. Tests cover framing, response identity, startup idleness, prompt acknowledgement loss, unexpected session/response state, model errors, result-file faults, observed child exit, interruption, stop requests and messages, usage limits, activity recording, stale results and restart discovery from database runtime records.
 
 The root suite passes under Node.js 26.7.0 on macOS, and in CI on Linux and Windows (`.github/workflows/test.yml`). It was first verified under Bun 1.3.11 before the change of runtime in ADR-0004. The separate Phase 1 investigation, which still runs under Bun, also passed type checking and all 20 tests with 89 assertions when rerun. Those probes use disposable task and Treehouse fixtures, not existing work or model agents.
 

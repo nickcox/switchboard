@@ -4,6 +4,8 @@ Status: Phase 2 is complete on macOS, as of 21 October 2026. This record was fir
 
 The root suite (`npm test`) passes under Node.js 26.7.0 on macOS, and in CI on Linux and Windows. The real run under `local-merge` (criterion 7) was on macOS.
 
+This is historical verification evidence from Phase 2, not the current storage or command contract. SQLite launch rows and fences have replaced exclusive runtime-directory claims; pruning uses transactions and resumable directory deletion, not a prune lock, and request records now survive archiving indefinitely. `finish` can record acceptance and completion while retaining the lease until the operator supplies `--no-processes`. The former tasks-axi subprocess adapter is no longer used. See the [README](../../../README.md) and [attempt records](../01-basic-dispatch/attempt-log.md) for current behaviour.
+
 This record maps each [PRD](PRD.md) acceptance criterion to its evidence. Unless stated otherwise the evidence is a test in `tests/`, and each safety check was also disabled in turn to confirm that a test fails without it.
 
 ## Acceptance criteria

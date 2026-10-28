@@ -10,9 +10,9 @@
 - `maxAttempts`: maximum open attempts in this context, default 1. Dispatch enforces capacity and task readiness inside the reservation transaction. An attempt stops counting when it records an outcome, halts or is resolved. The existing rule that a possibly running worker blocks dispatch still applies.
 - `tasks.repo`: repository used to select ready and in-flight tasks. Task commands accept `--repo` to override it. Reading a named task is database-wide.
 
-The old `tasks.file` setting is removed. Switchboard never silently reads a backlog instead of the database. The database uses Node.js 26.7's built-in SQLite, WAL, `synchronous = FULL`, `fullfsync` and a zero busy timeout. Every write transaction starts with `BEGIN IMMEDIATE`. Schema version 1 contains tasks and dependencies; version 2 adds attempts, entries, scoped confirmations, request-ID reservations, archives, pending deletions and retained attempt numbers. Runtime-owned files remain separate.
+The old `tasks.file` setting is removed. Switchboard never silently reads a backlog instead of the database. The database uses Node.js 26.7's built-in SQLite, WAL, `synchronous = FULL`, `fullfsync` and a zero busy timeout. Every write transaction starts with `BEGIN IMMEDIATE`. The current schema is version 7: it holds tasks and dependencies, attempts and entries, scoped confirmations, durable request records, archives, pending deletions, retained attempt numbers, runtime records, immutable attempt specifications and validated results. Older schemas migrate automatically on opening. Worker result files, Pi sessions and artefacts remain separate.
 
-Use local storage, not network or synced folders. Switchboard probes exclusive creation in the database's directory and refuses linked or non-canonical paths. Do not copy an open database without its WAL; stop Switchboard first or use SQLite backup tooling.
+Use local storage, not network or synced folders. Switchboard probes exclusive creation in the database's directory and refuses linked or non-canonical paths. Do not copy an open database without its WAL; stop Switchboard first or use SQLite backup tooling. Restoring a backup is not an ordinary restart: [ADR-0007 requires dispatch to stay fenced until application identities and external owners have been reconciled](adr/0007-one-sqlite-database.md#decision). A full operator disaster-recovery procedure is still required.
 
 ## Provider availability
 
@@ -30,7 +30,7 @@ Loading configuration validates its shape without opening providers. Task comman
 
 A custom command must keep running until stopped, hold its power assertion for that whole time, and exit when `{pid}` exits so a crashed dispatcher cannot leave the computer awake. Switchboard stops it when the worker finishes, including failed launches, interruptions and exceeded limits, with a normal termination signal on macOS and Linux or by ending its process tree on Windows.
 
-If the command cannot start or exits early, dispatch continues. The attempt's activity records a warning that the computer may sleep, together with the command's output. Linux requires `systemd-inhibit` and permission to take an inhibitor; hosts without them warn rather than refuse work. The command prevents idle system sleep, not display sleep. **Closing a laptop's lid still sleeps it and stops workers.** It does not protect against explicit sleep, shutdown or loss of power.
+If the command cannot start or exits early, dispatch continues. The attempt's activity records a warning that the computer may sleep, together with the command's output. Linux requires `systemd-inhibit` and permission to take an inhibitor; hosts without them warn rather than refuse work. The command prevents idle system sleep, not display sleep. **Closing a laptop's lid can still put it to sleep and suspend workers.** Sleep is not evidence that workers have exited; they may continue after waking. It does not protect against explicit sleep, shutdown or loss of power.
 
 ## Tasks-axi import
 
