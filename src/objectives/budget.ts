@@ -34,7 +34,12 @@ export function attemptSpending(database: Database, ref: AttemptRef, now = Date.
     return { ...ref, cost: null, workerTimeMs: null, ...saved?.spending, finished: true };
   }
   const launch = database.get("SELECT * FROM launches WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt);
-  if (!launch) return { ...ref, cost: 0, workerTimeMs: 0, finished: Boolean(row.closed) };
+  if (!launch) {
+    const evidence = database.get(`SELECT 1 FROM attempt_entries WHERE context = ? AND task = ? AND attempt = ?
+      AND (json_extract(entry, '$.kind') = 'launched' OR (json_extract(entry, '$.kind') = 'worker_finished'
+        AND json_extract(entry, '$.data.status') <> 'not_started'))`, ref.contextId, ref.taskId, ref.attempt);
+    return { ...ref, cost: evidence ? null : 0, workerTimeMs: evidence ? null : 0, finished: Boolean(row.closed) };
+  }
   const directory = String(launch.directory);
   const exit = database.get("SELECT value,recorded_at FROM worker_observations WHERE directory = ? AND kind = 'exit'", directory);
   if (exit && JSON.parse(String(exit.value)).started === false) return { ...ref, cost: 0, workerTimeMs: 0, finished: true };
@@ -45,7 +50,7 @@ export function attemptSpending(database: Database, ref: AttemptRef, now = Date.
   const stats = usage ? undefined : database.get("SELECT entry FROM worker_activity WHERE directory = ? AND json_extract(entry, '$.kind') = 'stats' ORDER BY sequence DESC LIMIT 1", directory);
   const cost = usage ? Number(usage.cost) : stats ? JSON.parse(String(stats.entry)).cost : null;
   const elapsed = launch.kind === "fence" || (!exit && finished) ? null : Math.max(0, (exit ? Date.parse(String(exit.recorded_at)) : now) - Date.parse(String(launch.created_at)));
-  return { ...ref, cost: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null, workerTimeMs: elapsed, finished };
+  return { ...ref, cost: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null, workerTimeMs: elapsed !== null && Number.isFinite(elapsed) ? elapsed : null, finished };
 }
 
 export function unknownKey(value: AttemptSpending): string {
@@ -87,5 +92,6 @@ export function checkObjectiveBudget(id: string, value: ObjectiveBudget, running
 
 export function describeObjectiveBudget(value: ObjectiveBudget): string {
   const { budget, spending } = value;
-  return `budget: cost ${budget.maxCost ?? "unlimited"}, worker time ${budget.maxWorkerTimeMs ?? "unlimited"}ms; spending: cost ${spending.cost ?? `unknown (observed ${spending.observedCost})`}, worker time ${spending.workerTimeMs ?? `unknown (observed ${spending.observedWorkerTimeMs})`}ms; unknown usage: ${spending.unknown.length} attempt(s); deadline: ${value.deadline ?? "none"}${value.timeLeftMs === null ? "" : ` (${value.timeLeftMs}ms left)`}`;
+  const unknown = spending.unknown.map(a => `${a.contextId}/${a.taskId}/${a.attempt} (${[a.cost === null ? "cost" : "", a.workerTimeMs === null ? "worker time" : ""].filter(Boolean).join(", ")}${a.confirmed ? "; confirmed" : ""})`).join("; ");
+  return `budget: cost ${budget.maxCost ?? "unlimited"}, worker time ${budget.maxWorkerTimeMs === null ? "unlimited" : `${budget.maxWorkerTimeMs}ms`}; spending: cost ${spending.cost ?? `unknown (observed ${spending.observedCost})`}, worker time ${spending.workerTimeMs ?? `unknown (observed ${spending.observedWorkerTimeMs})`}ms; unknown usage: ${unknown || "none"}; deadline: ${value.deadline ?? "none"}${value.timeLeftMs === null ? "" : ` (${value.timeLeftMs}ms left)`}`;
 }

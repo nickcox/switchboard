@@ -3,7 +3,8 @@ import { z } from "zod";
 
 /**
  * Diagnostic record of what a worker is doing (Phase 1 PRD, watching and controlling a running attempt). Switchboard
- * never uses it to decide task, lease or liveness state; Pi's session file remains the full transcript.
+ * never uses it to establish lease or liveness state; Pi's session file remains the full transcript. Historical usage
+ * snapshots can supply objective cost accounting; new runtimes keep their latest usage separately.
  */
 export const activityEntrySchema = z.discriminatedUnion("kind", [
   z.strictObject({ v: z.literal(1), ts: z.iso.datetime(), kind: z.literal("tool_start"), tool: z.string(), id: z.string(), args: z.string() }),

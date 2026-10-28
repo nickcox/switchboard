@@ -188,6 +188,30 @@ test("unused reservations and observed spawn failures have known zero worker spe
   } finally { f.tasks.close(); }
 });
 
+test("historical usage snapshots supply the latest cost, but missing launch or archive evidence stays unknown", async () => {
+  const f = await fixture();
+  try {
+    const ref = (await f.reserve("historical")).ref;
+    const directory = await f.launch(ref);
+    for (const cost of [1, 2]) await f.runtime.appendActivity(directory, { v: 1, ts: new Date().toISOString(), kind: "stats", cost, tokens: 10 });
+    await f.exit(ref, directory);
+    assert.equal(objectiveBudget(f.tasks.database, "goal").spending.cost, 2);
+    const missingLaunch = (await f.reserve("missing-launch")).ref;
+    await f.attempts.append(missingLaunch, "launched", { sessionId: randomUUID() });
+    await f.attempts.append(missingLaunch, "halted", { stage: "fixture", reason: "stopped" });
+    assert.equal(attemptSpending(f.tasks.database, missingLaunch).cost, null);
+    assert.equal(attemptSpending(f.tasks.database, missingLaunch).workerTimeMs, null);
+    await assert.rejects(f.reserve("next"), { reason: "objective_usage_unknown" });
+    await f.tasks.database.transaction(() => {
+      f.tasks.database.run("INSERT INTO attempt_numbers VALUES('historical-context','historical',1)");
+      f.tasks.database.run("INSERT INTO archived_attempts VALUES('historical-context','historical',1,?)", JSON.stringify({ summary: {} }));
+    });
+    const archive = attemptSpending(f.tasks.database, { contextId: "historical-context", taskId: "historical", attempt: 1 });
+    assert.equal(archive.cost, null);
+    assert.equal(archive.workerTimeMs, null);
+  } finally { f.tasks.close(); }
+});
+
 for (const limit of ["cost", "worker time", "deadline"] as const) {
   test(`the owning dispatcher stops a running worker over the objective ${limit}, even when usage fails`, async () => {
     const f = await fixture();

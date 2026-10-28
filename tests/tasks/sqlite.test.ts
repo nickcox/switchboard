@@ -210,7 +210,7 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
   await store.database.transaction(() => {
     store.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
     store.database.run("UPDATE tasks SET started_body = 'Original instructions' WHERE id = 'a'");
-    for (const table of ["review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims"]) store.database.run(`DROP TABLE ${table}`);
+    for (const table of ["worker_usage", "review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims"]) store.database.run(`DROP TABLE ${table}`);
     store.database.run("DROP INDEX worker_stop_per_attempt");
     store.database.run("ALTER TABLE confirmations DROP COLUMN note");
     store.database.run("DROP TRIGGER task_definition_changed");
@@ -227,7 +227,7 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
   const reopened = await Promise.all([SqliteTaskStore.open({ path }), SqliteTaskStore.open({ path })]);
   try {
     for (const current of reopened) {
-      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 11);
+      assert.equal(current.database.get("PRAGMA user_version")!.user_version, 12);
       assert.ok(current.database.all("PRAGMA table_info(tasks)").every(column => column.name !== "started_body"));
       assert.deepEqual(await current.list(), tasksBefore);
       assert.deepEqual(new AttemptStore(current.database, "fixture").read(ref), attemptBefore);
@@ -276,7 +276,7 @@ test("database durability, schema version, absolute canonical regular paths", as
   assert.equal(store.database.get("PRAGMA synchronous")?.synchronous, 2);
   assert.equal(store.database.get("PRAGMA fullfsync")?.fullfsync, 1);
   assert.equal(store.database.get("PRAGMA busy_timeout")?.timeout, 0);
-  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 11);
+  assert.equal(store.database.get("PRAGMA user_version")?.user_version, 12);
   store.close();
   await assert.rejects(SqliteTaskStore.open({ path: "relative.db" }), /absolute/);
   await assert.rejects(SqliteTaskStore.open({ path: dir }), /regular file/);

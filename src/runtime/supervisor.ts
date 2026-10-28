@@ -178,16 +178,16 @@ export class WorkerSupervisor {
       lastSnapshot = Date.now();
       try {
         const usage = await bounded(current.usage(), this.options.requestMs, "usage_snapshot_timeout");
-        await reserved.storage.recordUsage(directory, usage);
         activity.write({ kind: "stats", tokens: usage.tokens, cost: usage.cost });
-        await checkBudget();
         const over = (this.options.maxCost !== undefined && usage.cost > this.options.maxCost) ||
           (this.options.maxTokens !== undefined && usage.tokens > this.options.maxTokens);
         if (over && !budget.signal.aborted) {
           activity.write({ kind: "note", text: `Usage limit exceeded (${usage.tokens} tokens, $${usage.cost.toFixed(2)}); stopping the worker` });
           budget.abort();
         }
-      } catch { /* Usage snapshots are diagnostic; a failed one is skipped. */ }
+        await reserved.storage.recordUsage(directory, usage);
+        await checkBudget();
+      } catch { /* A failed usage snapshot is skipped; time and deadline checks run independently. */ }
     };
     let session: RuntimeSession | undefined;
     let failure: Error | undefined;

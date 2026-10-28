@@ -139,7 +139,9 @@ export class ObjectiveStore {
       const after = this.require(id);
       this.record(id, "update", before, after, now);
       const raised = (key: "maxCost" | "maxWorkerTimeMs") => before.budget[key] !== null && (after.budget[key] === null || after.budget[key]! > before.budget[key]!);
-      if (raised("maxCost") || raised("maxWorkerTimeMs")) this.recordBudgetConfirmation(id, "Budget raised after inspecting unknown usage", now);
+      if ((raised("maxCost") || raised("maxWorkerTimeMs")) && objectiveBudget(this.database, id).spending.unknown.some(a => a.finished && !a.confirmed)) {
+        this.recordBudgetConfirmation(id, "Budget raised after inspecting unknown usage", now);
+      }
       return after;
     });
   }
@@ -154,6 +156,7 @@ export class ObjectiveStore {
   }
   private recordBudgetConfirmation(id: string, note: string, now: string): void {
     const unknownAttempts = objectiveBudget(this.database, id).spending.unknown.filter(a => a.finished && !a.confirmed).map(unknownKey);
+    this.database.run("UPDATE objectives SET updated_at = ? WHERE id = ?", now, id);
     this.database.run(`INSERT INTO objective_changes VALUES(?,(SELECT coalesce(max(sequence),0)+1 FROM objective_changes WHERE objective = ?),?,?,?,?)`,
       id, id, "confirm-budget", this.actor, now, JSON.stringify({ note, unknownAttempts }));
   }

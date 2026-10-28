@@ -99,7 +99,7 @@ test("only the creator can change objective authority or abandon it, and no supe
   try {
     const objectives = new ObjectiveStore(f.tasks.database, supervisor);
     const otherPerson = new ObjectiveStore(f.tasks.database, { kind: "person", id: "operator:someone-else" });
-    for (const changes of [{ permissions: defaultPermissions }, { budget: { maxCost: 1, maxWorkerTimeMs: null } }, { acceptanceCriteria: ["Replacement"] }]) {
+    for (const changes of [{ permissions: defaultPermissions }, { budget: { maxCost: 1, maxWorkerTimeMs: null } }, { acceptanceCriteria: ["Replacement"] }, { deadline: "2099-01-01T00:00:00Z" }]) {
       const before = rows(f);
       await assert.rejects(objectives.update("goal", changes), /person_required/);
       await assert.rejects(objectives.update("other", changes), /person_required/);

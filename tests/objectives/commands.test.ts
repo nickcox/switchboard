@@ -54,6 +54,10 @@ test("objective CLI creates, shows, lists, updates, abandons and reopens without
   assert.deepEqual(shown.budget, { maxCost: 12.5, maxWorkerTimeMs: 120000 });
   assert.equal(shown.history[1].changedBy, `operator:${userInfo().username}`);
   assert.deepEqual(shown.history[1].changes.scope, { before: "", after: "This project" });
+  const confirmed = f.json("objective", "confirm-budget", "goal", "--note", "Inspected the available accounting").objective;
+  assert.equal(confirmed.history.at(-1).action, "confirm-budget");
+  assert.equal(confirmed.history.at(-1).changes.note, "Inspected the available accounting");
+  assert.equal(confirmed.history.at(-1).changedBy, `operator:${userInfo().username}`);
   assert.equal(f.json("objective", "update", "goal", "--clear-deadline").objective.deadline, null);
   assert.equal(f.json("objective", "abandon", "goal").objective.state, "abandoned");
   assert.equal(f.json("objective", "list", "--state", "open").objectives.length, 0);
@@ -104,7 +108,7 @@ test("objective and task-link usage errors refuse before reading configuration",
   for (const args of [["objective"], ["objective", "unknown"], ["objective", "show"], ["objective", "add", "goal"],
     ["objective", "add", "goal", "Request", "--request-file", "request"], ["objective", "list", "extra"], ["objective", "list", "--state", "bad"],
     ["objective", "update", "goal", "--criterion", "A", "--criteria-file", "criteria"], ["objective", "update", "goal", "--deadline", "date", "--clear-deadline"],
-    ["objective", "update", "goal", "--state", "abandoned"], ["objective", "complete", "goal"],
+    ["objective", "update", "goal", "--state", "abandoned"], ["objective", "complete", "goal"], ["objective", "confirm-budget", "goal"],
     ["task", "update", "work", "--objective", "goal", "--clear-objective"]]) {
     const result = spawnSync(process.execPath, [cli, ...args, "--config", "missing.json"], { encoding: "utf8" });
     assert.equal(result.status, 2, args.join(" ") + result.stderr);
