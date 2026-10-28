@@ -14,12 +14,14 @@ import { describeStatus, status } from "./dispatch/status.ts";
 import { watch } from "./dispatch/watch.ts";
 import { describeEntry } from "./runtime/activity.ts";
 import { taskCommand } from "./tasks/cli.ts";
+import { createReview } from "./dispatch/review.ts";
 
 const usage = `Usage:
   switchboard --version
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
   switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
   switchboard dispatch --once [--dry-run] [--task <id> [--from-attempt <n> [--note <text> | --note-file <path>]]] [--request-id <id>] [--json] [--config <path>]
+  switchboard review --task <id> [--attempt <n>] [--json] [--config <path>]
   switchboard status [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
@@ -100,7 +102,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const command = positionals[0];
-  const commands = ["dispatch", "status", "resolve", "watch", "stop", "steer", "finish", "discard", "prune"];
+  const commands = ["dispatch", "review", "status", "resolve", "watch", "stop", "steer", "finish", "discard", "prune"];
   if (values.help || !command || !commands.includes(command) || positionals.length !== (command === "steer" ? 2 : 1)) {
     console.error(usage);
     return values.help ? 0 : 2;
@@ -108,6 +110,7 @@ async function main(argv: string[]): Promise<number> {
   // An option that a command does not use is refused, so that, for example, `stop --dry-run` cannot send a real stop.
   const selectors = ["lease", "task", "attempt"];
   const allowed: Record<string, string[]> = {
+    review: ["task", "attempt"],
     dispatch: ["once", "dry-run", "task", "request-id", "from-attempt", "note", "note-file"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
     watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
     prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
@@ -170,6 +173,10 @@ async function main(argv: string[]): Promise<number> {
     console.error("resolve requires exactly one of --lease or --task; --task requires --lease-returned or --read-failure, and --attempt must be a positive integer with --task.\n\n" + usage);
     return 2;
   }
+  if (command === "review" && (!values.task || (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt <= 0)))) {
+    console.error("review requires --task <id>; --attempt must be a positive integer.");
+    return 2;
+  }
   const byAttempt = ["watch", "stop", "steer", "finish", "discard"].includes(command);
   if (byAttempt && (
     (values.lease !== undefined) === (values.task !== undefined)
@@ -201,6 +208,12 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       leaseId = selected.leaseId;
+    }
+
+    if (command === "review") {
+      const value = await createReview(deps, { taskId: values.task!, ...(attempt === undefined ? {} : { attempt }) });
+      console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+      return value.ok ? 0 : 1;
     }
 
     if (command === "prune") {

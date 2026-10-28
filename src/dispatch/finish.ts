@@ -325,7 +325,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
       const permission = checkCanFinish(current.attempt.facts, accepting);
       if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
       deps.reads.effectAttempted = true;
-      await deps.attempts.finishAttempt(record, task, current.record);
+      await deps.attempts.finishAttempt(record, task, current.record, retention.retained);
     }
     catch (error) { return stopped(error, "record the task as done"); }
   }

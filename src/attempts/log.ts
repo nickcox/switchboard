@@ -2,6 +2,7 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { checkResultSchema } from "./checks.ts";
+import { reviewRecordSchema } from "./reviews.ts";
 import { isMissing, key, readJsonFile } from "../runtime/records.ts";
 
 const nonempty = z.string().min(1).refine(value => value.trim().length > 0);
@@ -30,6 +31,7 @@ const entrySchemas = {
     }).optional(),
   }),
   check_finished: checkResultSchema,
+  review_recorded: reviewRecordSchema,
   integration_started: z.strictObject({ targetBranch: nonempty, from: commit, commit }),
   owner_read_reconciled: z.strictObject({ failureSequence: z.number().int().nonnegative(), targetBranch: nonempty, commit }),
   leased: z.strictObject({

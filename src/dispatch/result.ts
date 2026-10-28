@@ -11,6 +11,7 @@ import type { RetentionResult } from "../workspaces/retention.ts";
  * supervisor.
  */
 export const reasons = {
+  review_created: "A review task was created for the exact recorded output commit. No worker was launched.",
   dry_run: "A ready task and its delivery contract were selected. Nothing was changed or launched.",
   no_ready_work: "No task is ready in the configured repository.",
   done: "The worker's result satisfied the completion contract and the task is recorded as done.",

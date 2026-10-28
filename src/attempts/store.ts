@@ -4,6 +4,7 @@ import { z } from "zod";
 import { Database } from "../database.ts";
 import { childExitSchema, type RuntimeBinding } from "../runtime/records.ts";
 import { parseValidatedResult } from "../runtime/validated-result.ts";
+import { reviewTargetSchema, validateWorkerResult, type ReviewTarget } from "../runtime/contracts.ts";
 import type { Task, TaskState } from "../tasks/store.ts";
 import { attemptSpecificationSchema, startingPointSchema, storedSpecificationSchema, type AttemptSpecification, type StartingPoint } from "./specification.ts";
 import { requestFingerprint, type RequestInputs } from "./requests.ts";
@@ -102,6 +103,7 @@ export class AttemptStore {
     dryRun?: boolean;
     startingPoint?: StartingPoint;
     startingPointEvidence?: StartingPointEvidence;
+    reviewEvidence?: StartingPointEvidence;
     specification: (task: Task, ref: AttemptRef) => AttemptSpecification;
   }): Promise<{ created: boolean; ref: AttemptRef }> {
     z.number().int().positive().parse(options.maximum);
@@ -144,7 +146,14 @@ export class AttemptStore {
       this.insert(ref, "requested", options.requested);
       const supplied = options.specification(task, ref);
       if (!source && supplied.startingPoint) throw new Error("A starting point requires a checked reservation");
-      const specification = attemptSpecificationSchema.parse({ ...supplied, ...(source ? { startingPoint: source } : {}) });
+      const review = this.reviewTask(task.id);
+      if (review) {
+        if (source) throw new Error("A review cannot start from another attempt");
+        this.checkReviewSource(review.target, options.reviewEvidence);
+        if (task.kind !== "review" || JSON.stringify(task.acceptanceCriteria) !== JSON.stringify(review.acceptanceCriteria) ||
+          supplied.backingRepository !== review.backingRepository) throw new Error("The review task no longer matches its recorded target");
+      } else if (supplied.reviewTarget) throw new Error("A review target requires a recorded review task");
+      const specification = attemptSpecificationSchema.parse({ ...supplied, ...(source ? { startingPoint: source } : {}), ...(review ? { reviewTarget: review.target } : {}) });
       if (source) {
         const previous = this.findForTask(source.taskId, source.attempt)!;
         if (specification.outputBranch === previous.specification?.outputBranch || specification.outputBranch === previous.allocation?.outputBranch) {
@@ -192,18 +201,20 @@ export class AttemptStore {
       const row = this.database.get("SELECT state, hold_revision, started_hold_revision FROM tasks WHERE id = ?", ref.taskId)!;
       const applied = row.state === "in_flight" && row.hold_revision === row.started_hold_revision;
       if (applied) this.writeOutcome(ref.taskId, outcome.outcome, outcome.reason);
+      this.recordReview(ref);
       this.insert(ref, "task_recorded", { ...outcome, applied });
       this.closeAttempt(ref);
       return { task: this.task(ref.taskId)!, applied };
     });
   }
 
-  async finishAttempt(ref: AttemptRef, expected: ExpectedTask, expectedRecord?: AttemptRecord): Promise<Task> {
+  async finishAttempt(ref: AttemptRef, expected: ExpectedTask, expectedRecord?: AttemptRecord, reviewRetained?: boolean): Promise<Task> {
     return this.database.transaction(() => {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
       this.expectTask(ref.taskId, expected);
       this.writeOutcome(ref.taskId, "done", "finished");
+      this.recordReview(ref, reviewRetained);
       this.insert(ref, "task_recorded", { outcome: "done", reason: "finished", category: "done", applied: true });
       this.closeAttempt(ref);
       return this.task(ref.taskId)!;
@@ -224,7 +235,7 @@ export class AttemptStore {
   }
 
   async append<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>): Promise<void> {
-    if (["requested", "task_started", "task_recorded", "discarded", "output_accepted", "lease_return_started", "operator_resolved"].includes(kind)) throw new Error("Use the transactional task/attempt operation");
+    if (["requested", "task_started", "task_recorded", "discarded", "output_accepted", "lease_return_started", "operator_resolved", "review_recorded"].includes(kind)) throw new Error("Use the transactional task/attempt operation");
     await this.database.transaction(() => {
       this.requireAttempt(ref);
       if (kind === "leased" && this.read(ref).entries.some(e => e.kind === "leased")) throw new Error("An attempt's allocation cannot be changed");
@@ -335,6 +346,7 @@ export class AttemptStore {
         archivedAt: new Date().toISOString(), confirmations: this.confirmations(expected),
         ...(current.entries.some(e => e.kind === "owner_read_failed") ? { readFailures: current.entries.filter(e => e.kind === "owner_read_failed" || e.kind === "owner_read_reconciled") } : {}),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
+        ...(current.entries.some(entry => entry.kind === "review_recorded") ? { reviews: current.entries.filter(entry => entry.kind === "review_recorded").map(entry => entry.data) } : {}),
         ...(reservation ? { reservation: { requestId: reservation.request_id, reservedAt: reservation.reserved_at } } : {}),
       };
       const existing = this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", expected.contextId, expected.taskId, expected.attempt);
@@ -379,6 +391,74 @@ export class AttemptStore {
     this.checkContext(deletion);
     await this.database.transaction(() => this.database.run("DELETE FROM pending_attempt_deletions WHERE context = ? AND task = ? AND attempt = ? AND directory = ?",
       deletion.contextId, deletion.taskId, deletion.attempt, deletion.directory));
+  }
+
+  reviewTask(taskId: string): { target: ReviewTarget; acceptanceCriteria: string[]; backingRepository: string } | undefined {
+    const row = this.database.get("SELECT * FROM review_tasks WHERE task = ?", taskId);
+    if (!row) return undefined;
+    if (row.context !== this.contextId) throw new Error("The review task belongs to another context");
+    return { target: reviewTargetSchema.parse(JSON.parse(String(row.target))),
+      acceptanceCriteria: JSON.parse(String(row.acceptance_criteria)), backingRepository: String(row.backing_repository) };
+  }
+
+  async createReviewTask(taskId: string, target: ReviewTarget, evidence: StartingPointEvidence): Promise<Task> {
+    return this.database.transaction(() => {
+      this.checkReviewSource(target, evidence);
+      const source = this.read({ contextId: this.contextId, taskId: target.taskId, attempt: target.attempt });
+      const specification = attemptSpecificationSchema.parse(source.specification);
+      if (!/^[a-zA-Z0-9._-]+$/.test(taskId) || this.task(taskId)) throw new Error("The review task ID is invalid or already used");
+      const instructions = [
+        `Review task ${target.taskId}, attempt ${target.attempt}, at exact commit ${target.commit}.`,
+        "Judge each acceptance criterion against that commit, not a later branch head. Report each as met or not_met in criteriaReport, with your findings in evidence.",
+        "This is an independent review, not an implementation task. Do not repair the code or change the reviewed branch.",
+        `Include a Git work reference named reviewed-output, branch ${target.outputBranch}, commit ${target.commit}.`,
+        "Report completed when the review is complete, including when criteria are not met. Switchboard derives a passed verdict only when every criterion is met.",
+        `Reviewed instructions:\n${specification.instructions}`,
+      ].join("\n\n");
+      this.database.run(`INSERT INTO tasks(id,title,body,repo,kind,acceptance_criteria,position)
+        VALUES(?,?,?,?, 'review',?,(SELECT coalesce(max(position),0)+1 FROM tasks))`,
+        taskId, `Review ${target.taskId} attempt ${target.attempt}`, instructions, specification.repository, JSON.stringify(specification.acceptanceCriteria));
+      this.database.run("INSERT INTO review_tasks VALUES(?,?,?,?,?,?,?)", taskId, this.contextId, target.taskId, target.attempt, JSON.stringify(target),
+        JSON.stringify(specification.acceptanceCriteria), specification.backingRepository);
+      return this.task(taskId)!;
+    });
+  }
+
+  private checkReviewSource(target: ReviewTarget, evidence?: StartingPointEvidence) {
+    reviewTargetSchema.parse(target);
+    const checked = this.checkStartingPoint(target.taskId, target, evidence);
+    const source = this.read({ contextId: this.contextId, taskId: target.taskId, attempt: target.attempt });
+    const sessionId = source.entries.find(entry => entry.kind === "launched")?.data.sessionId;
+    if (checked.commit !== target.commit || source.allocation?.outputBranch !== target.outputBranch || sessionId !== target.sessionId) {
+      throw new AttemptStoreError("attempt_changed", "The reviewed attempt no longer matches the exact recorded review target");
+    }
+  }
+
+  /** Written with the review attempt's outcome, using only its immutable validated result. */
+  private recordReview(ref: AttemptRef, reviewRetained?: boolean) {
+    const review = this.read(ref);
+    const target = review.specification?.reviewTarget;
+    if (!target) return;
+    const launch = this.database.get("SELECT directory, binding FROM launches WHERE context = ? AND task = ? AND attempt = ? AND kind = 'launch'", ref.contextId, ref.taskId, ref.attempt);
+    if (!launch) return;
+    const result = this.database.get("SELECT value FROM worker_observations WHERE directory = ? AND kind = 'validated_result'", String(launch.directory));
+    const exit = this.database.get("SELECT value FROM worker_observations WHERE directory = ? AND kind = 'exit'", String(launch.directory));
+    if (!result || !exit) return;
+    const child = childExitSchema.parse(JSON.parse(String(exit.value)));
+    if (!child.started || child.code !== 0 || child.signal !== null) return;
+    const binding = JSON.parse(String(launch.binding)) as RuntimeBinding;
+    const validated = validateWorkerResult(parseValidatedResult(JSON.parse(String(result.value)), binding).content, binding.input);
+    const source = this.findForTask(target.taskId, target.attempt);
+    if (!source || this.startingPointCommit(source) !== target.commit || review.allocation?.startingCommit !== target.commit ||
+      binding.input.identity.sessionId === target.sessionId || JSON.stringify(binding.input.reviewTarget) !== JSON.stringify(target) ||
+      JSON.stringify(binding.input.acceptanceCriteria) !== JSON.stringify(review.specification!.acceptanceCriteria)) {
+      throw new AttemptStoreError("attempt_changed", "The review does not name the reviewed attempt's exact output commit in a separate session");
+    }
+    if (source.entries.some(entry => entry.kind === "review_recorded" && entry.data.taskId === ref.taskId && entry.data.attempt === ref.attempt)) return;
+    const retained = reviewRetained ?? [...review.entries].reverse().find(entry => entry.kind === "retention_checked")?.data.retained === true;
+    const findings = validated.criteriaReport ?? [];
+    this.insert(source, "review_recorded", { taskId: ref.taskId, attempt: ref.attempt, commit: target.commit,
+      verdict: retained && validated.outcome === "completed" && findings.every(finding => finding.status === "met") ? "passed" : "failed", findings });
   }
 
   /** Only immutable, recorded output is a starting point – never today's branch head or result file. */

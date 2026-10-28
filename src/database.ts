@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 8) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 9) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -232,6 +232,24 @@ export class Database {
               OR NEW.acceptance_criteria IS NOT OLD.acceptance_criteria
             BEGIN UPDATE tasks SET definition_revision = OLD.definition_revision + 1 WHERE id = NEW.id; END;
           PRAGMA user_version = 8;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 9) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 9) return;
+        db.exec(`
+          CREATE TABLE review_tasks (
+            task TEXT PRIMARY KEY REFERENCES tasks(id), context TEXT NOT NULL,
+            reviewed_task TEXT NOT NULL, reviewed_attempt INTEGER NOT NULL,
+            target TEXT NOT NULL CHECK(json_valid(target)), acceptance_criteria TEXT NOT NULL CHECK(json_valid(acceptance_criteria)),
+            backing_repository TEXT NOT NULL,
+            FOREIGN KEY(context, reviewed_task, reviewed_attempt) REFERENCES attempt_numbers(context, task, number));
+          CREATE TRIGGER review_tasks_immutable BEFORE UPDATE ON review_tasks BEGIN
+            SELECT RAISE(ABORT, 'Review targets cannot be changed');
+          END;
+          CREATE TRIGGER review_tasks_not_removed BEFORE DELETE ON review_tasks BEGIN
+            SELECT RAISE(ABORT, 'Review targets cannot be removed');
+          END;
+          PRAGMA user_version = 9;
         `);
       });
       return result;

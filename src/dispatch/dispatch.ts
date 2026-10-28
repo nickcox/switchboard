@@ -18,6 +18,7 @@ import { OwnerReads, readRefusal } from "./owner-reads.ts";
 import { specificationFactory } from "./specification.ts";
 import { reserveFromAttempt } from "./reserve.ts";
 import { cleanupStartingPoint } from "./starting-point.ts";
+import { reviewSource } from "./review.ts";
 export type { ContractSpec, DeliveryConfiguration, Dependencies } from "./dependencies.ts";
 
 /** Owner state read before dispatch. Every field comes from its owner, not from memory. */
@@ -161,6 +162,20 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
   try { selected = await deps.tasks.read(taskId); }
   catch (error) { return { ...readRefusal(await reads.failure("Task store", "read selected task", error), "select")!, lease: "none" }; }
   if (!selected) return refusal("select", "choose_another_task", `Task ${taskId} no longer exists`, observed);
+  const review = deps.attempts.reviewTask(taskId);
+  let reviewEvidence;
+  if (review) {
+    try {
+      const checked = await reviewSource(deps, review.target.taskId, review.target.attempt);
+      if (JSON.stringify(checked.target) !== JSON.stringify(review.target) || selected.kind !== "review" ||
+        JSON.stringify(selected.acceptanceCriteria) !== JSON.stringify(review.acceptanceCriteria)) {
+        return refusal("select", "inspect_attempt", "The review task no longer matches its exact recorded target", observed);
+      }
+      reviewEvidence = checked.evidence;
+    } catch (error) {
+      return refusal("select", "inspect_attempt", message(error), { ...observed, reason: error instanceof AttemptStoreError ? error.reason : "review_unavailable" });
+    }
+  }
   const contractName = selected.kind ?? "default";
   const contract = selected.kind === null ? deps.delivery.default : deps.delivery.byTaskKind[selected.kind];
   if (!contract) {
@@ -181,7 +196,7 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
   let ref: AttemptRef;
   try {
     const reservation = await deps.attempts.reserveAttempt({ taskId, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, maximumPerTask: deps.maxAttemptsPerTask ?? 3, repo: selected.repo, definitionRevision: selected.definitionRevision,
-      specification, requested: {
+      specification, ...(reviewEvidence ? { reviewEvidence } : {}), requested: {
       ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
     } });
     ref = reservation.ref;
@@ -233,10 +248,11 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
     // Step 3: acquire a lease for the exact task ID on a unique output branch.
     const specification = attemptSpecificationSchema.parse((await reads.read("Attempt specification", "read acquisition inputs", () => deps.attempts.read(ref))).specification);
     const outputBranch = specification.outputBranch;
+    const startingCommit = specification.startingPoint?.commit ?? specification.reviewTarget?.commit;
     let allocation: Allocation;
     try {
       allocation = await deps.workspaces.acquire({ holder: specification.taskId, baseRef: specification.baseRef, branch: outputBranch,
-        ...(specification.startingPoint ? { startingCommit: specification.startingPoint.commit } : {}),
+        ...(startingCommit ? { startingCommit } : {}),
       });
     } catch (error) {
       if (error instanceof WorkspaceError && error.readFailure) throw await reads.failure(error.readFailure.owner, "read acquisition", error.readFailure.error);
@@ -260,7 +276,7 @@ async function executeReserved(deps: Dependencies, options: DispatchOptions, rea
     } });
     if (cleanup) observed.startingPointCleanup = cleanup;
     deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
-    if (specification.startingPoint && allocation.startingCommit !== specification.startingPoint.commit) {
+    if (startingCommit && allocation.startingCommit !== startingCommit) {
       return halt("acquire", "inspect_attempt", "The acquired workspace does not start at the recorded earlier output commit");
     }
 

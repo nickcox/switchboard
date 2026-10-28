@@ -11,7 +11,7 @@
 - `maxAttemptsPerTask`: maximum lifetime reservations for one task across all contexts sharing the database, default 3. This is separate from concurrent context capacity (`maxAttempts`). Ordinary dispatch and reservations starting from earlier output check it inside the reservation transaction. Halting, discarding, returning a lease or pruning does not restore an attempt. Replaying a request ID still returns its original reservation at the limit. Review earlier attempts before increasing this setting; it does not authorise automatic retries.
 - `tasks.repo`: repository used to select ready and in-flight tasks. Task commands accept `--repo` to override it. Reading a named task is database-wide.
 
-The old `tasks.file` setting is removed. Switchboard never silently reads a backlog instead of the database. The database uses Node.js 26.7's built-in SQLite, WAL, `synchronous = FULL`, `fullfsync` and a zero busy timeout. Every write transaction starts with `BEGIN IMMEDIATE`. The current schema is version 7: it holds tasks and dependencies, attempts and entries, scoped confirmations, durable request records, archives, pending deletions, retained attempt numbers, runtime records, immutable attempt specifications and validated results. Older schemas migrate automatically on opening. Worker result files, Pi sessions and artefacts remain separate.
+The old `tasks.file` setting is removed. Switchboard never silently reads a backlog instead of the database. The database uses Node.js 26.7's built-in SQLite, WAL, `synchronous = FULL`, `fullfsync` and a zero busy timeout. Every write transaction starts with `BEGIN IMMEDIATE`. The current schema is version 9: it holds tasks and dependencies, acceptance criteria, attempts and entries, scoped confirmations, durable request records, archives, pending deletions, retained attempt numbers, runtime records, immutable attempt specifications, validated results and review-task targets. Older schemas migrate automatically on opening. Worker result files, Pi sessions and artefacts remain separate.
 
 Use local storage, not network or synced folders. Switchboard probes exclusive creation in the database's directory and refuses linked or non-canonical paths. Do not copy an open database without its WAL; stop Switchboard first or use SQLite backup tooling. Restoring a backup is not an ordinary restart: [ADR-0007 requires dispatch to stay fenced until application identities and external owners have been reconciled](adr/0007-one-sqlite-database.md#decision). A full operator disaster-recovery procedure is still required.
 
@@ -39,6 +39,31 @@ Before accepting output, `finish` runs these commands sequentially in the attemp
 Each completed command appends an immutable attempt fact: name, exact commit, exit code (null for a signal), whether its time limit was reached, duration in milliseconds, and the last 2000 characters of each output stream. Output and failure diagnostics use the same credential redaction as failed owner reads. `status` and `finish`, in text and JSON, show the latest result for the output commit, with failed or not-run checks and their output highlighted. The records survive later commits; a passing result for the exact commit is reused by name, while failed and not-run checks are tried again on the next finish. Checks for another commit always run again.
 
 **Checks are advisory for the operator.** A nonzero exit or a time limit does not refuse finish: acceptance, integration and task recording continue. A command that cannot start or whose result cannot be read is recorded as `not_run`, with owner-read diagnostics, and is advisory too. It does not establish an uncertain acceptance or integration effect. A later finish retries it while the workspace lease is retained. Returning the lease does not prove that descendants started by a check have stopped; `--no-processes` still requires the operator's confirmation. Current context configuration supplies the checks, not the worker's reported test evidence. Independent review and supervisor enforcement are separate steps.
+
+## Independent review
+
+A review uses the existing task kind and delivery-contract selection, not a separate runtime. Configure its contract explicitly, for example:
+
+```json
+{
+  "delivery": {
+    "baseRef": "main",
+    "byTaskKind": {
+      "review": {
+        "kind": "artefact",
+        "acceptance": "independent_deliverable",
+        "requiredDeliverables": ["report"]
+      }
+    }
+  }
+}
+```
+
+`review --task <id> [--attempt <n>]` creates a queued review task (latest attempt by default), with the source attempt's stored criteria and instructions. It refuses without a configured review contract, recorded retained output or a stopped source worker. Dispatch the returned task ID as usual; context capacity and the per-task attempt limit still apply. The source lease can stay retained. A manually added task of kind `review` still uses its configured contract, but is not linked to another attempt and produces no review record against one.
+
+The review task's target is immutable and scoped to this context. Reservation copies it into the attempt specification and rechecks the source and retained commit. Dispatch uses the same exact starting-commit support as continuations, with a separate worker session. A result must report every criterion and a Git work reference named `reviewed-output` with the exact source branch and commit, as well as the review contract's evidence and deliverables. Findings are recorded against the source in the review outcome transaction; all criteria must be met and the completed review's deliverables retained for a `passed` verdict. An invalid or missing result provides no review record. A changed recorded output cannot receive findings for the old commit. A missing or archived source refuses creation or dispatch; keep its records until review completes.
+
+`status` shows the reviews matching the attempt's recorded output commit. A review is another worker's judgement, not proof, and neither it nor configured checks automatically accepts or integrates the source output. Operator finish remains separate; supervisor enforcement is a later step.
 
 ## Keeping the computer awake
 

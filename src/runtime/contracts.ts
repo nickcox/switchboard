@@ -22,12 +22,19 @@ export const deliverySchema = z.strictObject({
 });
 export type DeliveryContract = z.infer<typeof deliverySchema>;
 
+export const reviewTargetSchema = z.strictObject({
+  taskId: nonempty, attempt: z.number().int().positive(), commit, outputBranch: nonempty,
+  sessionId: z.uuid().optional(),
+});
+export type ReviewTarget = z.infer<typeof reviewTargetSchema>;
+
 export const workerInputSchema = z.strictObject({
   identity: identitySchema,
   workspace: nonempty,
   instructions: nonempty,
   acceptanceCriteria: z.array(nonempty),
   delivery: deliverySchema,
+  reviewTarget: reviewTargetSchema.optional(),
 });
 export type WorkerInput = z.infer<typeof workerInputSchema>;
 
@@ -68,6 +75,10 @@ export function validateWorkerResult(value: unknown, input: WorkerInput): Worker
   if (reports.length !== input.acceptanceCriteria.length || new Set(reports.map(report => report.position)).size !== reports.length ||
     reports.some(report => input.acceptanceCriteria[report.position - 1] !== report.criterion)) {
     throw new Error("Criteria report must report every acceptance criterion exactly once, with its 1-based position and exact text");
+  }
+  if (input.reviewTarget && !result.workReferences.some(reference => reference.kind === "git" &&
+    reference.name === "reviewed-output" && reference.branch === input.reviewTarget!.outputBranch && reference.commit === input.reviewTarget!.commit)) {
+    throw new Error("A review must report reviewed-output with the exact reviewed branch and commit");
   }
   const evidenceNames = result.validationEvidence.map(entry => entry.name);
   if (new Set(evidenceNames).size !== evidenceNames.length) throw new Error("Duplicate evidence names");

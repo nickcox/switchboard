@@ -1,4 +1,5 @@
 import { describeChecks, type CheckResult } from "../attempts/checks.ts";
+import { describeReviews, type ReviewRecord } from "../attempts/reviews.ts";
 import { describeCriteriaReport } from "../runtime/criteria-report.ts";
 import type { CriteriaReport } from "../runtime/contracts.ts";
 import type { ReadFailure } from "./failure.ts";
@@ -23,6 +24,7 @@ export type AttemptStatus = {
   resultDiscrepancy?: string;
   criteriaReport?: CriteriaReport;
   checks?: CheckResult[];
+  reviews?: ReviewRecord[];
   specification?: StoredSpecification;
   specificationComplete: boolean;
   allocation?: AttemptAllocation;
@@ -202,6 +204,7 @@ export function describeStatus(value: StatusResult): string {
       if (a.unsettledReadFailures?.length) lines.push(`  Unsettled read failures: ${a.unsettledReadFailures.map(f => f.sequence).join(", ")}`);
       lines.push(`  Read diagnostics: ${JSON.stringify(f.diagnostics)}`);
     }
+    for (const line of describeReviews(a.reviews)) lines.push(`  ${line}`);
     for (const line of describeChecks(a.checks)) lines.push(`  ${line}`);
     for (const line of describeCriteriaReport(a.criteriaReport)) lines.push(`  ${line}`);
     if (a.resultDiscrepancy) lines.push(`  Result discrepancy: ${a.resultDiscrepancy}`);

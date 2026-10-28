@@ -6,7 +6,7 @@ Attempts link tasks, leases, sessions, commits and outcomes. Tasks and attempts 
 
 ## Database records
 
-Schema version 7 holds attempts, entries, separate request records, retained attempt numbers, confirmations, archive summaries, pending directory deletions, runtime records and attempt specifications. Opening an older database migrates it automatically. Version 3 removed the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context and never expire. Each new request record stores a versioned fingerprint of explicit selection inputs and the selected attempt; archiving switches it to the archived summary. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID. Historical requests with unknown explicit inputs remain excluded, and conflicting historical mappings refuse migration. See the [request-record contract](../../task-store.md#request-records-and-pruning).
+Schema version 9 holds attempts, entries, separate request records, retained attempt numbers, confirmations, archive summaries, pending directory deletions, runtime records, attempt specifications, acceptance criteria and immutable review-task targets. Opening an older database migrates it automatically. Version 3 removed the task's obsolete `started_body` snapshot; outcomes leave the current task body untouched, so no splicing is needed to preserve operator edits. Attempt numbers are unique within a context and task; entry sequences start at zero and have no gaps. Request IDs are unique within a context and never expire. Each new request record stores a versioned fingerprint of explicit selection inputs and the selected attempt; archiving switches it to the archived summary. A reservation imported without an attempt has a null attempt number and still prevents reuse of its request ID. Historical requests with unknown explicit inputs remain excluded, and conflicting historical mappings refuse migration. See the [request-record contract](../../task-store.md#request-records-and-pruning).
 
 Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequence`, `kind`, `recordedAt` (an ISO time) and validated `data`. Database references enforce ownership, and a trigger refuses entry updates. Corrections are new entries.
 
@@ -19,6 +19,7 @@ Each immutable entry has `version: 1`, `contextId`, `taskId`, `attempt`, `sequen
 | `operator_request` | Request `id`, `kind`, `sender`, `outcome`, optional `message` and `error` |
 | `worker_finished` | Runtime `status`, `runtimeDirectory`, optional `reason`, `detail`, `outcome` and `resultCommit` |
 | `retention_checked` | `retained`, `findings` and `notes` |
+| `review_recorded` | Review `taskId`, review `attempt`, exact reviewed `commit`, `verdict` (`passed` or `failed`) and per-criterion `findings` |
 | `owner_read_failed` | `owner`, `classification`, `operation`, `step`, `failedAt` and bounded command `diagnostics` |
 | `owner_read_reconciled` | Settled `failureSequence`, recorded `targetBranch` and exact `commit` established by Git |
 | `task_recorded` | `outcome` (`done` or `hold`), `reason`, explicit `category`, and `applied` |
@@ -39,6 +40,12 @@ A reservation starting from kept output uses a fresh `requested` entry and reque
 `reserveFromAttempt` performs owner and retention checks, then `AttemptStore.reserveAttempt` atomically checks the source snapshot, observed exits or scoped stop confirmations, task-wide worker exclusion, readiness, context capacity and `maxAttemptsPerTask` (default 3), and writes the new number, request, attempt and specification. Retained numbers, including archives and other contexts, count towards the per-task limit. Replays return the original reservation even at the limit. Refusals change nothing; a transaction crash leaves either all reservation records or none. A reserved continuation prevents the source from obtaining fresh launch permission, even after archiving.
 
 The named source's retained lease is allowed for this reservation only. Ordinary dispatch and other earlier leases retain their existing exclusions. The operation stops at reservation: there is no new `leased` or `launched` entry yet, no task start and no reused worker identity. A later workspace-preparation step must allocate a fresh branch, lease and session from the stored commit. See the [task-store contract](../../task-store.md#starting-from-an-earlier-attempt).
+
+## Review records
+
+A generated review task has an immutable target and uses `reviewTarget` in its attempt specification and worker input. It starts at the exact reviewed output commit in a different worker session. The source's stored acceptance criteria become the review's criteria. Its result must include a `reviewed-output` Git reference naming the source branch and exact commit, and report every criterion through `criteriaReport`.
+
+The review outcome transaction appends `review_recorded` to the source attempt, using the validated result rather than the result file. It records `passed` only for a retained completed review with every criterion met, otherwise `failed`. An invalid or missing result records no judgement. The source's recorded output commit is checked again inside the transaction; findings for another commit are never attached to it. Review task completion does not accept or integrate the source output. Status shows reviews matching its recorded output commit, and pruning copies all review records into the source's archive summary. See the [review-task contract](../../task-store.md#review-tasks-and-findings).
 
 ## Failed owner reads
 

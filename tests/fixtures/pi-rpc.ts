@@ -38,6 +38,19 @@ function reportResult() {
     validationEvidence: [{ name: "tests", summary: "Fixture checks passed" }],
     workReferences: [{ kind: "git", name: "code", branch: binding.input.delivery.outputBranch, commit: "b".repeat(40) }],
   };
+  if (scenario?.startsWith("review-")) {
+    const target = binding.input.reviewTarget!;
+    const report = join(binding.artefactDirectory!, "report.md");
+    writeFileSync(report, "# Synthetic review\n");
+    if (scenario === "review-fail") result.criteriaReport[0]!.status = "not_met";
+    writeFileSync(binding.resultPath, JSON.stringify({
+      ...result, workReferences: [
+        { kind: "git", name: "reviewed-output", branch: target.outputBranch, commit: scenario === "review-wrong-commit" ? "c".repeat(40) : target.commit },
+        { kind: "artefact", name: "report", path: report, description: "Synthetic review findings" },
+      ],
+    }));
+    return;
+  }
   if (scenario === "missing-result") return;
   if (scenario === "missing-criteria") result.criteriaReport = [];
   if (scenario === "duplicate-criteria") result.criteriaReport = [result.criteriaReport[0]!, result.criteriaReport[0]!];

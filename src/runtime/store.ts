@@ -45,9 +45,14 @@ export class RuntimeStore {
         ) WHERE context = ? AND task = ? AND json_extract(specification, '$.startingPoint.taskId') = ?
           AND json_extract(specification, '$.startingPoint.attempt') = ?`,
         launch.context, launch.task, launch.task, launch.attempt)) throw new Error("A later attempt already starts from this attempt; its launch permission is closed");
+        if (database.get(`SELECT 1 FROM review_tasks WHERE context = ? AND json_extract(target, '$.taskId') = ?
+          AND json_extract(target, '$.attempt') = ?`, launch.context, launch.task, launch.attempt)) throw new Error("A review already names this attempt; its launch permission is closed");
         const row = database.get("SELECT specification FROM attempt_specifications WHERE context = ? AND task = ? AND attempt = ?", launch.context, launch.task, launch.attempt);
         const specification = attemptSpecificationSchema.safeParse(row && JSON.parse(String(row.specification)));
         if (!specification.success) throw new Error("The stored attempt specification is incomplete; this attempt cannot be launched");
+        const target = specification.data.reviewTarget;
+        if (target && (binding.input.identity.sessionId === target.sessionId || binding.input.delivery.startingCommit !== target.commit ||
+          JSON.stringify(binding.input.reviewTarget) !== JSON.stringify(target))) throw new Error("A review must start at its exact target in a separate worker session");
       }
       const claimId = binding ? randomUUID() : undefined;
       if (claimId) database.run(`INSERT INTO worker_claims(id,context,task,attempt,owner_pid,owner_started_at,heartbeat_at)
