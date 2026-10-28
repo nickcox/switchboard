@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AttemptStore } from "./attempts/store.ts";
+import { checkCommandsSchema } from "./attempts/checks.ts";
 import { runtimeSettingsSchema } from "./runtime/settings.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
@@ -37,6 +38,7 @@ export const configSchema = z.strictObject({
   maxAttempts: z.number().int().positive().default(1),
   maxAttemptsPerTask: z.number().int().positive().default(3),
   keepAwake: keepAwakeSchema.default(true),
+  checks: checkCommandsSchema.default([]),
   tasks: z.strictObject({ repo: nonempty }),
   workspaces: z.strictObject({ repository: absolute, poolRoot: absolute, fetch: z.boolean().default(false) }),
   delivery: z.strictObject({
@@ -151,6 +153,8 @@ export async function createDependencies(config: Config, options: { dispatch?: b
     return {
       close: () => tasks.close(),
       contextId: config.contextId,
+      checks: config.checks,
+      checkEnvironment: hostEnvironment,
       tasks,
       maxAttempts: config.maxAttempts,
       maxAttemptsPerTask: config.maxAttemptsPerTask,

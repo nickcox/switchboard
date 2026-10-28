@@ -21,6 +21,25 @@ Loading configuration validates its shape without opening providers. Task comman
 
 `status`, `finish` and `discard` do not open Pi or check its installation. Only dispatch checks the Pi entrypoint and opens the workspace provider eagerly, including for a dry run, before reserving an attempt or request ID. Commands close their database on success or failure, including a failure while opening a later provider.
 
+## Output checks
+
+`checks` is an optional top-level array, empty by default. Each entry has a unique nonempty `name`, a nonempty `command` array (the executable followed by its arguments), and a positive integer `timeoutMs` no greater than 2147483647. Configuration loading rejects invalid entries and duplicate names.
+
+```json
+{
+  "checks": [
+    { "name": "types", "command": ["npm", "run", "check"], "timeoutMs": 120000 },
+    { "name": "tests", "command": ["npm", "test"], "timeoutMs": 300000 }
+  ]
+}
+```
+
+Before accepting output, `finish` runs these commands sequentially in the attempt's workspace, without a shell or stdin, using the operator's environment (not `worker.environment`). Executables can be absolute paths or found on `PATH`. Shell syntax is passed literally; on Windows, choose an executable that can be started without a shell. Checks run only after the worker's exit was observed or its stop confirmed, with a clean workspace whose HEAD is the exact commit being accepted. Uncommitted and untracked files refuse finish without starting checks; ignored files are allowed. The same input is checked again between commands and before acceptance, so checks that change tracked files, create untracked files or move HEAD prevent acceptance. A dry run checks the input but runs no commands and records no check results.
+
+Each completed command appends an immutable attempt fact: name, exact commit, exit code (null for a signal), whether its time limit was reached, duration in milliseconds, and the last 2000 characters of each output stream. Output and failure diagnostics use the same credential redaction as failed owner reads. `status` and `finish`, in text and JSON, show the latest result for the output commit, with failed or not-run checks and their output highlighted. The records survive later commits; a passing result for the exact commit is reused by name, while failed and not-run checks are tried again on the next finish. Checks for another commit always run again.
+
+**Checks are advisory for the operator.** A nonzero exit or a time limit does not refuse finish: acceptance, integration and task recording continue. A command that cannot start or whose result cannot be read is recorded as `not_run`, with owner-read diagnostics, and is advisory too. It does not establish an uncertain acceptance or integration effect. A later finish retries it while the workspace lease is retained. Returning the lease does not prove that descendants started by a check have stopped; `--no-processes` still requires the operator's confirmation. Current context configuration supplies the checks, not the worker's reported test evidence. Independent review and supervisor enforcement are separate steps.
+
 ## Keeping the computer awake
 
 `keepAwake` is a top-level setting, enabled by default:

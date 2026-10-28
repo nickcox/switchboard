@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { checkWorkspace, runChecks } from "./checks.ts";
 import type { CriteriaReport } from "../runtime/contracts.ts";
 import type { AttemptRecord } from "../attempts/log.ts";
 import { CommandError } from "../infra/command.ts";
@@ -186,7 +187,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
   const { attempt, record } = located;
-  const base = { attempt: attempt.attempt, ...(attempt.criteriaReport ? { criteriaReport: attempt.criteriaReport } : {}), ...(attempt.resultDiscrepancy ? { resultDiscrepancy: attempt.resultDiscrepancy } : {}) };
+  const base = { attempt: attempt.attempt, checks: attempt.checks ?? [], ...(attempt.criteriaReport ? { criteriaReport: attempt.criteriaReport } : {}), ...(attempt.resultDiscrepancy ? { resultDiscrepancy: attempt.resultDiscrepancy } : {}) };
   if (await completeReturn(deps, record, attempt, "finish", options.dryRun)) return result({
     ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: {}, ...base,
     ...(options.dryRun ? { detail: `Would record that lease ${options.leaseId} was returned` } : {}), nextAction: "none",
@@ -228,7 +229,9 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
 
   // Under local-merge, check before any change that the target can be fast-forwarded, or already contains the work.
   const outputBranch = attempt.attempt.outputBranch!;
-  const outputCommit = acceptedCommit ?? retention.outputCommit;
+  const outputCommit = acceptedCommit ?? retention.outputCommit ?? ((deps.checks?.length ?? 0) > 0
+    ? await branchHead({ git: deps.policy?.git ?? onPath("git"), environment: deps.policy?.environment ?? deps.checkEnvironment ?? {}, repository: deps.repository, ...gitReads(deps) }, outputBranch)
+    : undefined);
   let integration: { target: string; from: string; to: string } | undefined;
   // The target already contains the work, but an earlier run's fast-forward may not have been recorded.
   let unrecorded: { target: string; commit: string } | undefined;
@@ -255,6 +258,12 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     ...(recordTask ? ["record the task as done"] : []),
     options.noProcesses ? `return lease ${options.leaseId}` : `retain lease ${options.leaseId}`,
   ];
+  if (options.dryRun && deps.checks?.length) {
+    if (!outputCommit) return refused("inspect_attempt", "The exact output commit for checks cannot be read", base);
+    const refusal = await checkWorkspace(deps, deps.reads, attempt.attempt.workspace!, outputCommit);
+    if (refusal) return refused("inspect_attempt", refusal, base);
+    steps.unshift("run configured checks (reusing passing results for this commit)");
+  }
   if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: { policy }, ...base, retention, detail: `Would ${steps.join(", then ")}${options.noProcesses ? "" : `. ${retainedDetail}`}`, nextAction: options.noProcesses ? "none" : "finish_attempt" });
 
   // From here each step changes an owner; a failure leaves what is done recorded and the rest for a later run.
@@ -264,6 +273,18 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
   });
   const fenced = await fenceLaunch(deps, record, options.leaseId);
   if (fenced) return refused("inspect_attempt", fenced, base);
+  if (deps.checks?.length) {
+    const runtime = (await deps.reads.read("Runtime records", "check worker exit before checks", () => deps.runtime.discover(deps.contextId, { leaseId: options.leaseId })))
+      .find(r => r.binding.input.identity.leaseId === options.leaseId);
+    const stopped = runtime?.child.status === "exited" || runtime?.child.status === "operator_confirmed_stopped" ||
+      deps.attempts.confirmations(record).some(c => c.fact === "worker_stopped" && c.scope.leaseId === options.leaseId &&
+        (c.scope.sessionId === undefined || c.scope.sessionId === runtime?.binding.input.identity.sessionId));
+    if (!stopped) return refused("stop_worker", "Checks require an observed worker exit or a confirmed stop", base);
+    if (!outputCommit) return refused("inspect_attempt", "The exact output commit for checks cannot be read", base);
+    const checked = await runChecks(deps, deps.reads, record, attempt.attempt.workspace!, outputCommit);
+    base.checks = checked.checks;
+    if (checked.refusal) return refused("inspect_attempt", checked.refusal, base);
+  }
   if (acceptedCommit && accepted?.scope.commit !== acceptedCommit) {
     try {
       const current = await locate(deps, options.leaseId);

@@ -1,3 +1,4 @@
+import type { CheckCommand } from "../attempts/checks.ts";
 import type { AttemptStore } from "../attempts/store.ts";
 import type { RuntimeSettings } from "../attempts/specification.ts";
 import type { DeliveryContract, WorkerInput } from "../runtime/contracts.ts";
@@ -24,6 +25,8 @@ export type Dependencies = {
   tasks: TaskStore;
   workspaces: WorkspaceProvider;
   attempts: AttemptStore;
+  checks?: CheckCommand[];
+  checkEnvironment?: Record<string, string>;
   maxAttempts?: number;
   maxAttemptsPerTask?: number;
   runtime: RuntimeRecords;

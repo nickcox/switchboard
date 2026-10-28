@@ -1,3 +1,4 @@
+import { describeChecks, type CheckResult } from "../attempts/checks.ts";
 import type { CriteriaReport } from "../runtime/contracts.ts";
 import { describeCriteriaReport } from "../runtime/criteria-report.ts";
 import type { ContractSpec } from "./dispatch.ts";
@@ -86,6 +87,7 @@ export type DispatchResult = {
   retention?: RetentionResult;
   resultDiscrepancy?: string;
   criteriaReport?: CriteriaReport;
+  checks?: CheckResult[];
   /** A lease is absent, preserved, or unknown when its current state could not be checked. */
   lease: "none" | "preserved" | "unknown";
   /** Owner state the decision was based on, including anything that was unknown. */
@@ -117,6 +119,7 @@ export function describe(value: DispatchResult): string {
     lines.push(`Worker: ${w.status}${w.outcome ? `, outcome ${w.outcome}` : ""}${w.reason ? ` – ${w.reason}` : ""}`);
     if (w.summary) lines.push(`Summary: ${w.summary}`);
   }
+  lines.push(...describeChecks(value.checks));
   lines.push(...describeCriteriaReport(value.criteriaReport));
   if (value.task) lines.push(`Task state: ${value.task.state}${value.task.held ? `, held: ${value.task.holdReason}` : ""}`);
   if (value.retention) {

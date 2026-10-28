@@ -1,3 +1,4 @@
+import { latestChecks, type CheckResult } from "../attempts/checks.ts";
 import type { CriteriaReport } from "../runtime/contracts.ts";
 import { isOpen } from "./attempt.ts";
 import { otherPool, unfinished, workerMayBeRunning, type AttemptObservation, type ContextObservation } from "./observe.ts";
@@ -38,6 +39,7 @@ export type AttemptAssessment = {
   taskDisagreement?: boolean;
   resultDiscrepancy?: string;
   criteriaReport?: CriteriaReport;
+  checks?: CheckResult[];
   facts: AttemptFacts;
 };
 
@@ -72,7 +74,9 @@ export function assessAttempt(observation: AttemptObservation): AttemptAssessmen
     unfinished: facts.unfinished, task });
   const state = unknown.length ? "unknown" : classified.state;
   const code = unknown.length ? "inspect_attempt" : classified.nextAction;
-  return { attempt: observation.attempt, state, nextAction: { code, description: nextActions[code] }, facts,
+  const outputCommit = [...(record?.entries ?? [])].reverse().find(e => e.kind === "output_accepted")?.data.commit as string | undefined ?? observation.attempt.resultCommit;
+  const checks = latestChecks(record, outputCommit);
+  return { ...(checks.length ? { checks } : {}), attempt: observation.attempt, state, nextAction: { code, description: nextActions[code] }, facts,
     lastEntry: record?.entries.at(-1)?.kind ?? "none", possiblyRunning, leaseHeld, task,
     ...(pool === undefined ? {} : { leaseInOtherPool: pool }),
     ...(observation.runtime.known && observation.runtime.value?.validatedResult?.content.criteriaReport
