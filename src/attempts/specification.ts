@@ -40,6 +40,6 @@ export function specificationFromBinding(value: WorkerInput): StoredSpecificatio
   return {
     version: 1, taskId: value.identity.taskId, contextId: value.identity.contextId,
     instructions: value.instructions, acceptanceCriteria: value.acceptanceCriteria, baseRef, outputBranch, delivery,
-    provenance: { task: "unknown", repository: "unknown", delivery: "unknown", runtime: "unknown" },
+    provenance: Object.fromEntries(Object.keys(attemptSpecificationSchema.shape).filter(key => key !== "provenance").map(key => [key, "unknown"])),
   };
 }

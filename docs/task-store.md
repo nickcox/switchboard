@@ -1,6 +1,6 @@
 # Task-store contract
 
-Status: agreed on 21 October 2026 with [ADR-0007](adr/0007-one-sqlite-database.md); not yet implemented.
+Status: implemented, following the contract agreed on 21 October 2026 with [ADR-0007](adr/0007-one-sqlite-database.md).
 
 Switchboard owns its tasks from ADR-0007 onwards. tasks-axi applied some of these rules implicitly, and some cases it never had to decide, so this contract states every rule the task store must implement and its tests must cover. Readiness is unchanged from tasks-axi.
 
@@ -28,9 +28,17 @@ Switchboard owns its tasks from ADR-0007 onwards. tasks-axi applied some of thes
 - Readiness is checked when an attempt is created and again when its task is started. It is never re-checked for an attempt that has started: holding the task, adding a dependency or changing its instructions takes effect at the next dispatch, not on a running attempt.
 - Reopening a task that others are blocked by makes them blocked again from then on. A dependant that has already started or finished is unaffected.
 
+## Definition revisions and attempt specifications
+
+- A task starts at `definitionRevision: 1`. Changing its title, body (instructions), repository or kind increases the revision in the same transaction. One update changing several fields increases it once; a no-op update does not. Holds, releases, dependencies and state changes alone do not change it.
+- Reservation stores an immutable specification in the same transaction as the attempt: task and context IDs, definition revision, title, resolved instructions (the title when the body is blank), repository, kind, backing repository, base ref, output branch, resolved delivery contract and non-secret runtime settings. The runtime snapshot includes the Pi profile, executable and entrypoint, provider, model, thinking level when configured, shell tool, timing settings and usage limits. Configuration selectors record which file supplied a value, or that it used a default. Neither credentials nor the worker's environment are copied.
+- Acquisition records a separate immutable allocation: lease, workspace, backing repository, pool, output branch and actual starting commit. The worker's input is built from the stored specification and allocation, not from a later task or configuration read. `status --json` reports both, with `specificationComplete`.
+- Starting checks both readiness and the definition revision in its transaction. A definition changed during acquisition halts the attempt as `task_definition_changed`, without a launch, and keeps the unused lease. It holds the task unless a newer operator hold or state decision already applies. Return the unused lease through Treehouse, record its return with `resolve --lease <lease-id> --lease-returned`, check and release the task, then dispatch a new attempt. Switchboard never returns that lease automatically.
+- Existing attempts are migrated from their stored runtime bindings. Facts and configuration provenance not retained by those bindings are left missing or marked `unknown`, never guessed from today's task or configuration. An attempt without a complete specification remains inspectable, fenceable and resolvable, but cannot start or obtain permission to launch.
+
 ## Changes during an attempt
 
-- The operator can change any task at any time, including while an attempt runs, for example to hold it, record it as done, or change its body.
+- The operator can change any task at any time, including while an attempt runs, for example to hold it, record it as done, or change its body. A definition change after start neither changes nor cancels the running attempt's input; it applies to a later attempt.
 - Recording an attempt's outcome changes the task only if it is still `in_flight` and has not been held since the attempt started it, in the same transaction as the outcome's log entry. If the operator has changed the task's state or held it in the meantime, the outcome is still recorded in the attempt log, the task is left as the operator set it, and `status` reports the disagreement. Finalisation never overwrites a newer operator decision.
 - `finish` and `discard` record a task as done or held only after checking, in the same transaction, that it is in the state the command expected.
 

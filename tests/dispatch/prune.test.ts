@@ -8,10 +8,11 @@ import { finish } from "../../src/dispatch/finish.ts";
 import { prune } from "../../src/dispatch/prune.ts";
 import { status } from "../../src/dispatch/status.ts";
 import { fixture, task } from "./fixture.ts";
+import { specificationFor } from "../helpers.ts";
 
 async function settled() {
   const f = await fixture({ tasks: [task("prune-a1")] });
-  const ref = (await f.deps.attempts.reserveAttempt({ taskId: "prune-a1", requested: { requestId: "request" }, maximum: 1 })).ref;
+  const ref = (await f.deps.attempts.reserveAttempt({ taskId: "prune-a1", requested: { requestId: "request" }, maximum: 1, specification: specificationFor })).ref;
   await f.deps.attempts.append(ref, "halted", { stage: "acquire", reason: "rejected" });
   return { ...f, ref };
 }
@@ -24,7 +25,7 @@ test("prune archives finished attempts in the database, releases their reservati
   assert.deepEqual(f.deps.attempts.list(), []);
   assert.equal(await f.deps.attempts.findByRequest("request"), undefined);
   assert.equal(Number(f.tasks.database.get("SELECT count(*) AS n FROM archived_attempts")!.n), 1);
-  const next = await f.deps.attempts.reserveAttempt({ taskId: "prune-a1", requested: { requestId: "request" }, maximum: 1 });
+  const next = await f.deps.attempts.reserveAttempt({ taskId: "prune-a1", requested: { requestId: "request" }, maximum: 1, specification: specificationFor });
   assert.equal(next.ref.attempt, 2);
 });
 

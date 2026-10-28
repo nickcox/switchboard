@@ -17,6 +17,8 @@ export type Allocation = {
   branch: string;
   /** The commit the workspace started from, read from the workspace itself. */
   startingCommit: string;
+  /** The canonical repository whose refs the workspace shares. */
+  backingRepository: string;
   /** The pool the lease was acquired in, as `pool()` identified it. */
   pool: string;
 };

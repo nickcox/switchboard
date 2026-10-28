@@ -168,6 +168,37 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
   } finally { for (const current of reopened) current.close(); }
 });
 
+test("definition revisions change atomically with the definition, not readiness or state", async () => {
+  const { store } = await fixture();
+  try {
+    await store.add({ id: "a", title: "A", body: "Instructions" });
+    await store.add({ id: "b", title: "B" });
+    let revision = 1;
+    const currentRevision = async () => (await store.read("a"))!.definitionRevision;
+    assert.equal(await currentRevision(), revision);
+    for (const changes of [{ title: "New title" }, { body: "New instructions" }, { repo: "other" }, { kind: "scout" }]) {
+      await store.update("a", changes);
+      assert.equal(await currentRevision(), ++revision);
+      await store.update("a", changes);
+      assert.equal(await currentRevision(), revision, "No-op updates do not change the revision");
+    }
+    await store.update("a", { title: "All fields", body: "All instructions", repo: "fixture", kind: "task" });
+    assert.equal(await currentRevision(), ++revision);
+    for (const change of [() => store.hold("a", "Held"), () => store.release("a"), () => store.block("a", "b"),
+      () => store.unblock("a", "b"), () => store.done("a"), () => store.reopen("a")]) {
+      await change();
+      assert.equal(await currentRevision(), revision);
+    }
+    await assert.rejects(store.database.transaction(() => {
+      store.database.run("UPDATE tasks SET title = 'Rolled back' WHERE id = 'a'");
+      assert.equal(store.database.get("SELECT definition_revision FROM tasks WHERE id = 'a'")!.definition_revision, revision + 1);
+      throw new Error("Rollback");
+    }), /Rollback/);
+    assert.equal(await currentRevision(), revision);
+    assert.equal((await store.read("a"))!.title, "All fields");
+  } finally { store.close(); }
+});
+
 test("database durability, schema version, absolute canonical regular paths", async () => {
   const { store, dir, path } = await fixture();
   assert.equal(store.database.get("PRAGMA journal_mode")?.journal_mode, "wal");

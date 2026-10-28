@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { AttemptStore } from "./attempts/store.ts";
-import type { RuntimeSettings } from "./attempts/specification.ts";
+import { runtimeSettingsSchema } from "./runtime/settings.ts";
 import type { Dependencies } from "./dispatch/dispatch.ts";
 import { onPath } from "./infra/executables.ts";
 import { githubBranchProtection } from "./infra/github.ts";
@@ -87,22 +87,22 @@ export async function loadConfig(path: string): Promise<Config> {
   return config;
 }
 
-function configurationProvenance(config: Config, settings: RuntimeSettings): Record<string, string> {
+function configurationProvenance(config: Config): Record<string, string> {
   const source = configurationSources.get(config);
-  const selector = (path: string): string => {
-    if (!source) return `configuration:${path}`;
+  const selector = (path: string, parts = path.split(".")): string => {
+    if (!source) return `unknown:${path}`;
     let value: unknown = source.raw;
-    for (const part of path.split(".")) value = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined;
+    for (const part of parts) value = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined;
     return value === undefined ? `default:${path}` : `${source.path}#${path}`;
   };
   return {
     contextId: selector("contextId"), repository: selector("tasks.repo"), backingRepository: selector("workspaces.repository"),
     baseRef: selector("delivery.baseRef"), outputBranch: `${selector("delivery.branchPrefix")} + task ID + attempt number`,
-    ...Object.fromEntries(Object.keys(settings).map(key => [`runtime.${key}`, key === "profile" ? "Switchboard Pi profile"
+    ...Object.fromEntries(Object.keys(runtimeSettingsSchema.shape).map(key => [`runtime.${key}`, key === "profile" ? "Switchboard Pi profile"
       : key === "executable" ? "Switchboard process executable" : selector(`worker.${key === "entrypoint" ? "piEntrypoint" : key}`)])),
     ...Object.fromEntries(["kind", "acceptance", "requiredEvidence", "requiredDeliverables"].map(key => [`delivery.default.${key}`, selector(`delivery.${key}`)])),
     ...Object.fromEntries(Object.keys(config.delivery.byTaskKind).flatMap(kind => ["kind", "acceptance", "requiredEvidence", "requiredDeliverables"].map(key =>
-      [`delivery.byTaskKind.${kind}.${key}`, selector(`delivery.byTaskKind.${kind}.${key}`)]))),
+      [`delivery.byTaskKind.${kind}.${key}`, selector(`delivery.byTaskKind[${JSON.stringify(kind)}].${key}`, ["delivery", "byTaskKind", kind, key])]))),
   };
 }
 
@@ -124,21 +124,21 @@ export async function createDependencies(config: Config, progress?: (message: st
   const git = onPath("git");
   // Git and Treehouse use the operator's own environment, including their Git identity and credentials.
   const hostEnvironment = Object.fromEntries(Object.entries(process.env).flatMap(([k, v]) => (v === undefined ? [] : [[k, v]])));
-  const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
-  const runtime = new RuntimeRecords(config.runtimeRoot, tasks.database);
-  const runtimeSettings: RuntimeSettings = {
+  const runtimeSettings = runtimeSettingsSchema.parse({
     profile: "pi", executable: process.execPath, entrypoint: config.worker.piEntrypoint,
     provider: config.worker.provider, model: config.worker.model, shellTool: config.worker.shellTool, runMs: config.worker.runMs,
     statsMs: config.worker.statsMs, requestMs: 5000, stopMs: 5000, requestPollMs: 1000,
     ...(config.worker.thinking === undefined ? {} : { thinking: config.worker.thinking }),
     ...(config.worker.maxCost === undefined ? {} : { maxCost: config.worker.maxCost }),
     ...(config.worker.maxTokens === undefined ? {} : { maxTokens: config.worker.maxTokens }),
-  };
+  });
   const workerEnvironment = structuredClone(config.worker.environment ?? inherited([
     "PATH", "HOME", "USER", "TMPDIR", "LANG",
     "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "PATHEXT", "ComSpec",
   ]));
   const keepAwake = structuredClone(config.keepAwake);
+  const tasks = await SqliteTaskStore.open({ path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
+  const runtime = new RuntimeRecords(config.runtimeRoot, tasks.database);
   const workspaces = await TreehouseProvider.open({
     treehouse: onPath("treehouse"), git, repository: config.workspaces.repository, poolRoot: config.workspaces.poolRoot,
     fetch: config.workspaces.fetch, environment: hostEnvironment,
@@ -150,7 +150,7 @@ export async function createDependencies(config: Config, progress?: (message: st
     workspaces,
     attempts: new AttemptStore(tasks.database, config.contextId),
     runtime,
-    runtimeSettings, configurationProvenance: configurationProvenance(config, runtimeSettings),
+    runtimeSettings, configurationProvenance: configurationProvenance(config),
     launch: (input, signal, onRequest, settings) => {
       if (!settings) throw new Error("Launching requires stored runtime settings");
       const { profile: _, ...options } = settings;

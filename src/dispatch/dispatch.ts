@@ -207,6 +207,8 @@ export async function dispatchOnce(
         outputBranch: `${configuration.delivery.branchPrefix}${task.id}/attempt-${ref.attempt}`,
         delivery: resolvedContract, runtime: configuration.runtime, provenance: {
           ...configuration.provenance,
+          definitionRevision: `task:${task.id}.definitionRevision`, title: `task:${task.id}.title`,
+          instructions: `task:${task.id}.${task.body.trim() === "" ? "title" : "body"}`, kind: `task:${task.id}.kind`,
           ...Object.fromEntries(Object.keys(resolvedContract).map(key => [`delivery.${key}`,
             configuration.provenance[`delivery.${task.kind === null ? "default" : `byTaskKind.${task.kind}`}.${key}`] ?? "unknown"])),
         },
@@ -257,8 +259,8 @@ export async function dispatchOnce(
     }
     Object.assign(summary, { leaseId: allocation.leaseId, workspace: allocation.path, outputBranch, startingCommit: allocation.startingCommit });
     await deps.attempts.append(ref, "leased", {
-      leaseId: allocation.leaseId, workspace: allocation.path, baseRef: specification.baseRef, outputBranch, startingCommit: allocation.startingCommit,
-      pool: allocation.pool, backingRepository: specification.backingRepository,
+      leaseId: allocation.leaseId, workspace: allocation.path, baseRef: specification.baseRef, outputBranch: allocation.branch, startingCommit: allocation.startingCommit,
+      pool: allocation.pool, backingRepository: allocation.backingRepository,
     });
     deps.progress?.(`Lease ${allocation.leaseId} at ${allocation.path}`);
 

@@ -132,7 +132,7 @@ export class TreehouseProvider implements WorkspaceProvider {
     if (checkedOut !== branch) throw unexpected(`Workspace has branch ${JSON.stringify(checkedOut)} checked out`);
     const head = commit.safeParse(await read(["rev-parse", "HEAD"]));
     if (!head.success) throw unexpected("Workspace starting commit is unreadable");
-    return { leaseId: acquired.lease_id, holder, path, branch, startingCommit: head.data };
+    return { leaseId: acquired.lease_id, holder, path, branch, startingCommit: head.data, backingRepository: this.options.repository };
   }
 
   private treehouse(args: string[], input?: string) {

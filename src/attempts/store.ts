@@ -62,7 +62,7 @@ export class AttemptStore {
   async reserveAttempt(options: {
     taskId: string; requested: EntryData<"requested">; maximum: number; repo?: string | null;
     definitionRevision?: number;
-    specification?: (task: Task, ref: AttemptRef) => AttemptSpecification;
+    specification: (task: Task, ref: AttemptRef) => AttemptSpecification;
   }): Promise<{ created: boolean; ref: AttemptRef }> {
     z.number().int().positive().parse(options.maximum);
     return this.database.transaction(() => {
@@ -91,19 +91,11 @@ export class AttemptStore {
       this.database.run("INSERT INTO attempts(context,task,number,request_id,reserved_at) VALUES(?,?,?,?,?)",
         ref.contextId, ref.taskId, ref.attempt, requestId ?? null, new Date().toISOString());
       this.insert(ref, "requested", options.requested);
-      if (options.specification) {
-        const specification = attemptSpecificationSchema.parse(options.specification(task, ref));
-        if (specification.taskId !== task.id || specification.contextId !== ref.contextId || specification.definitionRevision !== task.definitionRevision ||
-          specification.title !== task.title || specification.instructions !== (task.body.trim() === "" ? task.title : task.body) ||
-          specification.repository !== task.repo || specification.kind !== task.kind) throw new Error("Specification differs from the reserved task");
-        this.database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, JSON.stringify(specification));
-      } else {
-        this.database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, JSON.stringify({
-          version: 1, taskId: task.id, contextId: ref.contextId, definitionRevision: task.definitionRevision,
-          title: task.title, instructions: task.body.trim() === "" ? task.title : task.body, acceptanceCriteria: [], repository: task.repo, kind: task.kind,
-          provenance: { task: "task store", delivery: "unknown", runtime: "unknown" },
-        }));
-      }
+      const specification = attemptSpecificationSchema.parse(options.specification(task, ref));
+      if (specification.taskId !== task.id || specification.contextId !== ref.contextId || specification.definitionRevision !== task.definitionRevision ||
+        specification.title !== task.title || specification.instructions !== (task.body.trim() === "" ? task.title : task.body) ||
+        specification.repository !== task.repo || specification.kind !== task.kind) throw new Error("Specification differs from the reserved task");
+      this.database.run("INSERT INTO attempt_specifications VALUES(?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, JSON.stringify(specification));
       return { created: true, ref };
     });
   }

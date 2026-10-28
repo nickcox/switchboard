@@ -66,9 +66,9 @@ test("capacity and task exclusion are checked inside the reservation transaction
     await tasks.add({ id: "second", title: "Second" });
     await tasks.add({ id: "blocker", title: "Blocker" });
     await tasks.block("second", "blocker");
-    await assert.rejects(attempts.reserveAttempt({ taskId: "second", requested: {}, maximum: 1 }), { reason: "not_ready" });
+    await assert.rejects(attempts.reserveAttempt({ taskId: "second", requested: {}, maximum: 1, specification: specificationFor }), { reason: "not_ready" });
     await reserve(attempts);
-    await assert.rejects(attempts.reserveAttempt({ taskId: "second", requested: {}, maximum: 1 }), { reason: "capacity" });
+    await assert.rejects(attempts.reserveAttempt({ taskId: "second", requested: {}, maximum: 1, specification: specificationFor }), { reason: "capacity" });
     const otherContext = new AttemptStore(tasks.database, "other");
     await assert.rejects(reserve(otherContext), { reason: "not_ready" });
     assert.equal(attempts.list().length, 1);
@@ -82,7 +82,7 @@ test("the same request ID can be reserved independently in two contexts", async 
     await tasks.add({ id: "second", title: "Second" });
     await reserve(attempts);
     const other = new AttemptStore(tasks.database, "other");
-    const reservation = await other.reserveAttempt({ taskId: "second", requested: { requestId: "request" }, maximum: 1 });
+    const reservation = await other.reserveAttempt({ taskId: "second", requested: { requestId: "request" }, maximum: 1, specification: specificationFor });
     assert.equal(reservation.created, true);
     assert.equal(reservation.ref.contextId, "other");
   } finally { tasks.close(); }
@@ -116,7 +116,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
 test("invalid first entry rolls back the number, attempt and reservation", async () => {
   const { tasks, attempts } = await fixture();
   try {
-    await assert.rejects(attempts.reserveAttempt({ taskId: "task", requested: { requestId: "request", pool: "" }, maximum: 2 }));
+    await assert.rejects(attempts.reserveAttempt({ taskId: "task", requested: { requestId: "request", pool: "" }, maximum: 2, specification: specificationFor }));
     assert.equal(attempts.list().length, 0);
     assert.equal(Number(tasks.database.get("SELECT count(*) AS n FROM attempt_numbers")!.n), 0);
     assert.equal((await reserve(attempts)).ref.attempt, 1);

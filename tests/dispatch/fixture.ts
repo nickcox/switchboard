@@ -57,7 +57,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     ...options.worker,
   });
   const deps: Dependencies & { attempts: FixtureAttemptStore } = {
-    contextId: "fixture-context", tasks, runtimeSettings, configurationProvenance: { configuration: "fixture" },
+    contextId: "fixture-context", tasks, runtimeSettings: structuredClone(runtimeSettings), configurationProvenance: { configuration: "fixture" },
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
     attempts: new FixtureAttemptStore(tasks.database, "fixture-context"), runtime,
     launch: (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {}),
