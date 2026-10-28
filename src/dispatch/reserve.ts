@@ -47,7 +47,7 @@ export async function reserveFromAttempt(deps: Dependencies, options: {
     const allocation = record.allocation;
     if (!allocation) return refuse("starting_point_unknown", "The starting attempt has no recorded allocation");
     const retention = await deps.retention({
-      repository: allocation.backingRepository ?? deps.repository, workspace: allocation.workspace, outputBranch: allocation.outputBranch,
+      repository: allocation.backingRepository ?? deps.repository, workspace: allocation.workspace, outputBranch: allocation.outputBranch, commitsOnly: true,
       gitReferences: [{ name: "starting point", branch: allocation.outputBranch, commit: output }], artefacts: [],
       recyclableRoots: await deps.workspaces.recyclableRoots(),
     });

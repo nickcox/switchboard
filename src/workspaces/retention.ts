@@ -10,6 +10,8 @@ export type RetentionRequest = {
   outputBranch: string;
   /** The exact result commit for code deliverables; omitted when the deliverable is not code. */
   resultCommit?: string;
+  /** Check only recorded commits on retained branches, without requiring an old workspace to still exist. */
+  commitsOnly?: boolean;
   /** Every reported Git deliverable, checked by its own branch and exact commit. */
   gitReferences?: { name: string; branch: string; commit: string }[];
   /** Absolute paths of required reports and evidence, which must exist outside the workspace. */
@@ -81,6 +83,11 @@ export async function checkRetention(git: string, environment: Record<string, st
       else if (contained.exitCode === 1) reject(`Output branch ${reference.branch} does not contain result commit ${reference.commit} (${reference.name})`);
       else if (contained.exitCode !== 0) unable("whether the output branch contains the result commit", contained);
     }
+  }
+
+  if (request.commitsOnly) {
+    if (!references.length || request.artefacts.length) reject("Commit-only retention requires Git references and no artefacts");
+    return { retained: findings.length === 0, findings, notes, ...(readFailures.length ? { readFailures, ...(definiteRejection ? { definiteRejection } : {}) } : {}) };
   }
 
   // Commits reachable from the workspace's HEAD but from no local branch become unreachable when it is recycled.

@@ -50,13 +50,14 @@ test("continuation reserves the recorded validated commit despite the source's r
   } finally { f.tasks.close(); }
 });
 
-for (const kind of ["not retained", "unknown", "wrong task", "missing attempt", "no recorded commit", "worker running"] as const) test(`continuation refuses ${kind} without recording or reserving anything`, async () => {
+for (const kind of ["not retained", "unknown", "unknown pool", "wrong task", "missing attempt", "no recorded commit", "worker running"] as const) test(`continuation refuses ${kind} without recording or reserving anything`, async () => {
   const f = await completed();
   try {
     let request = options;
-    const expected = { "not retained": "not_retained", unknown: "starting_point_unknown", "wrong task": "starting_point_wrong_task", "missing attempt": "starting_point_unknown", "no recorded commit": "output_not_recorded", "worker running": "possibly_running" }[kind];
+    const expected = { "not retained": "not_retained", unknown: "starting_point_unknown", "unknown pool": "starting_point_unknown", "wrong task": "starting_point_wrong_task", "missing attempt": "starting_point_unknown", "no recorded commit": "output_not_recorded", "worker running": "possibly_running" }[kind];
     if (kind === "not retained") f.run(["update-ref", "-d", `refs/heads/${f.first.attempt!.outputBranch}`]);
     if (kind === "unknown") f.deps.workspaces.leases = async () => { throw new Error("Treehouse unavailable"); };
+    if (kind === "unknown pool") f.deps.workspaces.pool = async () => "another-pool";
     if (kind === "wrong task") request = { ...options, startingPoint: { taskId: "other", attempt: 1 } };
     if (kind === "missing attempt") request = { ...options, startingPoint: { taskId, attempt: 99 } };
     if (kind === "no recorded commit") await f.tasks.database.transaction(() => f.tasks.database.run("DELETE FROM worker_observations WHERE kind = 'validated_result'"));
@@ -68,6 +69,18 @@ for (const kind of ["not retained", "unknown", "wrong task", "missing attempt", 
     assert.notEqual(outcome.nextAction.code, "none");
     assert.deepEqual(records(f), before);
     assert.equal(await f.deps.attempts.findByRequest(options.requestId), undefined);
+  } finally { f.tasks.close(); }
+});
+
+test("a returned source workspace is not needed when its exact output commit is retained", async () => {
+  const f = await completed();
+  try {
+    const allocation = f.deps.attempts.findForTask(taskId, 1)!.allocation!;
+    await f.deps.workspaces.returnLease({ leaseId: allocation.leaseId, holder: taskId, path: allocation.workspace }, { discardChanges: false });
+    assert.equal((await f.deps.workspaces.leases()).length, 0);
+    const outcome = await reserveFromAttempt(f.deps, options);
+    assert.equal(outcome.reason, "reserved", JSON.stringify(outcome));
+    assert.equal(f.deps.attempts.findForTask(taskId, 2)!.specification!.startingPoint!.commit, f.first.attempt!.resultCommit);
   } finally { f.tasks.close(); }
 });
 

@@ -45,6 +45,17 @@ test("committed work on the output branch in a clean workspace is retained", asy
   assert.deepEqual(result, { retained: true, findings: [], notes: [] });
 });
 
+test("commit-only retention needs the exact retained commit, not the old workspace", async () => {
+  const f = fixture();
+  const resultCommit = f.commitWork();
+  f.run(["worktree", "remove", f.workspace]);
+  assert.equal((await f.check({ resultCommit })).retained, false);
+  assert.equal((await f.check({ resultCommit, commitsOnly: true })).retained, true);
+  assert.equal((await f.check({ resultCommit, commitsOnly: true, outputBranch: "main" })).retained, false);
+  assert.equal((await f.check({ commitsOnly: true })).retained, false);
+  assert.equal((await f.check({ resultCommit, commitsOnly: true, artefacts: [join(f.dir, "report")] })).retained, false);
+});
+
 test("a missing output branch or one without the result commit is not retained", async () => {
   const f = fixture();
   const commit = f.commitWork();

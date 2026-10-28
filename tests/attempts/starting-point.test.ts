@@ -99,14 +99,15 @@ for (const kind of ["not stopped", "no commit", "not retained", "unknown", "othe
   });
 }
 
-test("a different attempt's launched worker blocks continuation even if it recorded a finish entry", async () => {
+for (const context of ["context", "other-context"]) test(`a worker in ${context} blocks continuation even if it recorded a finish entry`, async () => {
   const f = await fixture();
   try {
-    const second = await f.attempts.reserveAttempt({ taskId: "task", requested: {}, maximum: 2, specification: specificationFor });
-    await f.attempts.append(second.ref, "leased", { leaseId: "other-lease", workspace: "/fixture-2", baseRef: "main", outputBranch: "other", startingCommit: output });
-    await f.attempts.append(second.ref, "launched", { sessionId: "00000000-0000-4000-8000-000000000002" });
-    await f.attempts.append(second.ref, "worker_finished", { status: "failed", runtimeDirectory: "/runtime" });
-    await f.attempts.append(second.ref, "halted", { stage: "launch", reason: "failed" });
+    const store = new AttemptStore(f.tasks.database, context);
+    const second = await store.reserveAttempt({ taskId: "task", requested: {}, maximum: 2, specification: specificationFor });
+    await store.append(second.ref, "leased", { leaseId: "other-lease", workspace: "/fixture-2", baseRef: "main", outputBranch: "other", startingCommit: output });
+    await store.append(second.ref, "launched", { sessionId: "00000000-0000-4000-8000-000000000002" });
+    await store.append(second.ref, "worker_finished", { status: "failed", runtimeDirectory: "/runtime" });
+    await store.append(second.ref, "halted", { stage: "launch", reason: "failed" });
     const before = snapshot(f.attempts);
     await assert.rejects(f.attempts.reserveAttempt(f.options()), { reason: "possibly_running", nextAction: "stop_worker" });
     assert.deepEqual(snapshot(f.attempts), before);
