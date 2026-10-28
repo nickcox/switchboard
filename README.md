@@ -73,7 +73,7 @@ Create tasks with `switchboard task add <id> "<title>" --body-file <instructions
 
 Each task has a `definitionRevision`, increased atomically when its title, instructions, repository or kind changes, but not for holds, releases, dependencies or state changes alone. Reservation stores an immutable attempt specification: that revision and task text, repository and context, base ref and output branch, resolved delivery contract, and non-secret runtime settings with their configuration sources. Credentials and the environment are not copied. Acquisition records the lease, workspace, backing repository and actual starting commit separately. The worker uses only these stored inputs. A definition changed during acquisition holds the attempt as `task_definition_changed` without launching and keeps its lease; the result says how to continue. Changes after start apply only to later attempts. `status --json` shows the stored specification and allocation even after configuration changes or a restart. Older attempts migrate from their runtime bindings, with missing provenance marked `unknown`; incomplete specifications stay inspectable and resolvable but cannot launch. See the [task-store contract](docs/task-store.md#definition-revisions-and-attempt-specifications).
 
-`git` and `treehouse` must be on `PATH` for dispatch and reconciliation. Then, in PowerShell:
+`git` and `treehouse` must be on `PATH` for dispatch. Inspection reports unavailable owners as unknown; task commands need only the database. `status`, `finish` and `discard` work without Pi installed. Then, in PowerShell:
 
 ```powershell
 npm run switchboard -- status --config ./switchboard.json

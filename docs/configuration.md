@@ -14,6 +14,12 @@ The old `tasks.file` setting is removed. Switchboard never silently reads a back
 
 Use local storage, not network or synced folders. Switchboard probes exclusive creation in the database's directory and refuses linked or non-canonical paths. Do not copy an open database without its WAL; stop Switchboard first or use SQLite backup tooling.
 
+## Provider availability
+
+Loading configuration validates its shape without opening providers. Task commands open only the database. Other inspection and finalisation commands read external owners only when needed – a missing Git or Treehouse executable leaves the affected observations unknown, without hiding local task or runtime records. Unknown evidence never permits a change.
+
+`status`, `finish` and `discard` do not open Pi or check its installation. Only dispatch checks the Pi entrypoint and opens the workspace provider eagerly, including for a dry run, before reserving an attempt or request ID. Commands close their database on success or failure, including a failure while opening a later provider.
+
 ## Keeping the computer awake
 
 `keepAwake` is a top-level setting, enabled by default:

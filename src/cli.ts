@@ -163,80 +163,80 @@ async function main(argv: string[]): Promise<number> {
   }
 
   try {
-  // A task's attempt is acted on through its lease, so --task is resolved to the attempt's lease ID first.
-  let leaseId = values.lease;
-  if (byAttempt && values.task !== undefined) {
-    const selected = await leaseOfTask(deps, values.task, attempt);
-    if ("refused" in selected) {
-      console.log(values.json ? JSON.stringify(selected.refused, null, 2) : describe(selected.refused));
-      return 1;
+    // A task's attempt is acted on through its lease, so --task is resolved to the attempt's lease ID first.
+    let leaseId = values.lease;
+    if (byAttempt && values.task !== undefined) {
+      const selected = await leaseOfTask(deps, values.task, attempt);
+      if ("refused" in selected) {
+        console.log(values.json ? JSON.stringify(selected.refused, null, 2) : describe(selected.refused));
+        return 1;
+      }
+      leaseId = selected.leaseId;
     }
-    leaseId = selected.leaseId;
-  }
 
-  if (command === "prune") {
-    const value = await prune(deps, { olderThan, dryRun: values["dry-run"] === true });
-    console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
-    return value.ok ? 0 : 1;
-  }
+    if (command === "prune") {
+      const value = await prune(deps, { olderThan, dryRun: values["dry-run"] === true });
+      console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+      return value.ok ? 0 : 1;
+    }
 
-  if (command === "status") {
-    const value = await status(deps);
-    console.log(values.json ? JSON.stringify(value, null, 2) : describeStatus(value));
-    return value.ok ? 0 : 1;
-  }
+    if (command === "status") {
+      const value = await status(deps);
+      console.log(values.json ? JSON.stringify(value, null, 2) : describeStatus(value));
+      return value.ok ? 0 : 1;
+    }
 
-  if (command === "stop" || command === "steer") {
-    const value = await requestControl(deps, {
-      leaseId: leaseId!, kind: command === "stop" ? "stop" : values.after ? "follow_up" : "steer",
-      ...(command === "steer" ? { message: positionals[1]! } : {}),
-      sender: values.as ?? `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`, waitMs: wait * 1000,
-    });
-    console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
-    return value.ok ? 0 : 1;
-  }
+    if (command === "stop" || command === "steer") {
+      const value = await requestControl(deps, {
+        leaseId: leaseId!, kind: command === "stop" ? "stop" : values.after ? "follow_up" : "steer",
+        ...(command === "steer" ? { message: positionals[1]! } : {}),
+        sender: values.as ?? `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`, waitMs: wait * 1000,
+      });
+      console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+      return value.ok ? 0 : 1;
+    }
 
-  if (command === "watch") {
+    if (command === "watch") {
+      const controller = new AbortController();
+      process.once("SIGINT", () => controller.abort());
+      const outcome = await watch(deps, {
+        leaseId: leaseId!, follow: values["no-follow"] !== true, signal: controller.signal,
+        print: entry => console.log(values.json ? JSON.stringify(entry) : describeEntry(entry)),
+      });
+      if (!outcome.found) console.error(`No runtime record for lease ${leaseId} in this context. The worker may not have been launched.`);
+      return outcome.found ? 0 : 1;
+    }
+
+    if (command === "finish" || command === "discard") {
+      const common = { leaseId: leaseId!, noProcesses: values["no-processes"] === true, dryRun: values["dry-run"] === true };
+      const value = command === "finish" ? await finish(deps, { ...common, acceptOutput: values["accept-output"] === true })
+        : await discard(deps, { ...common, confirm: values.confirm === true, ...(values.note ? { note: values.note } : {}) });
+      console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+      return value.ok ? 0 : 1;
+    }
+
+    if (command === "resolve") {
+      const note = values.note ? { note: values.note } : {};
+      const value = values["lease-returned"]
+        ? await resolveLeaseReturned(deps, { ...(values.task ? { taskId: values.task, ...(attempt !== undefined ? { attempt } : {}) } : { leaseId: values.lease! }), ...note })
+        : await resolveStopped(deps, { leaseId: values.lease!, confirmed: values["worker-stopped"] === true, ...note });
+      console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
+      return value.ok ? 0 : 1;
+    }
+
+    if (process.platform !== "darwin") console.error(`Warning: Switchboard has only been verified on macOS, not on ${process.platform}.`);
+    // The first interrupt asks the worker to stop; the attempt is then held with an interruption reason.
     const controller = new AbortController();
-    process.once("SIGINT", () => controller.abort());
-    const outcome = await watch(deps, {
-      leaseId: leaseId!, follow: values["no-follow"] !== true, signal: controller.signal,
-      print: entry => console.log(values.json ? JSON.stringify(entry) : describeEntry(entry)),
+    process.once("SIGINT", () => {
+      console.error("Interrupt received: stopping the worker. The lease will be preserved.");
+      controller.abort();
     });
-    if (!outcome.found) console.error(`No runtime record for lease ${leaseId} in this context. The worker may not have been launched.`);
-    return outcome.found ? 0 : 1;
-  }
-
-  if (command === "finish" || command === "discard") {
-    const common = { leaseId: leaseId!, noProcesses: values["no-processes"] === true, dryRun: values["dry-run"] === true };
-    const value = command === "finish" ? await finish(deps, { ...common, acceptOutput: values["accept-output"] === true })
-      : await discard(deps, { ...common, confirm: values.confirm === true, ...(values.note ? { note: values.note } : {}) });
+    const value = await dispatchOnce(deps, {
+      ...(values.task ? { taskId: values.task } : {}), ...(values["request-id"] ? { requestId: values["request-id"] } : {}), signal: controller.signal,
+      dryRun: values["dry-run"] === true,
+    });
     console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
     return value.ok ? 0 : 1;
-  }
-
-  if (command === "resolve") {
-    const note = values.note ? { note: values.note } : {};
-    const value = values["lease-returned"]
-      ? await resolveLeaseReturned(deps, { ...(values.task ? { taskId: values.task, ...(attempt !== undefined ? { attempt } : {}) } : { leaseId: values.lease! }), ...note })
-      : await resolveStopped(deps, { leaseId: values.lease!, confirmed: values["worker-stopped"] === true, ...note });
-    console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
-    return value.ok ? 0 : 1;
-  }
-
-  if (process.platform !== "darwin") console.error(`Warning: Switchboard has only been verified on macOS, not on ${process.platform}.`);
-  // The first interrupt asks the worker to stop; the attempt is then held with an interruption reason.
-  const controller = new AbortController();
-  process.once("SIGINT", () => {
-    console.error("Interrupt received: stopping the worker. The lease will be preserved.");
-    controller.abort();
-  });
-  const value = await dispatchOnce(deps, {
-    ...(values.task ? { taskId: values.task } : {}), ...(values["request-id"] ? { requestId: values["request-id"] } : {}), signal: controller.signal,
-    dryRun: values["dry-run"] === true,
-  });
-  console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
-  return value.ok ? 0 : 1;
   } finally { deps.close(); }
 }
 

@@ -55,6 +55,24 @@ for (const broken of [false, true]) {
   });
 }
 
+test("task commands need neither Pi, Git nor Treehouse", async () => {
+  const f = await fixture();
+  const config = await loadConfig(f.config);
+  config.worker.piEntrypoint = join(f.dir, "missing-pi.js");
+  config.workspaces.repository = join(f.dir, "missing-repository");
+  writeFileSync(f.config, JSON.stringify(config));
+  try {
+    for (const args of [["add", "local-a1", "Local task"], ["show", "local-a1"], ["list"], ["ready"], ["done", "local-a1"]]) {
+      const result = spawnSync(process.execPath, [cli, "task", ...args, "--config", f.config, "--json"], {
+        env: { ...process.env, PATH: "" }, encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).ok, true);
+    }
+    assert.equal(existsSync(join(f.dir, "requests.jsonl")), false);
+  } finally { f.tasks.close(); }
+});
+
 test("dispatch with missing Pi refuses before reserving a request, acquiring or launching", async () => {
   const f = await fixture({ tasks: [task("missing-a1")] });
   const config = await loadConfig(f.config);

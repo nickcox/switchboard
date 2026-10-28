@@ -148,38 +148,38 @@ export async function createDependencies(config: Config, options: { dispatch?: b
     };
     const workspaces = options.dispatch ? await TreehouseProvider.open(workspaceOptions) : TreehouseProvider.connect(workspaceOptions);
     return {
-    close: () => tasks.close(),
-    contextId: config.contextId,
-    tasks,
-    maxAttempts: config.maxAttempts,
-    workspaces,
-    attempts: new AttemptStore(tasks.database, config.contextId),
-    runtime,
-    runtimeSettings, configurationProvenance: configurationProvenance(config),
-    launch: (input, signal, onRequest, settings) => {
-      if (!settings) throw new Error("Launching requires stored runtime settings");
-      const { profile: _, ...options } = settings;
-      return new PiWorker(runtime, { ...options, environment: workerEnvironment, keepAwake }).execute(input, signal, {
-        ...(progress ? { onActivity: entry => progress(describeEntry(entry)) } : {}), ...(onRequest ? { onRequest } : {}),
-      });
-    },
-    retention: async request => checkRetention(git(), hostEnvironment, request),
-    repository: config.workspaces.repository,
-    policy: {
-      get git() { return git(); }, environment: hostEnvironment, repository: config.workspaces.repository, baseRef: config.delivery.baseRef,
-      globalFile: config.finalisation.globalFile ?? join(homedir(), ".config", "switchboard", "policy.json"),
-      context: { ...(config.finalisation.kind ? { kind: config.finalisation.kind } : {}), ...(config.finalisation.targetBranch ? { targetBranch: config.finalisation.targetBranch } : {}), ...(config.finalisation.forbid ? { forbid: config.finalisation.forbid } : {}) },
-      forge: branch => githubBranchProtection({ git: git(), gh: onPathOrUndefined("gh"), repository: config.workspaces.repository, environment: hostEnvironment, branch }),
-    },
-    staleMs: config.worker.staleMs,
-    delivery: {
-      baseRef: config.delivery.baseRef, branchPrefix: config.delivery.branchPrefix, byTaskKind: config.delivery.byTaskKind,
-      default: {
-        kind: config.delivery.kind, acceptance: config.delivery.acceptance,
-        requiredEvidence: config.delivery.requiredEvidence, requiredDeliverables: config.delivery.requiredDeliverables,
+      close: () => tasks.close(),
+      contextId: config.contextId,
+      tasks,
+      maxAttempts: config.maxAttempts,
+      workspaces,
+      attempts: new AttemptStore(tasks.database, config.contextId),
+      runtime,
+      runtimeSettings, configurationProvenance: configurationProvenance(config),
+      launch: (input, signal, onRequest, settings) => {
+        if (!settings) throw new Error("Launching requires stored runtime settings");
+        const { profile: _, ...options } = settings;
+        return new PiWorker(runtime, { ...options, environment: workerEnvironment, keepAwake }).execute(input, signal, {
+          ...(progress ? { onActivity: entry => progress(describeEntry(entry)) } : {}), ...(onRequest ? { onRequest } : {}),
+        });
       },
-    },
-    ...(progress ? { progress } : {}),
+      retention: async request => checkRetention(git(), hostEnvironment, request),
+      repository: config.workspaces.repository,
+      policy: {
+        get git() { return git(); }, environment: hostEnvironment, repository: config.workspaces.repository, baseRef: config.delivery.baseRef,
+        globalFile: config.finalisation.globalFile ?? join(homedir(), ".config", "switchboard", "policy.json"),
+        context: { ...(config.finalisation.kind ? { kind: config.finalisation.kind } : {}), ...(config.finalisation.targetBranch ? { targetBranch: config.finalisation.targetBranch } : {}), ...(config.finalisation.forbid ? { forbid: config.finalisation.forbid } : {}) },
+        forge: branch => githubBranchProtection({ git: git(), gh: onPathOrUndefined("gh"), repository: config.workspaces.repository, environment: hostEnvironment, branch }),
+      },
+      staleMs: config.worker.staleMs,
+      delivery: {
+        baseRef: config.delivery.baseRef, branchPrefix: config.delivery.branchPrefix, byTaskKind: config.delivery.byTaskKind,
+        default: {
+          kind: config.delivery.kind, acceptance: config.delivery.acceptance,
+          requiredEvidence: config.delivery.requiredEvidence, requiredDeliverables: config.delivery.requiredDeliverables,
+        },
+      },
+      ...(progress ? { progress } : {}),
     };
   } catch (error) {
     tasks.close();
