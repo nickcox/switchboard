@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
+import type { Caller } from "../caller.ts";
 import type { Database } from "../database.ts";
 import { inside, requireRetainedStorage } from "../infra/storage.ts";
 export { inside } from "../infra/storage.ts";
@@ -145,8 +146,8 @@ export class RuntimeRecords {
   async recordChildExit(record: Pick<RuntimeRecord, "directory">, exit: ChildExit): Promise<void> {
     await this.storage.recordObservation(record.directory, "exit", childExitSchema.parse(exit));
   }
-  async recordOperatorStop(record: Pick<RuntimeRecord, "directory">, note?: string): Promise<void> {
-    await this.storage.confirmStopped(record.directory, note);
+  async recordOperatorStop(record: Pick<RuntimeRecord, "directory">, caller: Caller, note?: string): Promise<void> {
+    await this.storage.confirmStopped(record.directory, caller, note);
   }
   async discover(contextId: string, selector: { leaseId?: string; taskId?: string } = {}): Promise<RuntimeRecord[]> {
     const context = await lstat(join(this.root, key(contextId))).catch(error => { if (!isMissing(error)) throw error; });

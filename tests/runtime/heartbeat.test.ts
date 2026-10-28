@@ -36,6 +36,6 @@ test("the dispatcher refreshes its claim and releases it without removing the la
   assert.equal(await dispatcherRunning(record), false);
   assert.ok((await record.storage.heartbeat(record.claimId))!.released_at);
   await assert.rejects(f.records.reserve(f.input), /launch row/);
-  await f.records.recordOperatorStop(record);
+  await f.records.recordOperatorStop(record, { kind: "person", id: "operator:test" });
   await assert.rejects(f.records.reserve(f.input), /launch row/);
 });

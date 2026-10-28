@@ -1,4 +1,4 @@
-import { callerName, type Caller } from "../caller.ts";
+import { callerName, callerSchema, type Caller } from "../caller.ts";
 import { requireAuthority } from "../dispatch/safety.ts";
 import { randomUUID } from "node:crypto";
 import { Database } from "../database.ts";
@@ -9,7 +9,6 @@ import type { ControlRequest, RequestResult } from "./requests.ts";
 import type { ValidatedResult } from "./validated-result.ts";
 
 const ownerStartedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
-const operator = `operator:${process.env.USER ?? process.env.USERNAME ?? "unknown"}`;
 export type RuntimeAddress = { directory: string; storage: RuntimeStore; claimId: string };
 export type Launch = { context: string; task: string; attempt: number; leaseId: string; directory: string; createdAt: string };
 const exists = () => Object.assign(new Error("This attempt already has a launch row"), { code: "EEXIST" });
@@ -95,13 +94,15 @@ export class RuntimeStore {
     }));
   }
 
-  async confirmStopped(directory: string, note?: string): Promise<void> {
+  async confirmStopped(directory: string, caller: Caller, note?: string): Promise<void> {
+    caller = callerSchema.parse(caller);
     await this.use(database => database.transaction(() => {
       const launch = database.get("SELECT * FROM launches WHERE directory = ? AND kind = 'launch'", directory);
       if (!launch) throw new Error("A stop confirmation requires a launch");
       const binding = JSON.parse(String(launch.binding)) as RuntimeBinding;
+      requireAuthority(database, caller, "stopWorkers", { taskId: String(launch.task) });
       database.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope,note) VALUES(?,?,?,?,?,?,?,?)",
-        String(launch.context), String(launch.task), Number(launch.attempt), "worker_stopped", operator, new Date().toISOString(),
+        String(launch.context), String(launch.task), Number(launch.attempt), "worker_stopped", callerName(caller), new Date().toISOString(),
         JSON.stringify({ leaseId: binding.input.identity.leaseId, sessionId: binding.input.identity.sessionId }), note ?? null);
     }));
   }
@@ -147,6 +148,7 @@ export class RuntimeStore {
   }
 
   async submit(claimId: string, request: ControlRequest, caller: Caller): Promise<void> {
+    caller = callerSchema.parse(caller);
     await this.use(database => database.transaction(() => {
       const launch = database.get("SELECT directory, context, task, attempt, lease_id FROM launches WHERE claim_id = ?", claimId);
       if (!launch || database.get("SELECT 1 FROM worker_observations WHERE directory = ? AND kind = 'exit'", String(launch.directory)) ||

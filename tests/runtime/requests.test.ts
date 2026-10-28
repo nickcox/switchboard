@@ -40,7 +40,7 @@ test("submitting with an old runtime snapshot refuses an observed exit or a stop
   for (const stopped of [false, true]) {
     const f = fixture();
     const record = await f.records.reserve(f.input);
-    if (stopped) await f.records.recordOperatorStop(record);
+    if (stopped) await f.records.recordOperatorStop(record, { kind: "person", id: "operator:test" });
     else await f.records.recordChildExit(record, { started: true, code: 0, signal: null });
     assert.equal(record.child.status, "unknown", "the caller still has its old snapshot");
     await assert.rejects(submitRequest(record, { kind: "person", id: "operator" }, { kind: "stop" }), /not running/);

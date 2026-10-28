@@ -1,4 +1,4 @@
-import { callerName, type Caller } from "../caller.ts";
+import { callerName, callerSchema, type Caller } from "../caller.ts";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
@@ -20,6 +20,7 @@ export type RequestResult = z.infer<typeof resultSchema>;
 
 export async function submitRequest(record: RuntimeAddress & Pick<RuntimeRecord, "binding">, caller: Caller,
   request: { kind: ControlRequest["kind"]; message?: string; label?: string }): Promise<ControlRequest> {
+  caller = callerSchema.parse(caller);
   if (request.kind !== "stop" && !request.message) throw new Error("A message is required");
   const value = requestSchema.parse({ version: 1, id: randomUUID(), ...request, sender: callerName(caller),
     identity: record.binding.input.identity, createdAt: new Date().toISOString() });

@@ -20,6 +20,7 @@ import { createReview } from "../../src/dispatch/review.ts";
 import { checkCaller, type ObjectivePermission } from "../../src/dispatch/safety.ts";
 import { ObjectiveStore, defaultPermissions, type CompletionStatement } from "../../src/objectives/store.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
+import { submitRequest } from "../../src/runtime/requests.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { importTasks } from "../../src/tasks/import.ts";
 import { importAttempts, importRuntime } from "../../src/attempts/import.ts";
@@ -287,6 +288,8 @@ test("--as is a recorded label, not a way to impersonate a person or gain a remo
     assert.ok(leaseId, "The synthetic worker must be running");
     await f.objectives.update("goal", { permissions: { ...defaultPermissions, steerWorkers: false } });
     denied(await requestControl(f.supervisor, { leaseId, kind: "steer", message: "Finish", label: "operator:admin", waitMs: 1000 }), "permission_denied");
+    const runtime = (await f.runtime.discover(f.deps.contextId, { leaseId }))[0]!;
+    await assert.rejects(submitRequest(runtime, supervisor, { kind: "steer", message: "Finish", label: "operator:admin" }), /permission_denied/);
     assert.equal(f.tasks.database.all("SELECT * FROM control_requests").length, 0);
     await f.objectives.update("goal", { permissions: defaultPermissions });
     const sent = await requestControl(f.supervisor, { leaseId, kind: "steer", message: "Finish", label: "operator:admin", waitMs: 5000 });
@@ -381,6 +384,21 @@ test("reconciling a lease-return effect cannot substitute for a person's confirm
     denied(await resolveReadFailure(f.supervisor, { leaseId, failureSequence, outcome: "not_happened", note: "Inspected the lease" }), "person_required");
     assert.deepEqual(rows(f), before);
     assert.equal((await resolveReadFailure(f.deps, { leaseId, failureSequence, outcome: "not_happened", note: "The lease remains listed" })).reason, "resolved");
+  } finally { f.tasks.close(); }
+});
+
+test("runtime stop confirmations also require a host caller and enforce objective authority", async () => {
+  const f = await objectiveFixture();
+  try {
+    const { leaseId, ref } = await output(f);
+    const runtime = (await f.runtime.discover(f.deps.contextId, { leaseId }))[0]!;
+    await f.objectives.update("goal", { permissions: { ...defaultPermissions, stopWorkers: false } });
+    const before = rows(f);
+    await assert.rejects(f.runtime.recordOperatorStop(runtime, supervisor), /permission_denied/);
+    await assert.rejects(f.runtime.recordOperatorStop(runtime, { kind: "supervisor", objectiveId: "other" }), /outside_objective/);
+    assert.deepEqual(rows(f), before);
+    await f.runtime.recordOperatorStop(runtime, testCaller, "Checked by a person");
+    assert.equal(f.deps.attempts.confirmations(ref).at(-1)!.confirmedBy, callerName(testCaller));
   } finally { f.tasks.close(); }
 });
 
