@@ -577,7 +577,8 @@ export class AttemptStore {
   private insert<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>) {
     requireAuthority(this.database, this.caller, kind === "lease_returned" || kind === "lease_return_started" || kind === "discarded" ? "returnLease"
       : kind === "integrated" || kind === "integration_started" || kind === "owner_read_reconciled" ? "integrate"
-      : kind === "output_accepted" ? "acceptOutput" : "recordAttempt", { taskId: ref.taskId });
+      : kind === "output_accepted" || kind === "check_finished" ? "acceptOutput"
+      : ["requested", "leased", "task_started", "launched"].includes(kind) ? "dispatch" : "recordAttempt", { taskId: ref.taskId });
     const sequence = Number(this.database.get("SELECT coalesce(max(sequence), -1) + 1 AS n FROM attempt_entries WHERE context = ? AND task = ? AND attempt = ?",
       ref.contextId, ref.taskId, ref.attempt)!.n);
     const entry: AttemptEntry = parseAttemptEntry({ version: 1, ...identity(ref), sequence, kind, recordedAt: new Date().toISOString(), askedBy: callerName(this.caller), data });

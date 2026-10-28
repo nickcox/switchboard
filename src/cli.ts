@@ -235,7 +235,7 @@ async function main(argv: string[]): Promise<number> {
       const value = await requestControl(deps, {
         leaseId: leaseId!, kind: command === "stop" ? "stop" : values.after ? "follow_up" : "steer",
         ...(command === "steer" ? { message: positionals[1]! } : {}),
-        ...(values.as === undefined ? {} : { sender: values.as }), waitMs: wait * 1000,
+        ...(values.as === undefined ? {} : { label: values.as }), waitMs: wait * 1000,
       });
       console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
       return value.ok ? 0 : 1;

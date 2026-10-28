@@ -108,13 +108,13 @@ export class SqliteTaskStore implements TaskStore {
   }
   async hold(id: string, reason: string): Promise<StoredTask> {
     validReason(reason);
-    return this.change(id, () => this.database.run("UPDATE tasks SET hold_reason = ?, hold_revision = hold_revision + 1 WHERE id = ?", reason, id));
+    return this.change(id, "hold", () => this.database.run("UPDATE tasks SET hold_reason = ?, hold_revision = hold_revision + 1 WHERE id = ?", reason, id));
   }
   async release(id: string): Promise<StoredTask> {
-    return this.change(id, () => this.database.run("UPDATE tasks SET hold_reason = NULL WHERE id = ?", id));
+    return this.change(id, "release", () => this.database.run("UPDATE tasks SET hold_reason = NULL WHERE id = ?", id));
   }
   async block(id: string, by: string): Promise<StoredTask> {
-    return this.change(id, () => {
+    return this.change(id, "block", () => {
       this.require(by);
       if (id === by || this.database.get(`WITH RECURSIVE blockers(id) AS (
         SELECT blocker FROM dependencies WHERE task = ? UNION SELECT d.blocker FROM dependencies d JOIN blockers b ON d.task = b.id)
@@ -123,13 +123,13 @@ export class SqliteTaskStore implements TaskStore {
     });
   }
   async unblock(id: string, by: string): Promise<StoredTask> {
-    return this.change(id, () => this.database.run("DELETE FROM dependencies WHERE task = ? AND blocker = ?", id, by));
+    return this.change(id, "unblock", () => this.database.run("DELETE FROM dependencies WHERE task = ? AND blocker = ?", id, by));
   }
   async done(id: string, note = ""): Promise<StoredTask> {
-    return this.change(id, () => this.writeDone(id, note), "completeTasks");
+    return this.change(id, "done", () => this.writeDone(id, note), "completeTasks");
   }
   async reopen(id: string): Promise<StoredTask> {
-    return this.change(id, () => this.database.run("UPDATE tasks SET state = 'queued' WHERE id = ?", id));
+    return this.change(id, "reopen", () => this.database.run("UPDATE tasks SET state = 'queued' WHERE id = ?", id));
   }
   private writeDone(id: string, note: string) {
     const task = this.require(id);
@@ -140,13 +140,13 @@ export class SqliteTaskStore implements TaskStore {
     const row = this.database.get("SELECT state FROM objectives WHERE id = ?", id) ?? reject(`Objective ${id} does not exist`);
     if (row.state !== "open") reject(`Objective ${id} is ${row.state}; reopen it before changing its tasks`);
   }
-  private async change(id: string, apply: () => unknown, permission: ObjectivePermission = "manageTasks"): Promise<StoredTask> {
+  private async change(id: string, action: string, apply: () => unknown, permission: ObjectivePermission = "manageTasks"): Promise<StoredTask> {
     return this.database.transaction(() => {
       requireAuthority(this.database, this.caller, permission, { taskId: id });
       const before = this.require(id);
       apply();
       const after = this.require(id);
-      this.record(id, permission, before, after);
+      this.record(id, action, before, after);
       return after;
     });
   }

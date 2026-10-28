@@ -38,7 +38,7 @@ export async function prune(deps: Dependencies, options: { olderThan: number; dr
     if (context.records.known) for (const record of context.records.value) {
       if (!inScope(record.taskId)) continue;
       requireOperationAuthority(deps, ["prune"], record);
-      const cleanup = await cleanupStartingPoint(deps, record, options.dryRun);
+      const cleanup = await cleanupStartingPoint(deps, record, options.dryRun, "prune");
       if (!cleanup) continue;
       startingPointCleanup.push({ taskId: record.taskId, attempt: record.attempt, ...cleanup });
       if (cleanup.status === "preserved") preservedStartingPoints.add(`${record.taskId}/${record.attempt}`);

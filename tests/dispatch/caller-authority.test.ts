@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { userInfo } from "node:os";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -70,7 +72,7 @@ test("each implemented permission is refused inside its operation before effects
     const cases: { permission: ObjectivePermission; run: () => Promise<{ ok: boolean; detail?: string }> }[] = [
       { permission: "dispatch", run: () => dispatchOnce(f.supervisor, { taskId: "own", dryRun: true }) },
       { permission: "continueAttempts", run: () => reserveFromAttempt(f.supervisor, { taskId: "own", startingPoint: { taskId: "own", attempt: 1 }, requestId: "repair", dryRun: true }) },
-      { permission: "steerWorkers", run: () => requestControl(f.supervisor, { leaseId, kind: "steer", message: "Change it", sender: "operator:creator", waitMs: 1 }) },
+      { permission: "steerWorkers", run: () => requestControl(f.supervisor, { leaseId, kind: "steer", message: "Change it", label: "operator:creator", waitMs: 1 }) },
       { permission: "stopWorkers", run: () => requestControl(f.supervisor, { leaseId, kind: "stop", waitMs: 1 }) },
       { permission: "acceptOutput", run: () => finish(f.supervisor, { leaseId, noProcesses: false, acceptOutput: true }) },
       { permission: "integrate", run: () => finish(f.supervisor, { leaseId, noProcesses: false }) },
@@ -236,15 +238,21 @@ test("supervisor acceptance needs passing checks and review for the exact commit
     f.supervisor.checks[0]!.command = [process.execPath, "-e", "process.exit(0)"];
     denied(await finish(f.supervisor, { leaseId, noProcesses: false }), "no recorded review");
     await assert.rejects(f.supervisor.attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } }), /review_missing/);
-    const created = await createReview(f.supervisor, { taskId: "own" });
-    assert.equal(created.reason, "review_created", JSON.stringify(created));
-    const worker = new PiWorker(f.runtime, { executable: process.execPath, entrypoint: resolve("tests/fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: 5000, stopMs: 600, environment: { ...f.environment, FAKE_PI_SCENARIO: "review-pass", FAKE_PI_LOG: join(f.dir, "review-requests.jsonl") } });
-    f.supervisor.launch = (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {});
-    const reviewed = await dispatchOnce(f.supervisor, { taskId: created.task!.id });
-    assert.equal(reviewed.reason, "held", "Recording a review verdict does not automatically accept its own unreviewed output");
-    const recordedReview = f.supervisor.attempts.findForTask("own", 1)!.entries.find(entry => entry.kind === "review_recorded");
-    assert.ok(recordedReview, JSON.stringify(reviewed));
-    assert.equal(recordedReview.data.verdict, "passed");
+    for (const verdict of ["failed", "passed"] as const) {
+      const created = await createReview(f.supervisor, { taskId: "own" });
+      assert.equal(created.reason, "review_created", JSON.stringify(created));
+      const worker = new PiWorker(f.runtime, { executable: process.execPath, entrypoint: resolve("tests/fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: 5000, stopMs: 600, environment: { ...f.environment, FAKE_PI_SCENARIO: verdict === "passed" ? "review-pass" : "review-fail", FAKE_PI_LOG: join(f.dir, `review-${verdict}-requests.jsonl`) } });
+      f.supervisor.launch = (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {});
+      const reviewed = await dispatchOnce(f.supervisor, { taskId: created.task!.id });
+      assert.equal(reviewed.reason, "held", "Recording a review verdict does not automatically accept its own unreviewed output");
+      const recordedReview = [...f.supervisor.attempts.findForTask("own", 1)!.entries].reverse().find(entry => entry.kind === "review_recorded");
+      assert.ok(recordedReview, JSON.stringify(reviewed));
+      assert.equal(recordedReview.data.verdict, verdict);
+      if (verdict === "failed") {
+        denied(await finish(f.supervisor, { leaseId, noProcesses: false, acceptOutput: true }), "latest review failed");
+        assert.notEqual(f.run(["rev-parse", "main"]), commit);
+      }
+    }
     const accepted = await finish(f.supervisor, { leaseId, noProcesses: false, acceptOutput: true });
     assert.equal(accepted.reason, "finished", JSON.stringify(accepted));
     assert.deepEqual(accepted.acceptanceEvidence, { commit, permission: { allowed: true } });
@@ -278,10 +286,10 @@ test("--as is a recorded label, not a way to impersonate a person or gain a remo
     }
     assert.ok(leaseId, "The synthetic worker must be running");
     await f.objectives.update("goal", { permissions: { ...defaultPermissions, steerWorkers: false } });
-    denied(await requestControl(f.supervisor, { leaseId, kind: "steer", message: "Finish", sender: "operator:admin", waitMs: 1000 }), "permission_denied");
+    denied(await requestControl(f.supervisor, { leaseId, kind: "steer", message: "Finish", label: "operator:admin", waitMs: 1000 }), "permission_denied");
     assert.equal(f.tasks.database.all("SELECT * FROM control_requests").length, 0);
     await f.objectives.update("goal", { permissions: defaultPermissions });
-    const sent = await requestControl(f.supervisor, { leaseId, kind: "steer", message: "Finish", sender: "operator:admin", waitMs: 5000 });
+    const sent = await requestControl(f.supervisor, { leaseId, kind: "steer", message: "Finish", label: "operator:admin", waitMs: 5000 });
     assert.equal(sent.ok, true, JSON.stringify(sent));
     await dispatching;
     const request = JSON.parse(String(f.tasks.database.get("SELECT request FROM control_requests")!.request));
@@ -305,5 +313,82 @@ test("hosts must supply callers, and supervisor imports cannot change database-w
     await f.objectives.update("goal", { permissions: { ...defaultPermissions, manageTasks: false } });
     denied(await prune(f.supervisor, { olderThan: 1 }), "permission_denied");
     assert.deepEqual(rows(f).slice(0, -1), before.slice(0, -1));
+  } finally { f.tasks.close(); }
+});
+
+test("a supervisor can reserve a continuation within its objective without returning the source lease", async () => {
+  const f = await objectiveFixture();
+  try {
+    const { ref, leaseId } = await output(f);
+    await f.tasks.release("own");
+    const continued = await reserveFromAttempt(f.supervisor, { taskId: "own", startingPoint: { taskId: "own", attempt: 1 }, requestId: "continue" });
+    assert.equal(continued.reason, "reserved", JSON.stringify(continued));
+    assert.deepEqual(f.supervisor.attempts.findForTask("own", 1), ref);
+    assert.equal(f.supervisor.attempts.findForTask("own", 2)!.entries[0]!.askedBy, "supervisor:goal");
+    assert.ok((await f.deps.workspaces.leases()).some(lease => lease.leaseId === leaseId));
+  } finally { f.tasks.close(); }
+});
+
+test("supervisor pruning changes only its objective and retains the caller in archive and cleanup records", async () => {
+  const f = await objectiveFixture();
+  try {
+    const { leaseId } = await output(f);
+    assert.equal((await discard(f.deps, { leaseId, noProcesses: true, confirm: true })).reason, "discarded");
+    const foreign = await dispatchOnce(f.deps, { taskId: "foreign" });
+    assert.equal((await discard(f.deps, { leaseId: foreign.attempt!.leaseId!, noProcesses: true, confirm: true })).reason, "discarded");
+    const before = f.deps.attempts.findForTask("foreign", 1);
+    const pruned = await prune(f.supervisor, { olderThan: 0.000000001 });
+    assert.equal(pruned.reason, "pruned", JSON.stringify(pruned));
+    assert.equal(f.supervisor.attempts.findForTask("own", 1), undefined);
+    assert.deepEqual(f.deps.attempts.findForTask("foreign", 1), before);
+    const archive = JSON.parse(String(f.tasks.database.get("SELECT summary FROM archived_attempts WHERE task = 'own'")!.summary));
+    assert.equal(archive.archivedBy, "supervisor:goal");
+    assert.ok(Object.values(archive.cleanup).flat().every((entry: unknown) => (entry as { askedBy: string }).askedBy === "supervisor:goal"));
+    assert.equal((await prune(f.deps, { olderThan: 0.000000001 })).reason, "pruned");
+    assert.equal(f.deps.attempts.findForTask("foreign", 1), undefined);
+  } finally { f.tasks.close(); }
+});
+
+test("revoking dispatch during acquisition is checked again before task start or launch", async () => {
+  const f = await objectiveFixture();
+  try {
+    let launches = 0;
+    const workspaces = Object.assign(Object.create(Object.getPrototypeOf(f.deps.workspaces)), f.deps.workspaces, {
+      acquire: async (...args: Parameters<typeof f.deps.workspaces.acquire>) => {
+        const allocation = await f.deps.workspaces.acquire(...args);
+        await f.objectives.update("goal", { permissions: { ...defaultPermissions, dispatch: false } });
+        return allocation;
+      },
+    });
+    const result = await dispatchOnce({ ...f.supervisor, workspaces, launch: async () => { launches++; throw new Error("Not permitted"); } }, { taskId: "own" });
+    denied(result, "permission_denied.*dispatch");
+    assert.equal(launches, 0);
+    assert.equal((await f.tasks.read("own"))!.state, "queued");
+    assert.equal(f.supervisor.attempts.findForTask("own", 1)!.entries.some(entry => entry.kind === "launched" || entry.kind === "task_started"), false);
+    assert.equal((await f.deps.workspaces.leases()).length, 1, "A permission change does not authorise returning the acquired lease");
+  } finally { f.tasks.close(); }
+});
+
+test("reconciling a lease-return effect cannot substitute for a person's confirmation", async () => {
+  const f = await objectiveFixture();
+  try {
+    const { ref, leaseId } = await output(f);
+    const returnId = randomUUID();
+    await f.deps.attempts.appendConfirmed(ref, "lease_return_started", { leaseId, by: "finish", returnId }, { fact: "no_processes", scope: { leaseId, returnId } });
+    await f.deps.attempts.append(ref, "owner_read_failed", { owner: "Treehouse", classification: "effect_uncertain", operation: "finish", step: "read return", failedAt: new Date().toISOString(), diagnostics: { message: "Read failed" } });
+    const failureSequence = f.deps.attempts.findForTask("own", 1)!.entries.at(-1)!.sequence;
+    const before = rows(f);
+    denied(await resolveReadFailure(f.supervisor, { leaseId, failureSequence, outcome: "not_happened", note: "Inspected the lease" }), "person_required");
+    assert.deepEqual(rows(f), before);
+    assert.equal((await resolveReadFailure(f.deps, { leaseId, failureSequence, outcome: "not_happened", note: "The lease remains listed" })).reason, "resolved");
+  } finally { f.tasks.close(); }
+});
+
+test("the CLI identifies the operating-system person even when USER and USERNAME claim someone else", async () => {
+  const f = await objectiveFixture();
+  try {
+    const result = spawnSync(process.execPath, [resolve("src/cli.ts"), "objective", "add", "cli-goal", "A person's request", "--criterion", "Done", "--config", f.config, "--json"], { encoding: "utf8", env: { ...process.env, USER: "forged", USERNAME: "forged" } });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(JSON.parse(result.stdout).objective.createdBy, `operator:${userInfo().username}`);
   } finally { f.tasks.close(); }
 });

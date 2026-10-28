@@ -32,7 +32,7 @@ test("a steering message reaches the running worker once and is recorded with it
   const f = await fixture({ tasks: [task("steer-a1")], scenario: "await-steer", worker: { requestPollMs: 50 } });
   const dispatching = dispatchOnce(f.deps);
   const record = await running(f, "steer-a1");
-  const sent = await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "steer", message: "Use the smaller fix", sender: "operator:test", waitMs: 5000 });
+  const sent = await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "steer", message: "Use the smaller fix", label: "operator:test", waitMs: 5000 });
   assert.equal(sent.reason, "delivered", JSON.stringify(sent, null, 2));
   assert.equal(sent.ok, true);
   assert.match(sent.detail!, /queued/);
@@ -73,7 +73,7 @@ test("a forwarded request that cannot be written to the attempt log is reported 
   });
   const dispatching = dispatchOnce({ ...f.deps, attempts });
   const record = await running(f, "unlogged-a1");
-  await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "steer", message: "Finish now", sender: "operator:test", waitMs: 5000 });
+  await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "steer", message: "Finish now", label: "operator:test", waitMs: 5000 });
   const outcome = await dispatching;
   const unrecorded = outcome.observed.unrecordedRequests as { sender: string; error: string }[];
   assert.equal(unrecorded.length, 1);
@@ -85,7 +85,7 @@ test("a follow-up is forwarded as Pi's follow_up", async () => {
   const f = await fixture({ tasks: [task("follow-a1")], scenario: "await-steer", worker: { requestPollMs: 50 } });
   const dispatching = dispatchOnce(f.deps);
   const record = await running(f, "follow-a1");
-  const sent = await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "follow_up", message: "Then update the notes", sender: "operator:test", waitMs: 5000 });
+  const sent = await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "follow_up", message: "Then update the notes", label: "operator:test", waitMs: 5000 });
   assert.equal(sent.reason, "delivered");
   await dispatching;
   assert.equal(prompts(f, "follow_up"), 1);
@@ -111,7 +111,7 @@ test("a stop request stops the running worker and the task is held as interrupte
   assert.deepEqual((await f.deps.attempts.forTask("stop-a1"))[0]!.entries, before);
   assert.equal((await f.runtime.discover("fixture-context"))[0]?.child.status, "unknown");
   assert.equal((await dispatchOnce(f.deps)).nextAction.code, "stop_worker");
-  const sent = await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "stop", sender: "operator:test", waitMs: 5000 });
+  const sent = await requestControl(f.deps, { leaseId: record.binding.input.identity.leaseId, kind: "stop", label: "operator:test", waitMs: 5000 });
   assert.equal(sent.reason, "delivered");
   const outcome = await dispatching;
   assert.equal(outcome.reason, "held");
@@ -132,7 +132,7 @@ test("a request with no running dispatcher is withdrawn and can never be forward
     instructions: "Orphan", acceptanceCriteria: [],
     delivery: { baseRef: "main", startingCommit: "a".repeat(40), outputBranch: "o", kind: "code", acceptance: "review_or_integration", requiredEvidence: [], requiredDeliverables: [] },
   });
-  const sent = await requestControl(f.deps, { leaseId: "lease-orphan", kind: "steer", message: "Hello", sender: "operator:test", waitMs: 300 });
+  const sent = await requestControl(f.deps, { leaseId: "lease-orphan", kind: "steer", message: "Hello", label: "operator:test", waitMs: 300 });
   assert.equal(sent.reason, "undelivered");
   assert.equal(sent.nextAction.code, "no_dispatcher");
   assert.equal(await claimRequest(reserved, String(sent.observed.requestId), "dispatcher"), false);
@@ -141,10 +141,10 @@ test("a request with no running dispatcher is withdrawn and can never be forward
 test("requests for a finished worker or an unknown lease are refused", async () => {
   const f = await fixture({ tasks: [task("done-a1")], scenario: "commit-result" });
   const finished = await dispatchOnce(f.deps);
-  const late = await requestControl(f.deps, { leaseId: finished.attempt!.leaseId!, kind: "stop", sender: "operator:test", waitMs: 300 });
+  const late = await requestControl(f.deps, { leaseId: finished.attempt!.leaseId!, kind: "stop", label: "operator:test", waitMs: 300 });
   assert.equal(late.reason, "refused");
   assert.match(late.detail!, /not running/);
-  assert.equal((await requestControl(f.deps, { leaseId: "no-such-lease", kind: "stop", sender: "operator:test", waitMs: 300 })).reason, "refused");
+  assert.equal((await requestControl(f.deps, { leaseId: "no-such-lease", kind: "stop", label: "operator:test", waitMs: 300 })).reason, "refused");
 });
 
 test("Phase 2 review finding 14: resolve refuses to record a stop when the attempt's task cannot be read", async () => {

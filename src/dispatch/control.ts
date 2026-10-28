@@ -11,7 +11,7 @@ import { result, type DispatchResult } from "./result.ts";
  * `waitMs` is withdrawn and reported as undelivered.
  */
 export async function requestControl(
-  deps: Dependencies, options: { leaseId: string; kind: ControlRequest["kind"]; message?: string; sender?: string; waitMs: number },
+  deps: Dependencies, options: { leaseId: string; kind: ControlRequest["kind"]; message?: string; label?: string; waitMs: number },
 ): Promise<DispatchResult> {
   try { requireOperationAuthority(deps, [options.kind === "stop" ? "stopWorkers" : "steerWorkers"], options); }
   catch (error) { return result({ ok: false, reason: "refused", stage: "control", lease: "preserved", observed: {}, detail: error instanceof Error ? error.message : String(error), nextAction: "inspect_attempt" }); }
@@ -29,7 +29,7 @@ export async function requestControl(
   const attempt = { ...assessment.attempt, sessionId: record.binding.input.identity.sessionId };
   // Submission checks the runtime's exit and scoped stop confirmation again in its transaction.
   let request;
-  try { request = await submitRequest(record, deps.caller, { kind: options.kind, ...(options.sender ? { label: options.sender } : {}), ...(options.message ? { message: options.message } : {}) }); }
+  try { request = await submitRequest(record, deps.caller, { kind: options.kind, ...(options.label ? { label: options.label } : {}), ...(options.message ? { message: options.message } : {}) }); }
   catch (error) { return result({ ...base, ok: false, reason: "refused", attempt, detail: error instanceof Error ? error.message : String(error), nextAction: "inspect_attempt" }); }
   const delivery = await awaitDelivery(record, request.id, options.waitMs);
   const observed = { ...base.observed, requestId: request.id };

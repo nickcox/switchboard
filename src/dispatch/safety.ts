@@ -30,6 +30,7 @@ export function checkCaller(caller: Caller, operation: AuthorityOperation, objec
   if (!objective || objective.id !== caller.objectiveId || options.objectiveId !== caller.objectiveId) {
     return refuse("outside_objective", "The supervisor can act only within its named objective", "inspect_attempt", { operation, objectiveId: options.objectiveId ?? null });
   }
+  // Mechanical evidence and a stopped outcome remain recordable after authority is narrowed.
   if (operation === "recordAttempt") return permit;
   const permission = operation === "objectiveUpdate" || operation === "objectiveReopen" || operation === "prune" ? "manageTasks" : operation as ObjectivePermission;
   return objective.permissions[permission] ? permit : refuse("permission_denied", `Objective ${objective.id} does not permit ${permission}`, "inspect_attempt", { operation, permission });
@@ -42,6 +43,7 @@ export function requireImportAuthority(caller: Caller): void {
 
 /** Re-read authority at the point of mutation, including inside database transactions. */
 export function requireAuthority(database: Database, caller: Caller, operation: AuthorityOperation, options: { taskId?: string; objectiveId?: string | null; protectedFields?: boolean } = {}): void {
+  if (caller.kind === "person" && !options.protectedFields && operation !== "objectiveAbandon") return;
   const objectiveId = options.taskId === undefined ? options.objectiveId : database.get("SELECT objective_id FROM tasks WHERE id = ?", options.taskId)?.objective_id as string | null | undefined;
   const row = objectiveId == null ? undefined : database.get("SELECT id,permissions,created_by FROM objectives WHERE id = ?", objectiveId);
   const objective = row ? { id: String(row.id), permissions: JSON.parse(String(row.permissions)), createdBy: String(row.created_by) } : undefined;
@@ -53,6 +55,7 @@ export function requireAuthority(database: Database, caller: Caller, operation: 
 export function requireOperationAuthority(deps: Dependencies, operations: AuthorityOperation[], selector: { taskId?: string; leaseId?: string } = {}): void {
   const caller = callerSchema.parse(deps.caller);
   if (JSON.stringify(caller) !== JSON.stringify(deps.attempts.caller)) throw new TaskStoreError("rejected", "The host must bind the same caller to the operation and its attempt store");
+  if (caller.kind === "person") return;
   const taskId = selector.taskId ?? (selector.leaseId === undefined ? undefined : deps.attempts.database.get(`SELECT task FROM attempt_entries WHERE context = ?
     AND json_extract(entry, '$.kind') IN ('leased','halted') AND json_extract(entry, '$.data.leaseId') = ?`, deps.contextId, selector.leaseId)?.task as string | undefined);
   for (const operation of operations) requireAuthority(deps.attempts.database, deps.caller, operation, taskId === undefined

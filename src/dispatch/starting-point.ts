@@ -6,13 +6,13 @@ import { requireOperationAuthority } from "./safety.ts";
 import type { Dependencies } from "./dependencies.ts";
 
 /** An allocation no longer needs its base ref. Without one, wait until the attempt is closed. */
-export async function cleanupStartingPoint(deps: Dependencies, record: AttemptRecord, dryRun = false): Promise<StartingPointCleanup | undefined> {
+export async function cleanupStartingPoint(deps: Dependencies, record: AttemptRecord, dryRun = false, by: "dispatch" | "prune" = "dispatch"): Promise<StartingPointCleanup | undefined> {
   const specification = record.specification;
   const point = specification?.startingPoint ?? specification?.reviewTarget;
   if (!point || !specification?.outputBranch || !specification.backingRepository || !record.allocation && isOpen(record)) return;
   const { outputBranch, backingRepository: repository } = specification;
   try {
-    requireOperationAuthority(deps, ["recordAttempt"], record);
+    requireOperationAuthority(deps, [by], record);
     return await removeStartingPoint(deps.policy?.git ?? onPath("git"), deps.policy?.environment ?? {}, {
       repository, outputBranch, commit: point.commit, dryRun,
     });
