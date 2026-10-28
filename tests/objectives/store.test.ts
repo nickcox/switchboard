@@ -43,14 +43,14 @@ test("objectives preserve the request, ordered criteria, defaults, creator and t
   finally { reopened.close(); }
 });
 
-test("creator updates record who changed each field and when, while budgets remain advisory", async () => {
+test("creator updates record who changed each field and when, and budgets bind person dispatches", async () => {
   const f = await fixture();
   try {
     const original = await add(f.objectives);
     const editor = new ObjectiveStore(f.tasks.database, "operator:creator");
     const permissions = { ...defaultPermissions, dispatch: false, manageTasks: false };
     const changed = await editor.update("goal", { acceptanceCriteria: ["Replacement"], scope: "Only this project", constraints: "No publishing",
-      permissions, budget: { maxCost: 0, maxWorkerTimeMs: 0 }, deadline: "2026-10-28T22:00:00+11:00" });
+      permissions, budget: { maxCost: 0, maxWorkerTimeMs: 0 }, deadline: "2000-01-01T00:00:00Z" });
     assert.deepEqual(changed.acceptanceCriteria, ["Replacement"]);
     assert.equal(changed.createdBy, original.createdBy);
     assert.equal(changed.createdAt, original.createdAt);
@@ -64,7 +64,7 @@ test("creator updates record who changed each field and when, while budgets rema
     await editor.update("goal", { scope: changed.scope });
     assert.equal(editor.history("goal").length, 2, "No-op updates do not add history");
     await f.tasks.add({ id: "work", title: "Allowed for now", objectiveId: "goal" });
-    await f.attempts.reserveAttempt({ taskId: "work", requested: {}, maximum: 1, specification: specificationFor });
+    await assert.rejects(f.attempts.reserveAttempt({ taskId: "work", requested: {}, maximum: 1, specification: specificationFor }), { reason: "objective_deadline" });
     await editor.update("goal", { deadline: null, budget: { maxCost: null, maxWorkerTimeMs: null } });
     assert.equal(editor.read("goal")!.deadline, null);
   } finally { f.tasks.close(); }
@@ -233,6 +233,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
     f.tasks.database.run("DROP TRIGGER task_definition_changed");
     f.tasks.database.run("DROP INDEX tasks_by_objective");
     f.tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
+    f.tasks.database.run("DROP TABLE worker_usage");
     f.tasks.database.run("DROP TABLE task_changes");
     f.tasks.database.run("DROP TABLE objective_changes");
     f.tasks.database.run("DROP TABLE objectives");
@@ -245,7 +246,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
   const reopened = await Promise.all([SqliteTaskStore.open({ path: f.path }), SqliteTaskStore.open({ path: f.path })]);
   try {
     for (const tasks of reopened) {
-      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 11);
+      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 12);
       assert.deepEqual(await tasks.read("existing"), before);
       assert.deepEqual(new AttemptStore(tasks.database, "fixture").read(ref), attempt);
       assert.deepEqual(new ObjectiveStore(tasks.database, "operator:creator").list(), []);

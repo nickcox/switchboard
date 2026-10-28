@@ -185,24 +185,19 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
     return refusal("select", "fix_configuration", `Task ${taskId} has kind "${selected.kind}", which has no delivery contract in the configuration`, observed);
   }
 
-  if (options.dryRun) {
-    if (await reads.read("Attempt records", "check task attempt limit", () => deps.attempts.taskAttemptCount(taskId!)) >= (deps.maxAttemptsPerTask ?? 3)) return refusal("select", "inspect_attempt", "The task's attempt limit has been reached; review its earlier attempts before raising maxAttemptsPerTask", { ...observed, reason: "attempt_limit" });
-    if (await reads.read("Attempt records", "check capacity", () => deps.attempts.activeCount()) >= (deps.maxAttempts ?? 1)) return refusal("select", "inspect_attempt", "The context's attempt maximum has been reached", { ...observed, reason: "capacity" });
-    return result({
-      ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
-      selection: { taskId, contract: { name: contractName, ...contract } }, nextAction: "none",
-    });
-  }
-
   // Copy configuration before reservation; neither later edits nor acquisition may change this attempt's inputs.
   const specification = specificationFactory(deps, contract);
   let ref: AttemptRef;
   try {
-    const reservation = await deps.attempts.reserveAttempt({ taskId, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, maximumPerTask: deps.maxAttemptsPerTask ?? 3, repo: selected.repo, definitionRevision: selected.definitionRevision,
+    const reservation = await deps.attempts.reserveAttempt({ taskId, dryRun: options.dryRun === true, requestInputs: { ...(options.taskId === undefined ? {} : { taskId: options.taskId }) }, maximum: deps.maxAttempts ?? 1, maximumPerTask: deps.maxAttemptsPerTask ?? 3, repo: selected.repo, definitionRevision: selected.definitionRevision,
       specification, ...(reviewEvidence ? { reviewEvidence } : {}), requested: {
       ...(options.requestId === undefined ? {} : { requestId: options.requestId }), contract: { name: contractName, ...contract }, pool: state.pool,
     } });
     ref = reservation.ref;
+    if (options.dryRun) return result({
+      ok: true, reason: "dry_run", stage: "select", lease: "none", observed,
+      selection: { taskId, contract: { name: contractName, ...contract } }, nextAction: "none",
+    });
     if (!reservation.created) {
       const existing = await deps.attempts.findByRequest(options.requestId!);
       if (!existing) throw new Error("The reserved request record is missing");
@@ -212,7 +207,7 @@ async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, rea
     if (error instanceof AttemptStoreError && error.reason === "request_input_mismatch") return result({
       ok: false, reason: "request_input_mismatch", stage: "select", lease: "none", observed, detail: error.message, nextAction: "inspect_attempt",
     });
-    if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", "inspect_attempt", error.message, { ...observed, reason: error.reason });
+    if (error instanceof AttemptStoreError || error instanceof TaskStoreError) return refusal("select", error instanceof AttemptStoreError ? error.nextAction : "inspect_attempt", error.message, { ...observed, reason: error.reason });
     return refusal("select", "fix_configuration", `The attempt store could not be written: ${message(error)}`, observed);
   }
   return executeReserved(deps, options, reads, ref, taskId, observed);

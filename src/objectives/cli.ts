@@ -8,25 +8,27 @@ import { requireRetainedStorage } from "../infra/storage.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 import { ObjectiveStore, type Objective, type ObjectiveChanges } from "./store.ts";
 
-const usage = `Usage: switchboard objective <add|show|list|update|complete|abandon|reopen> [id] [request] [--json] [--config <path>]
+const usage = `Usage: switchboard objective <add|show|list|update|confirm-budget|complete|abandon|reopen> [id] [request] [--json] [--config <path>]
 add: <id> <request> (or --request-file <path>), --criterion <text> (repeatable) or --criteria-file <path>
 add/update: --scope <text>, --constraints <text>, --permissions-file <json>, --budget-file <json>, --deadline <ISO timestamp> or --clear-deadline
+confirm-budget: <id> --note <reason for allowing further work with unknown usage>
 complete: <id> --statements-file <json>
 list: [--state open|completed|abandoned]`;
 export async function objectiveCommand(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
-    json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
+    note: { type: "string" }, json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
     "request-file": { type: "string" }, criterion: { type: "string", multiple: true }, "criteria-file": { type: "string" },
     scope: { type: "string" }, constraints: { type: "string" }, "permissions-file": { type: "string" }, "budget-file": { type: "string" },
     deadline: { type: "string" }, "clear-deadline": { type: "boolean" }, "statements-file": { type: "string" }, state: { type: "string" },
   } });
   const [command, id, request] = positionals;
   const fields = ["criterion", "criteria-file", "scope", "constraints", "permissions-file", "budget-file", "deadline", "clear-deadline"];
-  const allowed: Record<string, string[]> = { add: [...fields, "request-file"], update: fields, show: [], list: ["state"], complete: ["statements-file"], abandon: [], reopen: [] };
+  const allowed: Record<string, string[]> = { add: [...fields, "request-file"], update: fields, show: [], list: ["state"], "confirm-budget": ["note"], complete: ["statements-file"], abandon: [], reopen: [] };
   const invalid = !command || !allowed[command] || Object.keys(values).some(key => !["json", "config", "help", ...allowed[command]!].includes(key))
     || positionals.length !== (command === "list" ? 1 : command === "add" && request !== undefined ? 3 : 2)
     || (command === "add" && (request === undefined) === (values["request-file"] === undefined))
     || (command === "complete" && !values["statements-file"])
+    || (command === "confirm-budget" && !values.note)
     || (values.criterion !== undefined && values["criteria-file"] !== undefined)
     || (values.deadline !== undefined && values["clear-deadline"] === true)
     || (values.state !== undefined && !["open", "completed", "abandoned"].includes(values.state));
@@ -53,6 +55,7 @@ export async function objectiveCommand(argv: string[]): Promise<number> {
       case "show": value = store.show(id!); break;
       case "list": value = store.list(values.state as Objective["state"] | undefined); break;
       case "update": value = await store.update(id!, changes); break;
+      case "confirm-budget": value = await store.confirmBudget(id!, values.note!); break;
       case "complete": value = await store.complete(id!, JSON.parse(await readFile(resolve(values["statements-file"]!), "utf8"))); break;
       case "abandon": value = await store.abandon(id!); break;
       case "reopen": value = await store.reopen(id!); break;

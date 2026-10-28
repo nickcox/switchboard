@@ -42,6 +42,7 @@ export const nextActions = {
   none: "Nothing further is needed.",
   dispatch_again: "Run dispatch again when there is ready work.",
   inspect_attempt: "Inspect the attempt's task, lease and runtime records, resolve them, then dispatch again.",
+  review_objective_budget: "Inspect objective show <id>. Ask its creator to raise its budget, extend its deadline, or confirm unknown finished usage with objective confirm-budget <id> --note <reason> before dispatching again.",
   retry_owner_read: "Repair the owner's availability if needed, then run the same command again to read it again.",
   reconcile_owner: "Inspect the owner and reconcile the recorded intent and outcome with resolve --lease <lease-id> --read-failure <sequence> --effect-outcome happened|not_happened --note <evidence>. For an acquisition in an unlisted pool with no known lease ID, return its lease by path, then use resolve --task <task-id> --lease-returned. Never repeat an effect whose outcome is uncertain.",
   stop_worker: "Confirm the worker has stopped, then run `switchboard resolve --lease <lease-id> --worker-stopped`.",

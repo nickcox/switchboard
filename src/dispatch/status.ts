@@ -1,4 +1,5 @@
 import { ObjectiveStore, type ObjectiveBrief } from "../objectives/store.ts";
+import { describeObjectiveBudget } from "../objectives/budget.ts";
 import { describeChecks, type CheckResult } from "../attempts/checks.ts";
 import { describeReviews, type ReviewRecord } from "../attempts/reviews.ts";
 import { describeCriteriaReport } from "../runtime/criteria-report.ts";
@@ -196,7 +197,7 @@ export function describeStatus(value: StatusResult): string {
   const lines = [`${value.reason === "clear" ? "Clear" : value.reason === "attention" ? "Needs attention" : "Unknown: owner state could not be read"}`];
   if (value.detail) lines.push(`Detail: ${value.detail}`);
   lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`);
-  for (const objective of value.objectives) lines.push(`Objective ${objective.id}: ${objective.request.replace(/\s+/g, " ").slice(0, 120)}; ${objective.doneTaskCount}/${objective.taskCount} tasks done`);
+  for (const objective of value.objectives) lines.push(`Objective ${objective.id}: ${objective.request.replace(/\s+/g, " ").slice(0, 120)}; ${objective.doneTaskCount}/${objective.taskCount} tasks done; ${describeObjectiveBudget(objective)}`);
   for (const a of value.attempts) {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;
     const where = a.attempt.workspace ?? "an unknown path";

@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { attemptSpending, checkObjectiveBudget, objectiveBudget, type BudgetRefusal } from "../objectives/budget.ts";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { z } from "zod";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
@@ -37,8 +38,8 @@ type ExpectedTask = Pick<Task, "state" | "holdReason" | "holdRevision">;
 const identity = (ref: AttemptRef): AttemptRef => ({ contextId: ref.contextId, taskId: ref.taskId, attempt: ref.attempt });
 
 export class AttemptStoreError extends Error {
-  readonly reason: "not_ready" | "capacity" | "request_reserved" | "request_input_mismatch" | "attempt_closed" | "task_changed" | "attempt_changed" | "task_definition_changed" | "specification_incomplete" | "starting_point_wrong_task" | "starting_point_unknown" | "possibly_running" | "output_not_recorded" | "not_retained" | "attempt_limit";
-  readonly nextAction: "inspect_attempt" | "stop_worker" | "fix_or_discard";
+  readonly reason: BudgetRefusal["reason"] | "not_ready" | "capacity" | "request_reserved" | "request_input_mismatch" | "attempt_closed" | "task_changed" | "attempt_changed" | "task_definition_changed" | "specification_incomplete" | "starting_point_wrong_task" | "starting_point_unknown" | "possibly_running" | "output_not_recorded" | "not_retained" | "attempt_limit";
+  readonly nextAction: "inspect_attempt" | "stop_worker" | "fix_or_discard" | "review_objective_budget";
   constructor(reason: AttemptStoreError["reason"], message: string, nextAction: AttemptStoreError["nextAction"] = "inspect_attempt") {
     super(message); this.reason = reason; this.nextAction = nextAction;
   }
@@ -144,6 +145,10 @@ export class AttemptStore {
       }
       if (options.definitionRevision !== undefined && task.definitionRevision !== options.definitionRevision) {
         throw new AttemptStoreError("task_changed", "The task definition changed before reservation");
+      }
+      if (task.objectiveId !== null) {
+        const refusal = checkObjectiveBudget(task.objectiveId, objectiveBudget(this.database, task.objectiveId));
+        if (refusal) throw new AttemptStoreError(refusal.reason, refusal.detail, "review_objective_budget");
       }
       const number = Number(this.database.get("SELECT coalesce(max(number), 0) + 1 AS n FROM attempt_numbers WHERE context = ? AND task = ?", this.contextId, options.taskId)!.n);
       const ref = { contextId: this.contextId, taskId: options.taskId, attempt: number };
@@ -360,7 +365,7 @@ export class AttemptStore {
       const reservation = this.database.get("SELECT request_id, reserved_at FROM request_records WHERE context = ? AND task = ? AND attempt = ?",
         expected.contextId, expected.taskId, expected.attempt);
       const archive = {
-        ...identity(expected), summary, entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
+        ...identity(expected), summary, spending: attemptSpending(this.database, expected), entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
         archivedAt: new Date().toISOString(), archivedBy: callerName(this.caller), confirmations: this.confirmations(expected), acceptedCommits: this.acceptedCommits(expected),
         ...(current.entries.some(e => e.kind === "owner_read_failed") ? { readFailures: current.entries.filter(e => e.kind === "owner_read_failed" || e.kind === "owner_read_reconciled") } : {}),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),

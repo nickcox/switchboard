@@ -115,6 +115,20 @@ export class WorkerSupervisor {
     const { binding, directory } = reserved;
     // Exceeding a usage limit, or a stop request, stops the worker the same way an operator interruption does.
     const budget = new AbortController();
+    let budgetDetail: string | undefined;
+    let checkingBudget: Promise<void> | undefined;
+    const checkBudget = (): Promise<void> => {
+      if (checkingBudget || budget.signal.aborted) return checkingBudget ?? Promise.resolve();
+      checkingBudget = reserved.storage.objectiveBudgetRefusal(directory).then(refusal => {
+        if (!refusal || budget.signal.aborted) return;
+        budgetDetail = `${refusal.reason}: ${refusal.detail}`;
+        activity.write({ kind: "note", text: `${budgetDetail}; stopping the worker` });
+        budget.abort();
+      }).catch(error => {
+        activity.write({ kind: "note", text: `Objective budget observation failed: ${asError(error).message}` });
+      }).finally(() => { checkingBudget = undefined; });
+      return checkingBudget;
+    };
     const stopRequest = new AbortController();
     let stoppedBy: string | undefined;
     const signal = AbortSignal.any([budget.signal, stopRequest.signal, ...(operator ? [operator] : [])]);
@@ -154,12 +168,19 @@ export class WorkerSupervisor {
     };
     let lastSnapshot = 0;
     let statsTimer: ReturnType<typeof setInterval> | undefined;
-    const snapshot = async (current: RuntimeSession) => {
-      if (current.childExit || budget.signal.aborted) return;
+    let takingSnapshot: Promise<void> | undefined;
+    const snapshot = (current: RuntimeSession): Promise<void> => {
+      if (takingSnapshot || current.childExit || budget.signal.aborted) return takingSnapshot ?? Promise.resolve();
+      takingSnapshot = takeSnapshot(current).finally(() => { takingSnapshot = undefined; });
+      return takingSnapshot;
+    };
+    const takeSnapshot = async (current: RuntimeSession) => {
       lastSnapshot = Date.now();
       try {
-        const usage = await current.usage();
+        const usage = await bounded(current.usage(), this.options.requestMs, "usage_snapshot_timeout");
+        await reserved.storage.recordUsage(directory, usage);
         activity.write({ kind: "stats", tokens: usage.tokens, cost: usage.cost });
+        await checkBudget();
         const over = (this.options.maxCost !== undefined && usage.cost > this.options.maxCost) ||
           (this.options.maxTokens !== undefined && usage.tokens > this.options.maxTokens);
         if (over && !budget.signal.aborted) {
@@ -173,6 +194,7 @@ export class WorkerSupervisor {
     let result: WorkerResult | undefined;
     let receipt: Promise<void> | undefined;
     try {
+      await checkBudget();
       if (signal.aborted) throw new RuntimeFailure("interrupted", "Interrupted before spawn");
       session = this.adapter.open(binding, {
         activity: entry => activity.write(entry),
@@ -181,11 +203,11 @@ export class WorkerSupervisor {
       });
       receipt = session.exited.then(exit => this.records.recordChildExit(reserved, exit));
       void receipt.catch(() => {});
+      const running = session;
+      requestTimer = setInterval(() => { if (!running.childExit) void checkBudget(); forwardRequests(running); }, this.options.requestPollMs);
       await session.start(signal);
       activity.write({ kind: "note", text: `Worker started (session ${binding.input.identity.sessionId})` });
-      const running = session;
       statsTimer = setInterval(() => void snapshot(running), this.options.statsMs);
-      requestTimer = setInterval(() => void forwardRequests(running), this.options.requestPollMs);
       await session.waitForEnd(this.options.runMs, signal);
       await snapshot(session);
       await session.confirmEnd(signal);
@@ -196,6 +218,8 @@ export class WorkerSupervisor {
     closing = true;
     if (requestTimer) clearInterval(requestTimer);
     await forwarding;
+    await takingSnapshot;
+    await checkingBudget;
 
     if (session) {
       await session.shutdown(failure !== undefined);
@@ -224,7 +248,7 @@ export class WorkerSupervisor {
       failure = new RuntimeFailure("interrupted", `Stopped at the request of ${stoppedBy}`);
     } else if (budget.signal.aborted) {
       result = undefined;
-      failure = new RuntimeFailure("over_budget", "The worker was stopped because the attempt exceeded its usage limit");
+      failure = new RuntimeFailure("over_budget", budgetDetail ?? "The worker was stopped because the attempt exceeded its usage limit");
     }
     const childExit = session?.childExit;
     const stopped = failure instanceof RuntimeFailure && (failure.reason === "interrupted" || failure.reason === "over_budget");

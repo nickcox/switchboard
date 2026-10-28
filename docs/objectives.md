@@ -20,7 +20,8 @@ All objective commands accept `--config <path>` and `--json`. Add takes either t
 
 `objective show` includes:
 
-- the request, scope, constraints, permissions, budget, deadline, creator and timestamps
+- the request, scope, constraints, permissions, budget, deadline, time left before the deadline, creator and timestamps
+- `spending`: total cost and worker time, known subtotals, and each attempt with unknown usage, including whether the creator has confirmed that uncertainty
 - each criterion's 1-based position, text and any completion statement
 - linked tasks, their states and hold reasons, and the latest attempt in each context, including archived attempts
 - `availableReferences`, the accepted commits and recorded reviews that completion statements can cite
@@ -28,7 +29,7 @@ All objective commands accept `--config <path>` and `--json`. Add takes either t
 
 The command-line caller is the operating-system user, recorded as `operator:<username>`, not a command argument or the `USER`/`USERNAME` environment variables. Every changing operation takes its caller from trusted hosting code. Objective history, task changes, attempt entries and scoped confirmations record that caller. See [callers and permissions](#callers-and-permissions).
 
-`status` briefly shows each open objective's request and done/total task counts, as well as its existing attempt information. JSON status includes an `objectives` list. A done task count is progress, not objective completion.
+`status` briefly shows each open objective's request and done/total task counts, budget, spending, unknown usage and time left before its deadline, as well as its existing attempt information. JSON status includes an `objectives` list with the same accounting as `objective show`. A done task count is progress, not objective completion.
 
 ## Tasks and definition revisions
 
@@ -54,7 +55,7 @@ switchboard objective update release-notes --clear-deadline
 
 Update can replace criteria, scope, constraints, permissions, budget or deadline. It cannot replace the person's original request or creator, or set a state directly. Each effective update is transactional with an append-only history entry containing the actor, time and the old and new values of each changed field. No-op updates do not add history. Creation, completion, abandonment and reopening are recorded too.
 
-Permissions are enforced inside operations, including their dry runs. Only the person who created an objective can change its permissions, budget or criteria, or abandon it. Other person callers retain their normal task and attempt authority. Budgets and deadlines are still recorded only: a zero budget or past deadline does not yet refuse dispatch or stop a worker. `dispatch: false` refuses new supervisor dispatches, not a person's dispatch and not an already running worker.
+Permissions are enforced inside operations, including their dry runs. Only the person who created an objective can change its permissions, budget, deadline or criteria, confirm unknown spending, or abandon it. Other person callers retain their normal task and attempt authority. Budgets and deadlines bind both people and supervisors: a zero budget or past deadline refuses even the first reservation. `dispatch: false` refuses new supervisor dispatches, not a person's dispatch and not an already running worker.
 
 The default permissions record grants the extensive authority described in the [Phase 3 PRD](phases/03-supervisor/PRD.md#caller-identity-permissions-and-budget). `--permissions-file` replaces the whole JSON record, with exactly these boolean fields:
 
@@ -82,7 +83,26 @@ The default permissions record grants the extensive authority described in the [
 { "maxCost": 20, "maxWorkerTimeMs": 3600000 }
 ```
 
-Both values must be finite nonnegative numbers or `null` for no limit, the default. `maxCost` uses the worker runtime's reported cost units, as the existing attempt limit does. `maxWorkerTimeMs` records elapsed worker time in milliseconds across the objective's attempts, not the supervisor's conversation time. Accounting and enforcement come later. A deadline must be an ISO timestamp with `Z` or an explicit timezone offset. It defaults to `null`; `--clear-deadline` clears it.
+Both values must be finite nonnegative numbers or `null` for no limit, the default. `maxCost` uses the worker runtime's reported cost units, as the existing attempt limit does. `maxWorkerTimeMs` limits elapsed worker time in milliseconds across the objective's attempts, not the supervisor's conversation time. A deadline must be an ISO timestamp with `Z` or an explicit timezone offset. It defaults to `null`; `--clear-deadline` clears it.
+
+### Accounting and enforcement
+
+Spending is computed from every attempt of the objective's currently linked tasks, across contexts sharing the database, including archived attempts. Each attempt contributes its latest observed cost, not the sum of its snapshots, and elapsed time from its launch record to its observed direct-child exit, or to now while running. Concurrent workers' times are added, not counted as one wall-clock interval. Launch permission is recorded just before starting the process, so its preparation time is included conservatively. An unused reservation or an observed failure to spawn has known zero spending. A launch fence, an archived attempt without accounting evidence, a missing cost snapshot or a finished worker without an observed exit leaves the relevant usage unknown. An operator's stop confirmation does not invent an exit time. Historical cost snapshots are read from activity where available; new runtimes keep their latest usage separately from the bounded diagnostic log. Pruning preserves accounting before removing runtime observations.
+
+`spending.cost` and `spending.workerTimeMs` are `null` when the respective total is unknown. `observedCost` and `observedWorkerTimeMs` are known subtotals, not claims that unreported work was free. `spending.unknown` identifies the attempts and which values are missing. A provider-reported zero is an observed value, not evidence that the subscription consumed no resources; worker-time limits still apply.
+
+Every reservation, including dry runs and requests to start from earlier output, checks the objective inside its reservation transaction. It refuses at or above the recorded cost or worker-time limit, or once the deadline passes, with `objective_cost_limit`, `objective_worker_time_limit` or `objective_deadline` and the `review_objective_budget` next action. Replaying a request ID still returns the original attempt without another reservation. Tasks without an objective keep their existing per-attempt behaviour.
+
+The supervising dispatcher checks the objective while its worker runs. It persists each successful cost snapshot and checks the total; it also checks elapsed worker time and the deadline on its control polling interval, independently of whether usage reporting succeeds. A worker over a budget or past the deadline is stopped as `over_budget`, with the objective-specific reason in the recorded detail and activity. Budgets are checked by observation and can be exceeded by work in progress between observations. There are no budget reservations against unreported future spending and no provider-side cap.
+
+Unknown usage for a finished attempt refuses further reservations as `objective_usage_unknown`, even with unlimited budgets. After inspection, the creator can explicitly allow further work:
+
+```sh
+switchboard objective show release-notes
+switchboard objective confirm-budget release-notes --note "Inspected the subscription session; allow further work despite unknown cost"
+```
+
+Confirmation records the creator, time, note and the exact currently finished unknown attempts in the objective's append-only history. Raising either budget (including removing a finite limit) also confirms those attempts. A no-op or lower budget does not. This permits further reservations only if the known subtotals and deadline still allow them; it does not replace unknown values with zero, confirm future attempts or override other safety checks. A supervisor cannot confirm its own uncertainty or raise its budget.
 
 ## Callers and permissions
 

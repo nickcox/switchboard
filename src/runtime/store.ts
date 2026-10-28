@@ -1,4 +1,5 @@
 import { callerName, callerSchema, type Caller } from "../caller.ts";
+import { checkObjectiveBudget, objectiveBudget, type BudgetRefusal } from "../objectives/budget.ts";
 import { requireAuthority } from "../dispatch/safety.ts";
 import { randomUUID } from "node:crypto";
 import { Database } from "../database.ts";
@@ -134,6 +135,24 @@ export class RuntimeStore {
       database.run("UPDATE worker_claims SET released_at = ? WHERE id = ? AND owner_pid = ? AND owner_started_at = ?",
         new Date().toISOString(), claimId, process.pid, ownerStartedAt);
     }));
+  }
+
+  async recordUsage(directory: string, usage: { cost: number; tokens: number }): Promise<void> {
+    if (![usage.cost, usage.tokens].every(value => Number.isFinite(value) && value >= 0)) throw new Error("Invalid usage snapshot");
+    await this.use(database => database.transaction(() => {
+      database.run(`INSERT INTO worker_usage VALUES(?,?,?,?) ON CONFLICT(directory) DO UPDATE SET
+        observed_at = excluded.observed_at, cost = excluded.cost, tokens = excluded.tokens`,
+      directory, new Date().toISOString(), usage.cost, usage.tokens);
+    }));
+  }
+
+  async objectiveBudgetRefusal(directory: string): Promise<BudgetRefusal | undefined> {
+    return this.use(database => {
+      const row = database.get("SELECT t.objective_id FROM launches l JOIN tasks t ON t.id = l.task WHERE l.directory = ?", directory);
+      if (row?.objective_id == null) return undefined;
+      const id = String(row.objective_id);
+      return checkObjectiveBudget(id, objectiveBudget(database, id), true);
+    });
   }
 
   async appendActivity(directory: string, entry: ActivityEntry): Promise<void> {

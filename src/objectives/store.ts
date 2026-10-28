@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { objectiveBudget, unknownKey, type ObjectiveBudget } from "./budget.ts";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
 import { requireAuthority } from "../dispatch/safety.ts";
 import { Database } from "../database.ts";
@@ -43,7 +44,7 @@ export type Objective = z.infer<typeof fieldsSchema> & {
   createdBy: string; createdAt: string; updatedAt: string; closedAt: string | null;
   completionStatements: CompletionStatement[];
 };
-export type ObjectiveBrief = Pick<Objective, "id" | "request" | "state" | "updatedAt"> & { taskCount: number; doneTaskCount: number };
+export type ObjectiveBrief = Pick<Objective, "id" | "request" | "state" | "updatedAt"> & ObjectiveBudget & { taskCount: number; doneTaskCount: number };
 const reject = (message: string): never => { throw new TaskStoreError("rejected", message); };
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
@@ -80,7 +81,7 @@ export class ObjectiveStore {
       FROM objectives o LEFT JOIN tasks t ON t.objective_id = o.id WHERE (? IS NULL OR o.state = ?)
       GROUP BY o.id ORDER BY o.created_at, o.id`, state ?? null, state ?? null).map(row => ({
       id: String(row.id), request: String(row.request), state: row.state as Objective["state"], updatedAt: String(row.updated_at),
-      taskCount: Number(row.task_count), doneTaskCount: Number(row.done_count),
+      taskCount: Number(row.task_count), doneTaskCount: Number(row.done_count), ...objectiveBudget(this.database, String(row.id)),
     }));
   }
   show(id: string) {
@@ -100,7 +101,7 @@ export class ObjectiveStore {
         ...(attempt.summary ? { summary: JSON.parse(String(attempt.summary)).summary } : {}),
       })),
     }));
-    return { ...objective, criteria: objective.acceptanceCriteria.map((criterion, index) => ({
+    return { ...objective, ...objectiveBudget(this.database, id), criteria: objective.acceptanceCriteria.map((criterion, index) => ({
       position: index + 1, criterion, completion: objective.completionStatements.find(statement => statement.position === index + 1) ?? null,
     })), tasks, availableReferences: this.references(id), history: this.history(id) };
   }
@@ -128,7 +129,7 @@ export class ObjectiveStore {
   async update(id: string, input: ObjectiveChanges): Promise<Objective> {
     const changes = parse(fieldsSchema.partial(), input);
     return this.database.transaction(() => {
-      requireAuthority(this.database, this.caller, "objectiveUpdate", { objectiveId: id, protectedFields: ["permissions", "budget", "acceptanceCriteria"].some(key => key in input) });
+      requireAuthority(this.database, this.caller, "objectiveUpdate", { objectiveId: id, protectedFields: ["permissions", "budget", "deadline", "acceptanceCriteria"].some(key => key in input) });
       const before = this.requireOpen(id);
       const fields = (Object.keys(columns) as (keyof typeof columns)[]).filter(key => changes[key] !== undefined && JSON.stringify(changes[key]) !== JSON.stringify(before[key]));
       if (!fields.length) return before;
@@ -137,8 +138,24 @@ export class ObjectiveStore {
         ...fields.map(key => ["acceptanceCriteria", "permissions", "budget"].includes(key) ? JSON.stringify(changes[key]) : changes[key] as string | null), now, id);
       const after = this.require(id);
       this.record(id, "update", before, after, now);
+      const raised = (key: "maxCost" | "maxWorkerTimeMs") => before.budget[key] !== null && (after.budget[key] === null || after.budget[key]! > before.budget[key]!);
+      if (raised("maxCost") || raised("maxWorkerTimeMs")) this.recordBudgetConfirmation(id, "Budget raised after inspecting unknown usage", now);
       return after;
     });
+  }
+  async confirmBudget(id: string, note: string): Promise<ReturnType<ObjectiveStore["show"]>> {
+    note = parse(nonempty, note);
+    return this.database.transaction(() => {
+      requireAuthority(this.database, this.caller, "objectiveUpdate", { objectiveId: id, protectedFields: true });
+      this.requireOpen(id);
+      this.recordBudgetConfirmation(id, note, new Date().toISOString());
+      return this.show(id);
+    });
+  }
+  private recordBudgetConfirmation(id: string, note: string, now: string): void {
+    const unknownAttempts = objectiveBudget(this.database, id).spending.unknown.filter(a => a.finished && !a.confirmed).map(unknownKey);
+    this.database.run(`INSERT INTO objective_changes VALUES(?,(SELECT coalesce(max(sequence),0)+1 FROM objective_changes WHERE objective = ?),?,?,?,?)`,
+      id, id, "confirm-budget", this.actor, now, JSON.stringify({ note, unknownAttempts }));
   }
   async abandon(id: string): Promise<Objective> { return this.transition(id, "abandoned"); }
   async reopen(id: string): Promise<Objective> { return this.transition(id, "open"); }
