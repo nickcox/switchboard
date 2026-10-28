@@ -40,7 +40,7 @@ Before any effect, the command refuses as `owner_read_retryable`, with next acti
 
 After an effect or `lease_return_started`, a failed read refuses as `reconciliation_required`, with next action `reconcile_owner`. The recorded failure blocks further effects on later invocations too. Inspect the owner and reconcile the outcome; do not repeat a return whose outcome is uncertain. If a later invocation can safely establish that the lease is absent from its recorded pool, it can complete the existing `lease_returned` record without returning it again. Existing process, retention, identity and confirmation checks still apply.
 
-`status` shows the latest recorded failure, including its diagnostics; JSON uses `latestReadFailure`. It remains visible after a successful retry. A dry run changes no external owner, but still records failed-read diagnostics with the attempt.
+`status` shows the latest recorded failure, including its diagnostics; JSON uses `latestReadFailure`. An unreconciled uncertain failure sets next action `reconcile_owner` and `changeable: false`. The diagnostic remains visible after a successful retry or a completed return record. A dry run changes no external owner, but still records failed-read diagnostics with the attempt.
 
 ## Validated worker results
 

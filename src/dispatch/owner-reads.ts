@@ -16,7 +16,7 @@ export class OwnerReads {
   }
 
   async failure(owner: string, step: string, error: unknown, record?: AttemptRecord, rejected = false): Promise<OwnerReadError> {
-    record ??= await this.deps.attempts.findByLease(this.leaseId);
+    record = await this.deps.attempts.findByLease(this.leaseId) ?? record;
     const effectAttempted = this.effectAttempted || !record || record.entries.some(e => e.kind === "lease_return_started");
     const failure: ReadFailure = { owner, classification: classifyFailure(rejected && !effectAttempted ? { step: "rejection" } : { step: "read", effectAttempted }),
       operation: this.operation, step, failedAt: new Date().toISOString(), diagnostics: readDiagnostics(error) };
@@ -35,6 +35,7 @@ export class OwnerReads {
   /** A failed read after an effect or intent cannot authorise further effects on a later invocation. */
   async checkEffects(): Promise<void> {
     const record = await this.deps.attempts.findByLease(this.leaseId);
+    if (record?.entries.some(e => e.kind === "lease_returned") || record?.confirmations?.some(c => c.fact === "lease_returned")) return;
     const failed = [...(record?.entries ?? [])].reverse().find(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain");
     if (failed) throw new OwnerReadError(failed.data as ReadFailure);
   }

@@ -132,7 +132,7 @@ export class TreehouseProvider implements WorkspaceProvider {
   async pool(): Promise<string> {
     const { git, repository, environment, poolRoot } = this.options;
     const origin = await runCommand(resolveExecutable(git), ["remote", "get-url", "origin"], { cwd: repository, env: environment, timeoutMs: gitTimeoutMs });
-    if (origin.timedOut || origin.truncated || origin.exitCode === null) throw new WorkspaceError("unreadable", "The repository's origin remote could not be read", describeCommand(origin));
+    if (origin.timedOut || origin.truncated || origin.exitCode !== 0 && origin.exitCode !== 2) throw new WorkspaceError("unreadable", "The repository's origin remote could not be read", describeCommand(origin));
     return JSON.stringify(origin.exitCode === 0 ? { root: poolRoot, origin: origin.stdout.trim() } : { root: poolRoot, repository });
   }
 

@@ -57,7 +57,7 @@ async function locate(deps: OperationDependencies, leaseId: string): Promise<Loc
  */
 async function fenceLaunch(deps: OperationDependencies, record: AttemptRecord, leaseId: string): Promise<string | undefined> {
   if (await deps.runtime.fence(deps.contextId, leaseId)) return undefined;
-  if (await deps.runtime.storage.launchKind(deps.contextId, leaseId) === "fence") return undefined;
+  if (await deps.reads.read("Runtime records", "read launch permission", () => deps.runtime.storage.launchKind(deps.contextId, leaseId)) === "fence") return undefined;
   const runtime = (await deps.reads.read("Runtime records", "check launch permission", () => deps.runtime.discover(deps.contextId, { leaseId }))).find(r => r.binding.input.identity.leaseId === leaseId);
   const stopped = deps.attempts.confirmations(record).some(c => c.fact === "worker_stopped" && c.scope.leaseId === leaseId &&
     (c.scope.sessionId === undefined || c.scope.sessionId === runtime?.binding.input.identity.sessionId));
@@ -226,7 +226,7 @@ async function finishAttempt(deps: OperationDependencies, options: { leaseId: st
     } else unrecorded = { target: policy.targetBranch!, commit: to };
   }
 
-  const task = await deps.tasks.read(attempt.attempt.taskId).catch(() => undefined);
+  const task = await deps.reads.read("Task store", "read task outcome", () => deps.tasks.read(attempt.attempt.taskId));
   if (!task) return refused("inspect_attempt", "The task cannot be read", base);
   const recordTask = task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done");
   const retainedDetail = `Lease retained. Once no worker process remains, return it with switchboard finish --lease ${options.leaseId} --no-processes`;
@@ -311,7 +311,7 @@ async function discardAttempt(deps: OperationDependencies, options: { leaseId: s
   await deps.reads.checkEffects();
   const permission = checkCanDiscard(attempt.facts, options.confirm || !!options.dryRun);
   if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, lease: attempt.leaseHeld ? "preserved" : "none", observed: { refusal: permission } });
-  const task = await deps.tasks.read(attempt.attempt.taskId).catch(() => undefined);
+  const task = await deps.reads.read("Task store", "read discard outcome", () => deps.tasks.read(attempt.attempt.taskId));
   if (!task) return refused("inspect_attempt", "The task cannot be read", base);
   const holdReason = `Switchboard attempt ${attempt.attempt.attempt} discarded`;
   const hold = task.state !== "done" && !(task.held && task.holdReason === holdReason);

@@ -125,6 +125,9 @@ for (const operation of ["finish", "discard"] as const) {
       const record = (await f.deps.attempts.findByLease(leaseId))!;
       assert.equal(record.entries.filter(e => e.kind === "lease_return_started").length, 1);
       assert.equal(record.entries.find(e => e.kind === "owner_read_failed")!.data.classification, "effect_uncertain");
+      const view = await status(f.deps, { activity: false, transcript: false });
+      assert.equal(view.attempts[0]!.nextAction.code, "reconcile_owner");
+      assert.equal(view.attempts[0]!.changeable, false);
     });
   }
 
@@ -155,6 +158,9 @@ for (const operation of ["finish", "discard"] as const) {
       assert.equal(record.entries.filter(e => e.kind === "lease_return_started").length, 1);
       assert.equal(record.entries.filter(e => e.kind === "lease_returned").length, 1);
       assert.equal(record.entries.find(e => e.kind === "owner_read_failed")!.data.classification, "effect_uncertain");
+      const view = await status(f.deps, { activity: false, transcript: false });
+      assert.notEqual(view.attempts[0]!.nextAction.code, "reconcile_owner");
+      assert.equal(view.attempts[0]!.latestReadFailure?.classification, "effect_uncertain");
     });
   }
 }
@@ -204,6 +210,31 @@ for (const intent of [false, true]) {
       const record = (await f.deps.attempts.findByLease(leaseId))!;
       assert.equal(record.entries.filter(e => e.kind === "integrated").length, 1);
       assert.equal(record.entries.filter(e => e.kind === "lease_returned").length, 1);
+    } else {
+      assert.equal((await run("finish", deps, leaseId)).reason, "reconciliation_required");
+      assert.equal(f.run(["rev-parse", "target"]), f.run(["rev-parse", "main"]));
     }
+  });
+}
+
+for (const operation of ["finish", "discard"] as const) {
+  test(`${operation}: classification reads a return intent recorded while the owner read was in progress`, async () => {
+    const { f, leaseId } = await reviewed();
+    const command = await failedCommand();
+    let failed = false;
+    const injected = inject(f.deps, "leases", async () => {
+      if (failed) return;
+      failed = true;
+      const record = (await f.deps.attempts.findByLease(leaseId))!;
+      const returnId = randomUUID();
+      await f.deps.attempts.appendConfirmed(record, "lease_return_started", { leaseId, by: operation, returnId },
+        { fact: "no_processes", scope: { leaseId, returnId } }, "operator:fixture");
+      throw new WorkspaceError("unreadable", "Read failed after another command's intent", describeCommand(command));
+    });
+    assert.equal((await run(operation, injected.deps, leaseId)).reason, "reconciliation_required");
+    assert.equal((await run(operation, injected.deps, leaseId)).reason, "reconciliation_required");
+    assert.equal(injected.returns(), 0);
+    const record = (await f.deps.attempts.findByLease(leaseId))!;
+    assert.equal(record.entries.find(e => e.kind === "owner_read_failed")!.data.classification, "effect_uncertain");
   });
 }

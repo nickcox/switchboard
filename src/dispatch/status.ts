@@ -125,14 +125,17 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const worker = runtime.find(r => r.binding.input.identity.leaseId === assessment.attempt.leaseId);
     const record = records.find(r => r.taskId === assessment.attempt.taskId && r.attempt === assessment.attempt.attempt);
     const latestReadFailure = [...(record?.entries ?? [])].reverse().find(e => e.kind === "owner_read_failed");
+    const reconcile = record?.entries.some(e => e.kind === "owner_read_failed" && e.data.classification === "effect_uncertain") &&
+      !record.entries.some(e => e.kind === "lease_returned") && !facts.leaseReturnedConfirmed;
     attempts.push({ ...assessment,
       ...(latestReadFailure ? { latestReadFailure: latestReadFailure.data as ReadFailure } : {}),
       specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,
       ...(worker?.validatedResult ? { validatedResult: worker.validatedResult } : {}),
       ...(record?.specification ? { specification: record.specification } : {}), ...(record?.allocation ? { allocation: record.allocation } : {}),
-      changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning,
+      changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning && !reconcile,
       ...(assessment.state === "awaiting_finish" ? { nextAction: { code: "finish_attempt" as const,
         description: `The task is done with its lease retained. Once no worker process remains, return it with switchboard finish --lease ${assessment.attempt.leaseId} --no-processes` } } : {}),
+      ...(reconcile ? { nextAction: action("reconcile_owner") } : {}),
       ...(facts.unknown.length ? { unknownOwners: facts.unknown } : {}),
       ...await workerView(worker, assessment.possiblyRunning, facts.dispatcherRunning, deps.staleMs ?? defaultStaleMs, leases, options).catch(() => ({})) });
   }

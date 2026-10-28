@@ -96,3 +96,25 @@ test("finish: a failed Git read-back after fast-forward requires reconciliation 
   assert.equal(readFileSync(effects, "utf8"), "effect\n");
   assert.equal((await f.deps.workspaces.leases()).length, 1);
 });
+
+for (const operation of ["finish", "discard"] as const) {
+  test(`${operation}: a failed Git pool read is not mistaken for a repository without an origin`, shimOptions, async () => {
+    const { f, leaseId } = await reviewed();
+    const failed = join(f.dir, "pool-read-failed");
+    const git = join(f.dir, "git-pool-failure");
+    writeFileSync(git, `#!/bin/sh\nif [ "$1" = remote ] && [ ! -f '${failed}' ]; then touch '${failed}'; echo 'pool output'; echo 'pool error' >&2; exit 23; fi\nexec '${onPath("git")}' "$@"\n`, { mode: 0o755 });
+    const workspaces = TreehouseProvider.connect({ treehouse: onPath("treehouse"), git, repository: f.deps.repository,
+      poolRoot: join(f.dir, "pool"), environment: f.environment });
+    const deps = { ...f.deps, workspaces };
+    const run = () => operation === "finish" ? finish(deps, { leaseId, noProcesses: true }) : discard(deps, { leaseId, noProcesses: true, confirm: true });
+    const first = await run();
+    assert.equal(first.reason, "owner_read_retryable", first.detail ?? "");
+    const view = await status(f.deps, { activity: false, transcript: false });
+    const failure = view.attempts[0]!.latestReadFailure!;
+    assert.equal(failure.owner, "Git workspace pool");
+    assert.equal(failure.diagnostics.command?.exitCode, 23);
+    assert.equal(failure.diagnostics.command?.stdout, "pool output\n");
+    assert.equal(failure.diagnostics.command?.stderr, "pool error\n");
+    assert.equal((await run()).reason, operation === "finish" ? "finished" : "discarded");
+  });
+}
