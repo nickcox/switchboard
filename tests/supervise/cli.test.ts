@@ -154,6 +154,31 @@ test("supervise wait reoffers unhandled events across processes and handled pers
   }
 });
 
+test("supervise wait without a timeout polls for an event written by another process", { timeout: 10000 }, async () => {
+  const f = fixture();
+  f.ok("task", "add", "work", "Work");
+  let output = "";
+  const child = execFile(process.execPath, [cli, "supervise", "wait", "--objective", "goal", "--config", f.configPath], { env: f.environment, timeout: 5000 });
+  child.stdout!.on("data", data => { output += data; });
+  const completed = new Promise<number | null>(resolve => child.on("close", resolve));
+  try {
+    await sleep(300);
+    assert.equal(output, "", "No result is printed before an event arrives");
+    assert.equal(child.exitCode, null);
+    f.person("task", "hold", "work", "--reason", "A person intervened");
+    assert.equal(await completed, 0);
+    assert.equal(output.trim().split("\n").length, 1);
+    const value = JSON.parse(output);
+    assert.equal(value.event.kind, "person_intervention");
+    assert.equal(value.event.details.action, "hold");
+    assert.equal(value.timedOut, false);
+    assert.equal(f.ok("wait", "--timeout", "0").event.id, value.event.id);
+  } finally {
+    if (child.exitCode === null) child.kill();
+    await completed;
+  }
+});
+
 test("supervise rejects every unavailable operation and identity or objective override before any change", async () => {
   const f = fixture();
   f.ok("task", "add", "work", "Work");
@@ -241,6 +266,9 @@ test("supervise passes through existing scope and permission refusals, including
   }
   assert.equal(f.ok("task", "show", "work").task.id, "work", "Read-only inspection does not need manageTasks");
   assert.equal(f.ok("task", "list").tasks.length, 1);
+  const event = f.ok("wait", "--timeout", "0").event;
+  assert.equal(event.kind, "person_intervention", "Waiting does not need a task mutation permission");
+  f.ok("handled", event.id);
   assert.deepEqual(await f.rows("SELECT * FROM tasks WHERE id IN ('foreign','unlinked') ORDER BY id"), foreign);
 });
 
@@ -248,7 +276,7 @@ test("unknown and closed objectives refuse all operations with one JSON object",
   const f = fixture();
   for (const state of ["missing", "abandoned"]) {
     if (state === "abandoned") f.person("objective", "abandon", "goal");
-    for (const args of [["briefing"], ["note", "Remember"], ["objective", "show"], ["task", "add", "no", "No"], ["task", "list"], ["dispatch", "--task", "foreign"], ["finish", "--task", "foreign"]]) {
+    for (const args of [["briefing"], ["wait", "--timeout", "0"], ["handled", "unknown"], ["note", "Remember"], ["objective", "show"], ["task", "add", "no", "No"], ["task", "list"], ["dispatch", "--task", "foreign"], ["finish", "--task", "foreign"]]) {
       const result = f.raw("supervise", ...args, "--objective", state === "missing" ? "missing" : "goal");
       assert.equal(result.status, 1, result.stdout + result.stderr);
       const value = JSON.parse(result.stdout);

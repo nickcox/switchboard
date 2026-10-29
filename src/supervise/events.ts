@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { callerName, callerSchema, type Caller } from "../caller.ts";
+import { requireAuthority } from "../dispatch/safety.ts";
 import type { AttemptEntry, AttemptRef } from "../attempts/log.ts";
 import type { Database } from "../database.ts";
 import { objectiveBudget } from "../objectives/budget.ts";
@@ -78,17 +80,27 @@ function event(row: NonNullable<ReturnType<Database["get"]>>): SupervisorEvent {
 }
 
 export function pendingEvents(database: Database, objectiveId: string): { count: number; first: SupervisorEvent | null } {
-  const position = Number(database.get("SELECT sequence FROM supervisor_positions WHERE objective = ?", objectiveId)?.sequence ?? 0);
-  const count = Number(database.get("SELECT count(*) AS n FROM supervisor_events WHERE objective = ? AND sequence > ?", objectiveId, position)!.n);
-  const first = database.get("SELECT * FROM supervisor_events WHERE objective = ? AND sequence > ? ORDER BY sequence LIMIT 1", objectiveId, position);
-  return { count, first: first ? event(first) : null };
+  const first = database.get(`SELECT e.*, count(*) OVER() AS unhandled_count FROM supervisor_events e
+    WHERE e.objective = ? AND e.sequence > coalesce((SELECT sequence FROM supervisor_positions WHERE objective = ?), 0)
+    ORDER BY e.sequence LIMIT 1`, objectiveId, objectiveId);
+  return { count: first ? Number(first.unhandled_count) : 0, first: first ? event(first) : null };
 }
 
-export async function waitForEvent(database: Database, objectiveId: string, timeoutSeconds?: number): Promise<{ ok: true; action: "wait"; event: SupervisorEvent | null; timedOut: boolean }> {
+function requireSupervisor(database: Database, caller: Caller, objectiveId: string): void {
+  if (caller.kind !== "supervisor" || caller.objectiveId !== objectiveId) throw new TaskStoreError("rejected", "Only the objective's supervisor can wait for or handle its events");
+  requireAuthority(database, caller, "recordAttempt", { objectiveId });
+  if (database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") {
+    throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before supervising its events`);
+  }
+}
+
+export async function waitForEvent(database: Database, caller: Caller, objectiveId: string, timeoutSeconds?: number): Promise<{ ok: true; action: "wait"; event: SupervisorEvent | null; timedOut: boolean }> {
+  caller = callerSchema.parse(caller);
   if (timeoutSeconds !== undefined && (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0)) throw new Error("Timeout must be a nonnegative number of seconds");
   const until = timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000;
   for (;;) {
     const next = await database.transaction(() => {
+      requireSupervisor(database, caller, objectiveId);
       observeBudgetEvents(database, objectiveId);
       return pendingEvents(database, objectiveId).first;
     });
@@ -98,8 +110,10 @@ export async function waitForEvent(database: Database, objectiveId: string, time
   }
 }
 
-export async function handleEvent(database: Database, objectiveId: string, id: string): Promise<SupervisorEvent> {
+export async function handleEvent(database: Database, caller: Caller, objectiveId: string, id: string): Promise<SupervisorEvent> {
+  caller = callerSchema.parse(caller);
   return database.transaction(() => {
+    requireSupervisor(database, caller, objectiveId);
     const row = database.get("SELECT * FROM supervisor_events WHERE id = ?", id);
     const reject = (message: string): never => { throw new TaskStoreError("rejected", message); };
     if (!row || row.objective !== objectiveId) reject("Unknown event for this objective");
@@ -107,7 +121,8 @@ export async function handleEvent(database: Database, objectiveId: string, id: s
     const position = Number(database.get("SELECT sequence FROM supervisor_positions WHERE objective = ?", objectiveId)?.sequence ?? 0);
     if (value.sequence <= position) return value;
     if (pendingEvents(database, objectiveId).first?.id !== id) reject("Only the next unhandled event can be marked handled");
-    database.run("INSERT INTO supervisor_positions VALUES(?,?) ON CONFLICT(objective) DO UPDATE SET sequence = excluded.sequence", objectiveId, value.sequence);
+    database.run(`INSERT INTO supervisor_positions VALUES(?,?,?,?) ON CONFLICT(objective) DO UPDATE SET
+      sequence = excluded.sequence, handled_by = excluded.handled_by, handled_at = excluded.handled_at`, objectiveId, value.sequence, callerName(caller), new Date().toISOString());
     return value;
   });
 }

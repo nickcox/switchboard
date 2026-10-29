@@ -9,12 +9,16 @@ import { Database } from "../../src/database.ts";
 import { ObjectiveStore } from "../../src/objectives/store.ts";
 import { RuntimeRecords } from "../../src/runtime/records.ts";
 import { RuntimeStore } from "../../src/runtime/store.ts";
-import { handleEvent, observeBudgetEvents, pendingEvents, waitForEvent } from "../../src/supervise/events.ts";
+import { handleEvent as handleObjectiveEvent, observeBudgetEvents, pendingEvents, waitForEvent as waitForObjectiveEvent } from "../../src/supervise/events.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { specificationFor } from "../helpers.ts";
 
 const person = { kind: "person", id: "operator:creator" } as const;
 const supervisor = { kind: "supervisor", objectiveId: "goal" } as const;
+const waitForEvent = (database: Database, objectiveId: string, timeoutSeconds?: number) =>
+  waitForObjectiveEvent(database, { kind: "supervisor", objectiveId }, objectiveId, timeoutSeconds);
+const handleEvent = (database: Database, objectiveId: string, id: string) =>
+  handleObjectiveEvent(database, { kind: "supervisor", objectiveId }, objectiveId, id);
 const root = resolve(".investigation/supervisor-events");
 mkdirSync(root, { recursive: true });
 
@@ -181,12 +185,60 @@ test("handled advances only to the next event, refuses unknown and foreign event
     await assert.rejects(handleEvent(f.database, "goal", later), /next unhandled/);
     assert.equal(pendingEvents(f.database, "goal").count, 2);
     assert.deepEqual(await handleEvent(f.database, "goal", first.id), first);
+    const position = f.database.get("SELECT * FROM supervisor_positions WHERE objective = 'goal'")!;
+    assert.equal(position.handled_by, "supervisor:goal");
+    assert.ok(Number.isFinite(Date.parse(String(position.handled_at))));
     assert.deepEqual(await handleEvent(f.database, "goal", first.id), first);
+    assert.deepEqual(f.database.get("SELECT * FROM supervisor_positions WHERE objective = 'goal'"), position, "A repeated acknowledgement is a no-op");
     assert.equal(pendingEvents(f.database, "goal").first!.id, later);
     await handleEvent(f.database, "goal", later);
     await handleEvent(f.database, "goal", first.id);
     assert.deepEqual(pendingEvents(f.database, "goal"), { count: 0, first: null });
     assert.equal((await waitForEvent(f.database, "goal", 0)).timedOut, true);
+  } finally { f.tasks.close(); }
+});
+
+test("event IDs, sequences and the handled position survive pruning, and event facts cannot be changed", async () => {
+  const f = await fixture();
+  try {
+    const { ref } = await f.launch("work");
+    await f.attempts.append(ref, "worker_finished", { status: "held", runtimeDirectory: "runtime" });
+    await f.attempts.recordOutcome(ref, { outcome: "hold", reason: "Held", category: "held_by_worker" });
+    const first = pendingEvents(f.database, "goal").first!;
+    await handleEvent(f.database, "goal", first.id);
+    const before = f.database.all("SELECT * FROM supervisor_events ORDER BY sequence");
+    for (const sql of ["UPDATE supervisor_events SET kind = 'changed'", "UPDATE supervisor_events SET sequence = 100", "DELETE FROM supervisor_events",
+      "INSERT OR REPLACE INTO supervisor_events SELECT * FROM supervisor_events WHERE sequence = 1"]) {
+      await assert.rejects(f.database.transaction(() => f.database.run(sql)), /Supervisor events cannot be/);
+    }
+    await f.attempts.archiveAttempt(f.attempts.read(ref), { state: "held" }, []);
+    assert.deepEqual(f.database.all("SELECT * FROM supervisor_events ORDER BY sequence"), before);
+    assert.equal((await waitForEvent(f.database, "goal", 0)).event!.sequence, 2);
+    assert.equal(pendingEvents(f.database, "goal").count, 1);
+    await assert.rejects(f.database.transaction(() => f.database.run("UPDATE supervisor_positions SET sequence = 0")), /cannot move backwards/);
+    const deletion = { ...ref, directory: join(f.dir, "cleanup") };
+    await f.attempts.appendCleanup(deletion, "owner_read_failed", { classification: "effect_uncertain", diagnostics: { message: "Deletion needs reconciliation" } });
+    const failure = f.database.get("SELECT * FROM supervisor_events WHERE sequence = 3")!;
+    assert.equal(failure.kind, "decision_needed");
+    assert.equal(failure.task, "work");
+    assert.equal(JSON.parse(String(failure.details)).directory, deletion.directory);
+  } finally { f.tasks.close(); }
+});
+
+test("event operations enforce the bound supervisor and current objective state inside the operation", async () => {
+  const f = await fixture();
+  try {
+    const ref = await f.reserve("work");
+    await f.attempts.append(ref, "worker_finished", { status: "completed", runtimeDirectory: "runtime" });
+    const first = pendingEvents(f.database, "goal").first!;
+    for (const caller of [person, { kind: "supervisor", objectiveId: "other" } as const]) {
+      await assert.rejects(waitForObjectiveEvent(f.database, caller, "goal", 0), /Only the objective's supervisor/);
+      await assert.rejects(handleObjectiveEvent(f.database, caller, "goal", first.id), /Only the objective's supervisor/);
+    }
+    await f.objectives.abandon("goal");
+    await assert.rejects(waitForEvent(f.database, "goal", 0), /must be open/);
+    await assert.rejects(handleEvent(f.database, "goal", first.id), /must be open/);
+    assert.deepEqual(f.database.all("SELECT * FROM supervisor_positions"), []);
   } finally { f.tasks.close(); }
 });
 
@@ -202,6 +254,11 @@ test("failed event writes roll back their source facts and sequence allocation",
     await assert.rejects(storage.questions.record(runtime.directory, "question.question.json", { document: { text: "Which?", waiting: true } }), /Event write failed/);
     await assert.rejects(storage.recordUsage(runtime.directory, { cost: 3, tokens: 100 }), /Event write failed/);
     await assert.rejects(f.objectives.update("goal", { scope: "Must roll back" }), /Event write failed/);
+    const personTasks = await SqliteTaskStore.open({ caller: person, path: f.path });
+    try { await assert.rejects(personTasks.hold("work", "Must roll back"), /Event write failed/); }
+    finally { personTasks.close(); }
+    assert.equal((await f.tasks.read("work"))!.held, false);
+    assert.equal(f.database.get("SELECT * FROM task_changes WHERE action = 'hold'"), undefined);
     assert.equal(f.attempts.read(runtime.ref).entries.some(entry => entry.kind === "worker_finished"), false);
     assert.equal((await storage.questions.list(runtime.ref)).questions.length, 0);
     assert.equal(f.database.get("SELECT * FROM worker_usage"), undefined);

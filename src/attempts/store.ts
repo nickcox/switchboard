@@ -15,7 +15,7 @@ import { attemptSpecificationSchema, startingPointSchema, storedSpecificationSch
 import { requestFingerprint, type RequestInputs } from "./requests.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
 import { readQuestions } from "../runtime/questions-store.ts";
-import { observeBudgetEvents, recordEntryEvents, recordPersonEvents, taskObjective } from "../supervise/events.ts";
+import { observeBudgetEvents, recordEntryEvents, recordEvent, recordPersonEvents, taskObjective } from "../supervise/events.ts";
 import { interventionEntry } from "../objectives/interventions.ts";
 
 const nonempty = z.string().trim().min(1);
@@ -458,8 +458,12 @@ export class AttemptStore {
       const archive = JSON.parse(String(row.summary));
       archive.cleanup ??= {};
       const entries = archive.cleanup[deletion.directory] ??= [];
-      entries.push({ sequence: entries.length, kind, recordedAt: new Date().toISOString(), askedBy: callerName(this.caller), data });
+      const sequence = entries.length, recordedAt = new Date().toISOString();
+      entries.push({ sequence, kind, recordedAt, askedBy: callerName(this.caller), data });
       this.database.run("UPDATE archived_attempts SET summary = ? WHERE context = ? AND task = ? AND attempt = ?", JSON.stringify(archive), deletion.contextId, deletion.taskId, deletion.attempt);
+      if (kind === "owner_read_failed") recordEvent(this.database, taskObjective(this.database, deletion.taskId),
+        `cleanup:${JSON.stringify([deletion.contextId, deletion.taskId, deletion.attempt, deletion.directory, sequence])}`, "decision_needed", recordedAt,
+        { directory: deletion.directory, ...data }, deletion);
     });
   }
 

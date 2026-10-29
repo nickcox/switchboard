@@ -102,8 +102,8 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     const objectives = new ObjectiveStore(tasks.database, caller);
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
     if (objective.state !== "open") rejected(`Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
-    if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller.objectiveId, timeout) };
-    if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller.objectiveId, args[0]!) } };
+    if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller, caller.objectiveId, timeout) };
+    if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller, caller.objectiveId, args[0]!) } };
     if (operation === "note") return { code: 0, value: { ok: true, action, note: await appendNote(tasks.database, caller, caller.objectiveId, args[0]!) } };
     if (operation === "objective show") return { code: 0, value: { ok: true, action, objective: objectives.show(caller.objectiveId) } };
     if (operation === "objective complete") {

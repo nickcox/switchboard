@@ -366,6 +366,7 @@ export class Database {
             SELECT RAISE(ABORT, 'Supervisor events cannot be removed'); END;
           CREATE TABLE supervisor_positions (
             objective TEXT PRIMARY KEY REFERENCES objectives(id), sequence INTEGER NOT NULL CHECK(sequence > 0),
+            handled_by TEXT NOT NULL, handled_at TEXT NOT NULL,
             FOREIGN KEY(objective, sequence) REFERENCES supervisor_events(objective, sequence));
           CREATE TRIGGER supervisor_positions_forward BEFORE UPDATE ON supervisor_positions WHEN NEW.sequence < OLD.sequence BEGIN
             SELECT RAISE(ABORT, 'Supervisor positions cannot move backwards'); END;

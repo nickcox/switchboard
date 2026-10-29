@@ -247,7 +247,7 @@ test("dispatch refuses when the reviewed output changes after review task creati
 });
 
 test("review findings and task outcome roll back together, and finish recovers the immutable report once", async () => {
-  const f = await completed();
+  const f = await completed(true);
   try {
     const created = await createReview(f.deps, { taskId });
     const reviewId = created.task!.id;
@@ -259,6 +259,7 @@ test("review findings and task outcome roll back together, and finish recovers t
     assert.equal(outcome.reason, "stopped", JSON.stringify(outcome));
     assert.equal((await f.tasks.read(reviewId))!.state, "in_flight");
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.some(entry => entry.kind === "review_recorded"), false);
+    assert.equal(f.tasks.database.all("SELECT * FROM supervisor_events WHERE kind = 'review_recorded'").length, 0, "The event rolls back with its source and the review outcome");
     await f.tasks.database.transaction(() => f.tasks.database.run("DROP TRIGGER fail_review_outcome"));
     const review = f.deps.attempts.findForTask(reviewId, 1)!;
     const runtime = (await f.runtime.discover(f.deps.contextId, { leaseId: review.allocation!.leaseId }))[0]!;
@@ -272,6 +273,7 @@ test("review findings and task outcome roll back together, and finish recovers t
     assert.deepEqual(findings[0]!.data.findings, runtime.validatedResult!.content.criteriaReport);
     assert.equal((await finish(f.deps, { leaseId: review.allocation!.leaseId, noProcesses: false })).reason, "finished");
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1);
+    assert.equal(f.tasks.database.all("SELECT * FROM supervisor_events WHERE kind = 'review_recorded'").length, 1);
   } finally { f.tasks.close(); }
 });
 
