@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { AttemptStore } from "../../src/attempts/store.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { finish } from "../../src/dispatch/finish.ts";
@@ -12,6 +13,7 @@ import { ObjectiveStore } from "../../src/objectives/store.ts";
 import { QuestionStore } from "../../src/runtime/questions-store.ts";
 import { submitRequest } from "../../src/runtime/requests.ts";
 import { briefing } from "../../src/supervise/briefing.ts";
+import { onPath } from "../../src/infra/executables.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { fixture } from "../dispatch/fixture.ts";
 import { specificationFor } from "../helpers.ts";
@@ -75,6 +77,26 @@ test("person changes, dispatch, explicit acceptance, finish and answers are coun
   } finally { f.close(); }
 });
 
+for (const acceptance of ["independent_deliverable", "review_or_integration"] as const) test(`a person's local-merge finish counts once for ${acceptance}, including an already-done task`, async () => {
+  const f = await setup();
+  try {
+    await f.supervisorTasks.add({ id: "work", title: "Work", objectiveId: "goal", repo: "fixture" });
+    f.deps.delivery.default.acceptance = acceptance;
+    f.deps.policy = { git: onPath("git"), environment: f.environment, repository: f.deps.repository, baseRef: "main",
+      globalFile: join(f.dir, "no-policy.json"), context: { kind: "local-merge" } };
+    const dispatched = await dispatchOnce(f.deps, { taskId: "work" });
+    assert.equal(dispatched.reason, acceptance === "independent_deliverable" ? "done" : "held", JSON.stringify(dispatched));
+    assert.equal(personInterventions(f.tasks.database, "goal").count, 1);
+    const finished = await finish(f.deps, { leaseId: dispatched.attempt!.leaseId!, noProcesses: false });
+    assert.equal(finished.reason, "finished", JSON.stringify(finished));
+    const interventions = personInterventions(f.tasks.database, "goal");
+    assert.equal(interventions.count, 2);
+    assert.deepEqual(interventions.items.map(item => item.action), ["dispatch", "finish"]);
+    assert.equal(interventions.items[1]!.source, "attempt_entries");
+    assert.deepEqual((await briefing(f.supervisorDeps, "goal")).personInterventions, interventions);
+  } finally { f.close(); }
+});
+
 test("stop, steer, answers and confirmations use the requesting person, not the dispatcher, and never count both message copies", async () => {
   const f = await setup();
   try {
@@ -120,11 +142,14 @@ test("historical missing actors are not invented, creation and earlier unlinked 
     await f.deps.attempts.append(earlier.ref, "halted", { stage: "acquire", reason: "stopped" });
     await f.tasks.update("unlinked", { objectiveId: "goal" });
     assert.equal(personInterventions(f.tasks.database, "goal").count, 1, "Linking is a change; the earlier unrelated attempt is not");
+    await f.deps.attempts.recordConfirmation(earlier.ref, { fact: "worker_stopped", scope: { leaseId: "unused" } });
+    assert.equal(personInterventions(f.tasks.database, "goal").count, 2, "A later person change belongs to the task's objective at that time, even when its reservation was unlinked");
+    await sleep(2);
     await f.objectives.add({ id: "other", request: "Other work", acceptanceCriteria: ["Other output"] });
     await f.tasks.update("unlinked", { objectiveId: "other" });
-    assert.equal(personInterventions(f.tasks.database, "goal").count, 2);
+    assert.equal(personInterventions(f.tasks.database, "goal").count, 3);
     await f.tasks.update("unlinked", { body: "Change after moving" });
-    assert.equal(personInterventions(f.tasks.database, "goal").count, 2);
+    assert.equal(personInterventions(f.tasks.database, "goal").count, 3);
     assert.equal(personInterventions(f.tasks.database, "other").count, 2);
     await f.supervisorTasks.add({ id: "legacy", title: "Legacy", objectiveId: "goal" });
     await f.tasks.database.transaction(() => {
@@ -134,7 +159,7 @@ test("historical missing actors are not invented, creation and earlier unlinked 
         version: 1, contextId: f.deps.contextId, taskId: "legacy", attempt: 1, sequence: 0, kind: "requested", recordedAt: new Date().toISOString(), data: {},
       }));
     });
-    assert.equal(personInterventions(f.tasks.database, "goal").count, 2);
+    assert.equal(personInterventions(f.tasks.database, "goal").count, 3);
     const tables = f.tasks.database.all("SELECT name FROM sqlite_master WHERE type = 'table'").map(row => row.name);
     assert.ok(!tables.some(name => String(name).includes("intervention")), "Interventions are a view of records, not another audit table");
   } finally { f.close(); }

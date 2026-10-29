@@ -26,6 +26,7 @@ All objective commands accept `--config <path>` and `--json`. Add takes either t
 - linked tasks, their states and hold reasons, and the latest attempt in each context, including archived attempts
 - `availableReferences`, the accepted commits and recorded reviews that completion statements can cite
 - `history`, an ordered record of who changed what and when
+- `personInterventions`, a count and oldest-first list derived from the existing actor-bearing records, excluding objective creation and supervisor actions, with lease-return confirmations listed and counted separately. It is the same accounting as the [supervisor briefing](supervisor.md#person-interventions), not another audit table.
 
 The command-line caller is the operating-system user, recorded as `operator:<username>`, not a command argument or the `USER`/`USERNAME` environment variables. Every changing operation takes its caller from trusted hosting code. Objective history, task changes, attempt entries and scoped confirmations record that caller. See [callers and permissions](#callers-and-permissions).
 

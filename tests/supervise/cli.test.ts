@@ -271,7 +271,10 @@ test("dispatch, continuation, review, finish and completion record the fixed sup
   assert.ok(confirmations.length > 0);
   assert.ok(confirmations.every(row => row.confirmed_by === "supervisor:goal"));
   assert.ok(confirmations.every(row => row.fact !== "no_processes" && row.fact !== "lease_returned"));
+  assert.equal(f.person("finish", "--task", "work", "--attempt", "2", "--no-processes").lease, "none");
   const objective = f.ok("objective", "show").objective;
+  assert.equal(objective.personInterventions.count, 0, "The person's mandatory lease return is not an intervention in the work");
+  assert.equal(objective.personInterventions.leaseReturns.count, 1);
   const statements = join(f.dir, "statements.json");
   writeFileSync(statements, JSON.stringify([{ position: 1, statement: "The accepted output meets the criterion", references: objective.availableReferences }]));
   assert.equal(f.ok("objective", "complete", "--statements-file", statements).objective.state, "completed");

@@ -13,7 +13,7 @@ export type PersonInterventions = {
 
 /** Keep original decision records when pruning, not the dispatcher stages caused by those decisions. */
 export function interventionEntry(entry: AttemptEntry): boolean {
-  return entry.kind === "requested" || entry.kind === "operator_request" || entry.kind === "rebase_started" ||
+  return entry.kind === "requested" || entry.kind === "operator_request" || entry.kind === "rebase_started" || entry.kind === "integration_started" ||
     entry.kind === "task_recorded" && entry.data.reason === "finished";
 }
 
@@ -28,9 +28,13 @@ export function personInterventions(database: Database, objectiveId: string): Pe
   for (const row of database.all("SELECT * FROM objective_changes WHERE objective = ? AND action <> 'add' ORDER BY sequence", objectiveId)) {
     add({ id: `objective:${objectiveId}:${row.sequence}`, source: "objective_changes", action: String(row.action), actor: String(row.changed_by), at: String(row.changed_at), details: JSON.parse(String(row.changes)) });
   }
+  const memberships = new Map<string, { at: number; before: string | null | undefined; after: string | null | undefined }[]>();
   // Before and after retain membership changes, including a task moved away from this objective.
-  for (const row of database.all("SELECT * FROM task_changes ORDER BY sequence")) {
+  for (const row of database.all("SELECT * FROM task_changes ORDER BY changed_at,sequence")) {
     const changes = JSON.parse(String(row.changes));
+    const history = memberships.get(String(row.task)) ?? [];
+    history.push({ at: Date.parse(String(row.changed_at)), before: changes.before?.objectiveId, after: changes.after?.objectiveId });
+    memberships.set(String(row.task), history);
     if (changes.before?.objectiveId !== objectiveId && changes.after?.objectiveId !== objectiveId) continue;
     add({ id: `task:${row.sequence}`, source: "task_changes", action: String(row.action), actor: String(row.changed_by), at: String(row.changed_at), taskId: String(row.task), details: changes });
   }
@@ -45,8 +49,16 @@ export function personInterventions(database: Database, objectiveId: string): Pe
     ORDER BY n.context,n.task,n.number`)) {
     const archive = row.summary === null ? undefined : JSON.parse(String(row.summary));
     const specification = row.specification === null ? archive?.specification : JSON.parse(String(row.specification));
-    if ((specification?.objectiveId === undefined ? row.objective_id : specification.objectiveId) !== objectiveId) continue;
     const ref: AttemptRef = { contextId: String(row.context), taskId: String(row.task), attempt: Number(row.number) };
+    const addAttempt = (value: PersonIntervention, leaseReturn = false, dispatch = false) => {
+      const history = memberships.get(ref.taskId) ?? [];
+      const latest = history.filter(change => change.at <= Date.parse(value.at) && change.after !== undefined).at(-1);
+      let membership = specification?.objectiveId === undefined ? row.objective_id : specification.objectiveId;
+      if (latest) membership = latest.after;
+      else if (history[0]?.before !== undefined) membership = history[0].before;
+      if (dispatch && specification?.objectiveId !== undefined) membership = specification.objectiveId;
+      if (membership === objectiveId) add(value, leaseReturn);
+    };
     const key = JSON.stringify([ref.contextId, ref.taskId, ref.attempt]);
     const entries: AttemptEntry[] = archive ? archive.interventionEntries ?? [] : database.all(
       "SELECT entry FROM attempt_entries WHERE context = ? AND task = ? AND attempt = ? ORDER BY sequence", ref.contextId, ref.taskId, ref.attempt).map(entry => JSON.parse(String(entry.entry)));
@@ -55,7 +67,7 @@ export function personInterventions(database: Database, objectiveId: string): Pe
         ...ref, fact: confirmation.fact, scope: JSON.parse(String(confirmation.scope)), confirmedBy: String(confirmation.confirmed_by), confirmedAt: String(confirmation.confirmed_at),
       } as ConfirmationRecord));
     for (const [index, confirmation] of confirmations.entries()) {
-      add({ ...ref, id: `confirmation:${key}:${index}`, source: "confirmations", action: confirmation.fact, actor: confirmation.confirmedBy,
+      addAttempt({ ...ref, id: `confirmation:${key}:${index}`, source: "confirmations", action: confirmation.fact, actor: confirmation.confirmedBy,
         at: confirmation.confirmedAt, details: confirmation.scope }, confirmation.fact === "no_processes" || confirmation.fact === "lease_returned");
     }
     const requests: Record<string, unknown>[] = archive ? archive.controlRequests ?? [] : database.all(`SELECT r.* FROM control_requests r JOIN worker_claims c ON c.id = r.claim_id
@@ -65,21 +77,26 @@ export function personInterventions(database: Database, objectiveId: string): Pe
       const request = JSON.parse(String(row.request));
       seenRequests.add(request.id);
       if (request.questionId || requestIds.has(request.id)) continue;
-      add({ ...ref, id: `request:${request.id}`, source: "control_requests", action: request.kind, actor: request.sender, at: request.createdAt,
+      addAttempt({ ...ref, id: `request:${request.id}`, source: "control_requests", action: request.kind, actor: request.sender, at: request.createdAt,
         details: { request, claimedBy: row.claimed_by, result: row.result === null ? null : JSON.parse(String(row.result)) } });
     }
     for (const entry of entries.filter(interventionEntry)) {
       if (entry.kind === "operator_request") {
         const id = String(entry.data.id);
         if (seenRequests.has(id) || requestIds.has(id)) continue;
-        add({ ...ref, id: `request:${id}`, source: "attempt_entries", action: String(entry.data.kind), actor: String(entry.data.sender), at: entry.recordedAt, details: entry.data });
+        addAttempt({ ...ref, id: `request:${id}`, source: "attempt_entries", action: String(entry.data.kind), actor: String(entry.data.sender), at: entry.recordedAt, details: entry.data });
       } else {
-        add({ ...ref, id: `entry:${key}:${entry.sequence}`, source: "attempt_entries", action: entry.kind === "requested" ? "dispatch" : entry.kind === "task_recorded" ? "finish" : "rebase",
-          actor: entry.askedBy ?? "", at: entry.recordedAt, details: entry.data });
+        if (entry.kind === "task_recorded") {
+          const previousFinish = entries.filter(candidate => candidate.sequence < entry.sequence && candidate.kind === "task_recorded" && candidate.data.reason === "finished").at(-1)?.sequence ?? -1;
+          // Integration may finish an already-done task, or stop before recording it. Its intent is the finish decision.
+          if (entries.some(candidate => candidate.kind === "integration_started" && candidate.sequence > previousFinish && candidate.sequence < entry.sequence && candidate.askedBy === entry.askedBy)) continue;
+        }
+        addAttempt({ ...ref, id: `entry:${key}:${entry.sequence}`, source: "attempt_entries", action: entry.kind === "requested" ? "dispatch" : entry.kind === "rebase_started" ? "rebase" : "finish",
+          actor: entry.askedBy ?? "", at: entry.recordedAt, details: entry.data }, false, entry.kind === "requested");
       }
     }
     for (const answer of answers.filter(answer => answer.context === ref.contextId && answer.task === ref.taskId && Number(answer.attempt) === ref.attempt)) {
-      add({ ...ref, id: `answer:${answer.id}`, source: "question_answers", action: "answer", actor: String(answer.answered_by), at: String(answer.answered_at),
+      addAttempt({ ...ref, id: `answer:${answer.id}`, source: "question_answers", action: "answer", actor: String(answer.answered_by), at: String(answer.answered_at),
         details: { questionId: String(answer.id), text: String(answer.text) } });
     }
   }
