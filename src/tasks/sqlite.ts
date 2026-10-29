@@ -1,6 +1,7 @@
 import { callerName, callerSchema, type Caller } from "../caller.ts";
 import { requireAuthority, type ObjectivePermission } from "../dispatch/safety.ts";
 import { Database } from "../database.ts";
+import { recordBudgetEvents, recordPersonEvents } from "../supervise/events.ts";
 import { acceptanceCriteriaSchema, criteriaSection } from "./criteria.ts";
 import { TaskStoreError, type Task, type TaskState, type TaskStore } from "./store.ts";
 
@@ -152,7 +153,9 @@ export class SqliteTaskStore implements TaskStore {
   }
   private record(id: string, action: string, before: StoredTask | null, after: StoredTask) {
     if (JSON.stringify(before) === JSON.stringify(after)) return;
-    this.database.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
+    const inserted = this.database.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
       id, action, callerName(this.caller), new Date().toISOString(), JSON.stringify({ before, after }));
+    recordPersonEvents(this.database, [before?.objectiveId, after.objectiveId], `task:${inserted.lastInsertRowid}`);
+    if (after.objectiveId !== null && before?.objectiveId !== after.objectiveId) recordBudgetEvents(this.database, after.objectiveId);
   }
 }

@@ -126,6 +126,34 @@ test("supervise note and briefing return one JSON object with current records, w
   assert.equal((await f.rows("SELECT * FROM supervisor_notes")).length, 2);
 });
 
+test("supervise wait reoffers unhandled events across processes and handled persists the position", async () => {
+  const f = fixture();
+  f.ok("task", "add", "work", "Work");
+  assert.deepEqual(f.ok("wait", "--timeout", "0"), { ok: true, action: "wait", event: null, timedOut: true });
+  f.person("task", "hold", "work", "--reason", "A person's decision");
+  const first = f.ok("wait", "--timeout", "1");
+  assert.equal(first.event.kind, "person_intervention");
+  assert.equal(first.event.taskId, "work");
+  assert.deepEqual(f.ok("wait", "--timeout", "0"), first, "Each call is a new process; reading does not acknowledge an event");
+  assert.deepEqual(f.ok("briefing").events, { count: 1, first: first.event });
+  f.person("task", "release", "work");
+  assert.equal(f.ok("briefing").events.count, 2);
+  const later = (await f.rows("SELECT id FROM supervisor_events WHERE objective = 'goal' AND sequence = 2"))[0]!.id;
+  assert.equal(f.run("handled", String(later)).code, 1);
+  assert.equal(f.run("handled", "unknown").code, 1);
+  const foreign = (await f.rows("SELECT id FROM supervisor_events WHERE objective = 'other'"))[0]!.id;
+  assert.equal(f.run("handled", String(foreign)).code, 1);
+  assert.deepEqual(f.ok("handled", first.event.id).event, first.event);
+  assert.deepEqual(f.ok("handled", first.event.id).event, first.event);
+  assert.equal(f.ok("wait", "--timeout", "0").event.id, later);
+  f.ok("handled", String(later));
+  assert.deepEqual(f.ok("briefing").events, { count: 0, first: null });
+  assert.equal(f.ok("wait", "--timeout", "0.01").timedOut, true);
+  for (const args of [["wait", "--timeout", "-1"], ["wait", "--timeout", "NaN"], ["wait", "--timeout", "Infinity"], ["wait", "--timeout", ""], ["wait", "extra"], ["handled"], ["handled", first.event.id, "extra"], ["handled", first.event.id, "--timeout", "1"]]) {
+    assert.equal(f.run(...args).code, 2);
+  }
+});
+
 test("supervise rejects every unavailable operation and identity or objective override before any change", async () => {
   const f = fixture();
   f.ok("task", "add", "work", "Work");

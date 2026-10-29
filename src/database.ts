@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 14) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 15) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -348,6 +348,28 @@ export class Database {
           CREATE TRIGGER supervisor_notes_not_removed BEFORE DELETE ON supervisor_notes BEGIN
             SELECT RAISE(ABORT, 'Supervisor notes cannot be removed'); END;
           PRAGMA user_version = 14;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 15) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 15) return;
+        db.exec(`
+          CREATE TABLE supervisor_events (
+            id TEXT PRIMARY KEY, objective TEXT NOT NULL REFERENCES objectives(id), sequence INTEGER NOT NULL CHECK(sequence > 0),
+            source TEXT NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL, context TEXT, task TEXT, attempt INTEGER,
+            details TEXT NOT NULL CHECK(json_valid(details)), UNIQUE(objective, sequence), UNIQUE(objective, source));
+          CREATE TRIGGER supervisor_events_not_replaced BEFORE INSERT ON supervisor_events
+            WHEN EXISTS(SELECT 1 FROM supervisor_events WHERE id = NEW.id OR (objective = NEW.objective AND (sequence = NEW.sequence OR source = NEW.source)))
+            BEGIN SELECT RAISE(ABORT, 'Supervisor events cannot be replaced'); END;
+          CREATE TRIGGER supervisor_events_immutable BEFORE UPDATE ON supervisor_events BEGIN
+            SELECT RAISE(ABORT, 'Supervisor events cannot be changed'); END;
+          CREATE TRIGGER supervisor_events_not_removed BEFORE DELETE ON supervisor_events BEGIN
+            SELECT RAISE(ABORT, 'Supervisor events cannot be removed'); END;
+          CREATE TABLE supervisor_positions (
+            objective TEXT PRIMARY KEY REFERENCES objectives(id), sequence INTEGER NOT NULL CHECK(sequence > 0),
+            FOREIGN KEY(objective, sequence) REFERENCES supervisor_events(objective, sequence));
+          CREATE TRIGGER supervisor_positions_forward BEFORE UPDATE ON supervisor_positions WHEN NEW.sequence < OLD.sequence BEGIN
+            SELECT RAISE(ABORT, 'Supervisor positions cannot move backwards'); END;
+          PRAGMA user_version = 15;
         `);
       });
       return result;

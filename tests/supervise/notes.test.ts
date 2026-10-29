@@ -70,7 +70,7 @@ test("notes cannot be updated, deleted or replaced, and only the bound superviso
   } finally { f.tasks.close(); }
 });
 
-test("schema 13 migrates concurrently to 14 without changing any existing records", async () => {
+test("schema 13 migrates concurrently to the current schema without changing any existing records", async () => {
   const f = await fixture();
   await f.tasks.add({ id: "work", title: "Work", objectiveId: "goal", acceptanceCriteria: ["Preserve me"] });
   await f.tasks.add({ id: "blocker", title: "Blocker", objectiveId: "goal" });
@@ -81,6 +81,8 @@ test("schema 13 migrates concurrently to 14 without changing any existing record
   await f.tasks.hold("work", "Keep this hold");
   await f.objectives.update("goal", { scope: "Keep the scope", budget: { maxCost: 10, maxWorkerTimeMs: 2000 } });
   await f.database.transaction(() => {
+    f.database.run("DROP TABLE supervisor_positions");
+    f.database.run("DROP TABLE supervisor_events");
     f.database.run("DROP TABLE supervisor_notes");
     f.database.run("PRAGMA user_version = 13");
   });
@@ -89,10 +91,12 @@ test("schema 13 migrates concurrently to 14 without changing any existing record
   const databases = await Promise.all([Database.open(f.path), Database.open(f.path)]);
   try {
     for (const database of databases) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 14);
-      const { supervisor_notes, ...after } = contents(database);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 15);
+      const { supervisor_notes, supervisor_events, supervisor_positions, ...after } = contents(database);
       assert.deepEqual(after, before);
       assert.deepEqual(supervisor_notes, []);
+      assert.deepEqual(supervisor_events, []);
+      assert.deepEqual(supervisor_positions, []);
       assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);
     }
     await appendNote(databases[0]!, supervisor, "goal", "After migration");

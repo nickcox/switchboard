@@ -11,15 +11,17 @@ import { describe } from "../../src/dispatch/result.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { workerInput } from "../../src/attempts/specification.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
+import { ObjectiveStore } from "../../src/objectives/store.ts";
 import { fixture, task } from "./fixture.ts";
 
 const taskId = "review-a1";
 const reviewContract = { kind: "artefact" as const, acceptance: "independent_deliverable" as const, requiredEvidence: [], requiredDeliverables: ["report"] };
 const criteria = ["Keep the output", "Cover the edge case"];
 
-async function completed() {
+async function completed(withObjective = false) {
   const f = await fixture({ tasks: [task(taskId)], scenario: "commit-result", byTaskKind: { review: reviewContract } });
-  await f.tasks.update(taskId, { acceptanceCriteria: criteria });
+  if (withObjective) await new ObjectiveStore(f.tasks.database, f.deps.caller).add({ id: "goal", request: "Reviewed output", acceptanceCriteria: criteria });
+  await f.tasks.update(taskId, { acceptanceCriteria: criteria, ...(withObjective ? { objectiveId: "goal" } : {}) });
   const first = await dispatchOnce(f.deps, { taskId });
   assert.equal(first.retention?.retained, true, JSON.stringify(first));
   const source = f.deps.attempts.findForTask(taskId, 1)!;
@@ -35,7 +37,7 @@ function reviewWorker(f: Awaited<ReturnType<typeof completed>>, scenario: string
 }
 
 for (const verdict of ["passed", "failed"] as const) test(`a ${verdict} review starts at the exact output in a new session and records criterion findings`, async () => {
-  const f = await completed();
+  const f = await completed(true);
   try {
     // Later task edits and source/target branch heads must not change what is reviewed.
     await f.tasks.update(taskId, { acceptanceCriteria: ["Later criterion"], body: "Later instructions" });
@@ -87,6 +89,12 @@ for (const verdict of ["passed", "failed"] as const) test(`a ${verdict} review s
     assert.throws(() => workerInput(specification as Parameters<typeof workerInput>[0], { ...allocation, startingCommit: "c".repeat(40) }, randomUUID()), /allocation does not match/);
     assert.equal((await dispatchOnce(f.deps, { taskId: reviewId, requestId: "review-request" })).reason, "existing_request");
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1);
+    const events = f.tasks.database.all("SELECT * FROM supervisor_events WHERE objective = 'goal' AND kind = 'review_recorded'");
+    assert.equal(events.length, 1, "Replaying the review does not record another event");
+    assert.equal(events[0]!.task, taskId);
+    assert.equal(events[0]!.attempt, 1);
+    assert.deepEqual(JSON.parse(String(events[0]!.details)), reviews[0]!.data);
+    assert.equal(events[0]!.at, reviews[0]!.recordedAt);
     const commit = f.run(["rev-parse", "HEAD"], f.source.allocation!.workspace);
     await f.deps.attempts.appendConfirmed(f.source, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
     const changed = await status(f.deps);

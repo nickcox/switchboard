@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { personInterventions } from "./interventions.ts";
+import { recordBudgetEvents, recordPersonEvents } from "../supervise/events.ts";
 import { objectiveBudget, unknownKey, type ObjectiveBudget } from "./budget.ts";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
 import { requireAuthority } from "../dispatch/safety.ts";
@@ -160,6 +161,7 @@ export class ObjectiveStore {
     this.database.run("UPDATE objectives SET updated_at = ? WHERE id = ?", now, id);
     this.database.run(`INSERT INTO objective_changes VALUES(?,(SELECT coalesce(max(sequence),0)+1 FROM objective_changes WHERE objective = ?),?,?,?,?)`,
       id, id, "confirm-budget", this.actor, now, JSON.stringify({ note, unknownAttempts }));
+    this.recordEvent(id);
   }
   async abandon(id: string): Promise<Objective> { return this.transition(id, "abandoned"); }
   async reopen(id: string): Promise<Objective> { return this.transition(id, "open"); }
@@ -217,5 +219,11 @@ export class ObjectiveStore {
       .map(key => [key, { before: before?.[key] ?? null, after: after[key] }]));
     this.database.run(`INSERT INTO objective_changes VALUES(?,(SELECT coalesce(max(sequence),0)+1 FROM objective_changes WHERE objective = ?),?,?,?,?)`,
       id, id, action, this.actor, now, JSON.stringify(changes));
+    this.recordEvent(id);
+    recordBudgetEvents(this.database, id);
+  }
+  private recordEvent(id: string) {
+    const sequence = this.database.get("SELECT max(sequence) AS n FROM objective_changes WHERE objective = ?", id)!.n;
+    recordPersonEvents(this.database, [id], `objective:${id}:${sequence}`);
   }
 }

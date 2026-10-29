@@ -20,6 +20,13 @@ import { specificationFor } from "../helpers.ts";
 
 const supervisor = { kind: "supervisor", objectiveId: "goal" } as const;
 
+function assertPersonEvents(f: { tasks: SqliteTaskStore }, objectiveId = "goal") {
+  const interventions = personInterventions(f.tasks.database, objectiveId);
+  const events = f.tasks.database.all("SELECT details FROM supervisor_events WHERE objective = ? AND kind = 'person_intervention' ORDER BY sequence", objectiveId);
+  assert.deepEqual(events.map(row => JSON.parse(String(row.details)).id).sort(),
+    [...interventions.items, ...interventions.leaseReturns.items].map(item => item.id).sort());
+}
+
 async function setup() {
   const f = await fixture({ scenario: "commit-result" });
   const objectives = new ObjectiveStore(f.tasks.database, f.deps.caller);
@@ -74,6 +81,7 @@ test("person changes, dispatch, explicit acceptance, finish and answers are coun
     assert.deepEqual(personInterventions(f.tasks.database, "goal"), beforeArchive, "Archiving moves the original evidence rather than resetting the count");
     assert.deepEqual(f.objectives.show("goal").personInterventions, beforeArchive);
     assert.deepEqual((await briefing(f.supervisorDeps, "goal")).personInterventions, beforeArchive);
+    assertPersonEvents(f);
   } finally { f.close(); }
 });
 
@@ -94,6 +102,7 @@ for (const acceptance of ["independent_deliverable", "review_or_integration"] as
     assert.deepEqual(interventions.items.map(item => item.action), ["dispatch", "finish"]);
     assert.equal(interventions.items[1]!.source, "attempt_entries");
     assert.deepEqual((await briefing(f.supervisorDeps, "goal")).personInterventions, interventions);
+    assertPersonEvents(f);
   } finally { f.close(); }
 });
 
@@ -131,6 +140,7 @@ test("stop, steer, answers and confirmations use the requesting person, not the 
     await f.deps.attempts.archiveAttempt(f.deps.attempts.read(ref), { state: "finished" }, []);
     assert.deepEqual(personInterventions(f.tasks.database, "goal"), beforeArchive, "Even pending requests survive archiving as their original records");
     assert.equal(f.tasks.database.all("SELECT * FROM control_requests").length, 0);
+    assertPersonEvents(f);
   } finally { f.close(); }
 });
 
@@ -151,6 +161,8 @@ test("historical missing actors are not invented, creation and earlier unlinked 
     await f.tasks.update("unlinked", { body: "Change after moving" });
     assert.equal(personInterventions(f.tasks.database, "goal").count, 3);
     assert.equal(personInterventions(f.tasks.database, "other").count, 2);
+    assertPersonEvents(f);
+    assertPersonEvents(f, "other");
     await f.supervisorTasks.add({ id: "legacy", title: "Legacy", objectiveId: "goal" });
     await f.tasks.database.transaction(() => {
       f.tasks.database.run("INSERT INTO attempt_numbers VALUES(?,?,1)", f.deps.contextId, "legacy");

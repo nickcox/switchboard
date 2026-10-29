@@ -15,6 +15,7 @@ import { attemptSpecificationSchema, startingPointSchema, storedSpecificationSch
 import { requestFingerprint, type RequestInputs } from "./requests.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
 import { readQuestions } from "../runtime/questions-store.ts";
+import { observeBudgetEvents, recordEntryEvents, recordPersonEvents, taskObjective } from "../supervise/events.ts";
 import { interventionEntry } from "../objectives/interventions.ts";
 
 const nonempty = z.string().trim().min(1);
@@ -124,6 +125,13 @@ export class AttemptStore {
     const maximumPerTask = z.number().int().positive().parse(options.maximumPerTask ?? 3);
     const startingPoint = options.startingPoint && startingPointSchema.parse(options.startingPoint);
     const inputs = { ...(options.requestInputs ?? { taskId: options.taskId }), ...(startingPoint ? { startingPoint } : {}) };
+    if (!options.dryRun) {
+      await this.database.transaction(() => {
+        requireAuthority(this.database, this.caller, "dispatch", { taskId: options.taskId });
+        const objectiveId = taskObjective(this.database, options.taskId);
+        if (objectiveId !== null) observeBudgetEvents(this.database, objectiveId);
+      });
+    }
     if (!startingPoint && inputs.startingPoint) throw new Error("Starting-point inputs require a starting point");
     if (startingPoint && !options.requested.requestId) throw new Error("Starting from an earlier attempt requires a stable request ID");
     return this.database.transaction(() => {
@@ -498,8 +506,9 @@ export class AttemptStore {
       this.database.run("INSERT INTO review_tasks VALUES(?,?,?,?,?,?,?)", taskId, this.contextId, target.taskId, target.attempt, JSON.stringify(target),
         JSON.stringify(specification.acceptanceCriteria), specification.backingRepository);
       const added = this.task(taskId)!;
-      this.database.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
+      const inserted = this.database.run("INSERT INTO task_changes(task,action,changed_by,changed_at,changes) VALUES(?,?,?,?,?)",
         taskId, "review", callerName(this.caller), new Date().toISOString(), JSON.stringify({ before: null, after: added }));
+      recordPersonEvents(this.database, [objectiveId], `task:${inserted.lastInsertRowid}`);
       return added;
     });
   }
@@ -636,6 +645,7 @@ export class AttemptStore {
     const entry: AttemptEntry = parseAttemptEntry({ version: 1, ...identity(ref), sequence, kind, recordedAt: new Date().toISOString(), askedBy: callerName(this.caller), data });
     if (kind === "task_recorded" && entry.data.category === undefined) throw new Error("New outcomes require an explicit category");
     this.database.run("INSERT INTO attempt_entries VALUES(?,?,?,?,?)", ref.contextId, ref.taskId, ref.attempt, sequence, JSON.stringify(entry));
+    recordEntryEvents(this.database, entry);
   }
   private confirm(ref: AttemptRef, confirmation: Confirmation) {
     const value = confirmationSchema.parse(confirmation);
@@ -645,6 +655,8 @@ export class AttemptStore {
       : value.fact === "output_accepted" ? "acceptOutput" : value.fact === "worker_stopped" ? "stopWorkers" : "integrate", { taskId: ref.taskId });
     this.database.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope) VALUES(?,?,?,?,?,?,?)",
       ref.contextId, ref.taskId, ref.attempt, value.fact, callerName(this.caller), new Date().toISOString(), JSON.stringify(value.scope));
+    const index = Number(this.database.get("SELECT count(*) AS n FROM confirmations WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, ref.taskId, ref.attempt)!.n) - 1;
+    recordPersonEvents(this.database, [taskObjective(this.database, ref.taskId)], `confirmation:${JSON.stringify([ref.contextId, ref.taskId, ref.attempt])}:${index}`);
   }
   private checkAcceptance(ref: AttemptRef, commit: string | undefined) {
     if (this.caller.kind === "person") return;

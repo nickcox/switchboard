@@ -2,7 +2,7 @@
 
 `switchboard supervise <operation> --objective <id> [options]` is the restricted command for a supervisor working on one objective. It always constructs the caller `{ kind: "supervisor", objectiveId: "<id>" }` itself. There is no caller option or environment override. Every operation requires exactly one `--objective`, naming an existing, open objective.
 
-This is the shared command interface, not a supervisor agent or host. The Pi extension, host skills, event waiting, questions to the person and detached dispatch are separate work. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
+This is the shared command interface, not a supervisor agent or host. The Pi extension, host skills, questions to the person and detached dispatch are separate work. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
 
 ## Operations
 
@@ -12,6 +12,8 @@ All invocations accept `--config <path>` (default: `SWITCHBOARD_CONFIG`, then `.
 | --- | --- |
 | `briefing` | Rebuilds the supervisor's briefing from current records. No other arguments or options. |
 | `note "<text>"` | Appends a supervisor note to the objective. Text must not be blank. |
+| `wait` | Returns the first unhandled event, polling if none is pending. Optional `--timeout <seconds>` is a nonnegative number; omission waits indefinitely. |
+| `handled <event-id>` | Records that the next unhandled event has been dealt with. Safe to repeat. |
 | `objective show` | Shows the named objective, its tasks, attempts, criteria, spending, references, history and person interventions. No positional objective ID. |
 | `objective complete` | `--statements-file <json>` supplies the criterion completion statements and recorded references described in [Objectives](objectives.md#completing-abandoning-and-reopening). No positional objective ID. |
 | `task add <id> "<title>"` | Creates a task in the named objective. Also accepts `--title`, `--body` or `--body-file`, `--repo`, `--kind`, and repeatable `--criterion` or `--criteria-file`. There is no separate task-objective option. |
@@ -68,6 +70,7 @@ This reads Switchboard's records, not an earlier conversation. It returns one JS
 - `openQuestions`: unanswered worker questions, with their IDs, task and attempt, text, choices and waiting flag, including questions left open after exit or archive.
 - `notes`: the supervisor's notes, oldest first.
 - `personInterventions`: the same count and list as ordinary `objective show`, described below.
+- `events`: `count` of unhandled events and `first`, the first such event or `null`. Reading the briefing does not acknowledge events or record a passed deadline.
 - `diagnostics`: context and owner-read failures. Unknown owner state is not evidence that a worker stopped or a lease was returned. For other contexts, inspection uses the configured workspace provider; an attempt in a pool it cannot inspect stays unknown, just as in `status`.
 
 The briefing is read-only and needs no task mutation permission or installed Pi runtime. It does not dispatch, accept output, return a lease, complete criteria or answer a question. Changing operations still re-read their owners and enforce their own safety checks; a briefing is not lasting permission to act. The existing rule that the restricted command requires an open objective applies to the briefing too.
@@ -81,6 +84,32 @@ switchboard supervise note --objective release-notes "Use the smaller design; th
 The response is `{ "ok": true, "action": "note", "note": ... }`. A note contains `objectiveId`, a per-objective `sequence` starting at 1, the exact `text`, `writtenAt` and `writtenBy` (`supervisor:<objective-id>`). The command fixes the author, as for every other supervisor operation. Notes remain available even if task permissions have been narrowed, and writing one does not count as a person intervention.
 
 Schema 14 adds `supervisor_notes` without changing existing records. Appending and allocating its sequence are one transaction. Notes cannot be edited, deleted or replaced: database triggers reject those operations, not just the command interface. Write a later note to correct an earlier one. Notes survive session restarts, objective changes and attempt pruning. They contain reminders and decisions, not authority to change the objective's permissions, budget, instructions or delivery contract.
+
+### Events, waiting and acknowledgement
+
+```sh
+switchboard supervise wait --objective release-notes --timeout 30
+switchboard supervise handled --objective release-notes <event-id>
+```
+
+`wait` returns `{ "ok": true, "action": "wait", "event": {...}, "timedOut": false }` immediately when an event is pending. Otherwise it polls the database until an event arrives or the timeout passes. A timeout returns `{ "ok": true, "action": "wait", "event": null, "timedOut": true }`, with exit code 0. `--timeout 0` checks once without waiting. Without `--timeout`, it waits indefinitely.
+
+Each event has an opaque stable `id`, `objectiveId`, increasing per-objective `sequence` starting at 1, `kind`, timestamp `at`, `contextId`, `taskId`, `attempt` and `details`. Objective-wide events have `null` task and attempt fields. The kinds are:
+
+- `worker_finished`: the attempt log recorded the end of a worker, including completed, held, failed and stopped outcomes. Details retain the recorded worker status and outcome.
+- `question_asked`: a valid worker question was recorded, with its question ID, filename, text, choices if supplied and waiting flag. Invalid files and repeat polls are not new events.
+- `attempt_held`: an attempt's hold outcome was recorded, including its reason and category.
+- `decision_needed`: an attempt halted, an owner-read failure was recorded, or a configured check failed or could not run. Details retain the original failure record.
+- `review_recorded`: a review was recorded against the reviewed task and attempt, with the exact commit, verdict and findings.
+- `budget_reached`: observed objective cost or worker time reached a configured limit. Details name the budget, limit and observed spending. Cost and worker-time limits have separate events.
+- `deadline_reached`: the first wait or dispatcher check observed a passed deadline.
+- `person_intervention`: one of the person decisions or lease-return confirmations described below. Details retain the original intervention identity and record. Forwarded messages, answer-delivery copies and mirrored confirmation entries do not create extra events.
+
+Only facts about the objective, its tasks and their attempts produce events. Supervisor notes, inspection, unrelated tasks and housekeeping do not. A worker finishing and its attempt being held are distinct facts and may produce separate events. Event facts are recorded in the same database transaction as their source records; failed transactions leave neither behind. Deadline and elapsed-time observations have no source write, so wait and dispatcher checks record them transactionally when first observed. A particular deadline or budget limit produces at most one event per objective; changing to a different deadline or limit can produce another. Existing records are not backfilled on migration. Events and their sequence numbers survive attempt pruning and task membership changes.
+
+`wait` **never moves the handled position**. Deal with the event, then call `handled` with its ID. That command returns `{ "ok": true, "action": "handled", "event": {...} }` and advances the objective's position in the database. It refuses unknown IDs, events belonging to another objective and attempts to skip the next unhandled event. Repeating acknowledgement of an already handled event succeeds without moving backwards. Concurrent acknowledgements are serialised.
+
+If the host or agent crashes after reading an event but before acknowledging it, the next wait – including one from a new process or session – returns that same event. Acknowledgement means the supervisor has dealt with it, not merely displayed it. Hosts should not acknowledge before handing it to the agent. Schema 15 adds the immutable event log and handled positions without changing existing records.
 
 ### Person interventions
 

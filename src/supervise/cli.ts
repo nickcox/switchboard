@@ -15,12 +15,13 @@ import { SqliteTaskStore, type TaskChanges } from "../tasks/sqlite.ts";
 import { TaskStoreError, type TaskState } from "../tasks/store.ts";
 import { briefing } from "./briefing.ts";
 import { appendNote } from "./notes.ts";
+import { handleEvent, waitForEvent } from "./events.ts";
 
 const usage = "Usage: switchboard supervise <operation> --objective <id> [options] [--config <path>]";
 const selectors = ["lease", "task", "attempt"];
 const definition = ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"];
 const allowed: Record<string, string[]> = {
-  briefing: [], note: [],
+  briefing: [], note: [], wait: ["timeout"], handled: [],
   "objective show": [], "objective complete": ["statements-file"],
   "task add": definition, "task show": [], "task list": ["state", "repo"], "task update": definition,
   "task hold": ["reason"], "task release": [], "task block": ["by"], "task unblock": ["by"], "task done": ["note"],
@@ -56,7 +57,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     state: { type: "string" }, reason: { type: "string" }, by: { type: "string" }, note: { type: "string" }, "note-file": { type: "string" },
     "statements-file": { type: "string" }, task: { type: "string" }, lease: { type: "string" }, attempt: { type: "string" },
     "from-attempt": { type: "string" }, "dry-run": { type: "boolean" }, "request-id": { type: "string" },
-    question: { type: "string" }, wait: { type: "string" }, after: { type: "boolean" }, as: { type: "string" },
+    question: { type: "string" }, wait: { type: "string" }, timeout: { type: "string" }, after: { type: "boolean" }, as: { type: "string" },
     "accept-output": { type: "boolean" }, rebase: { type: "boolean" },
   } });
   const grouped = positionals[0] === "task" || positionals[0] === "objective";
@@ -68,7 +69,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   if (misplaced.length) invalid(`${operation} does not take ${misplaced.map(key => `--${key}`).join(", ")}`);
   const taskOperation = operation.startsWith("task ");
   const action = grouped ? positionals[1]! : operation;
-  const expected = taskOperation && action !== "list" || operation === "steer" || operation === "answer" || operation === "note" ? 1 : 0;
+  const expected = taskOperation && action !== "list" || operation === "steer" || operation === "answer" || operation === "note" || operation === "handled" ? 1 : 0;
   if (args.length !== expected && !(operation === "task add" && args.length === 2)) invalid(`Invalid arguments for ${operation}`);
   if (operation === "task add" && args[1] === undefined && values.title === undefined) invalid("task add requires a title");
   if (operation === "task hold" && !values.reason) invalid("task hold requires --reason");
@@ -87,6 +88,8 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   if (operation === "answer" && (!values.question || !args[0]?.trim())) invalid("answer requires --question and a nonempty answer");
   if (operation === "note" && !args[0]?.trim()) invalid("note requires nonempty text");
   if (operation === "dispatch" && ((fromAttempt === undefined && (values.note !== undefined || values["note-file"] !== undefined)) || (values.note !== undefined && values["note-file"] !== undefined))) invalid("Use at most one of --note and --note-file, with --from-attempt");
+  const timeout = values.timeout === undefined ? undefined : Number(values.timeout);
+  if (timeout !== undefined && (!values.timeout?.trim() || !Number.isFinite(timeout) || timeout < 0)) invalid("--timeout must be a nonnegative number of seconds");
   const wait = Number(values.wait ?? "10");
   if (!Number.isFinite(wait) || wait <= 0) invalid("--wait must be a positive number of seconds");
 
@@ -99,6 +102,8 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     const objectives = new ObjectiveStore(tasks.database, caller);
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
     if (objective.state !== "open") rejected(`Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
+    if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller.objectiveId, timeout) };
+    if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller.objectiveId, args[0]!) } };
     if (operation === "note") return { code: 0, value: { ok: true, action, note: await appendNote(tasks.database, caller, caller.objectiveId, args[0]!) } };
     if (operation === "objective show") return { code: 0, value: { ok: true, action, objective: objectives.show(caller.objectiveId) } };
     if (operation === "objective complete") {

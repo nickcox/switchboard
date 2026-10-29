@@ -3,6 +3,7 @@ import { z } from "zod";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
 import type { AttemptRef } from "../attempts/log.ts";
 import { Database } from "../database.ts";
+import { recordEvent, recordPersonEvents, taskObjective } from "../supervise/events.ts";
 import { requireAuthority } from "../dispatch/safety.ts";
 import { enqueueRequest } from "./store.ts";
 import type { ControlRequest } from "./requests.ts";
@@ -64,10 +65,13 @@ export class QuestionStore {
     await this.use(database => database.transaction(() => {
       const launch = database.get("SELECT context, task, attempt FROM launches WHERE directory = ? AND kind = 'launch'", directory);
       if (!launch) throw new Error("A question requires a launched attempt");
-      database.run(`INSERT INTO question_files VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(context,task,attempt,filename) DO NOTHING`,
-        randomUUID(), String(launch.context), String(launch.task), Number(launch.attempt), filename, new Date().toISOString(),
+      const id = randomUUID(), askedAt = new Date().toISOString();
+      const inserted = database.run(`INSERT INTO question_files VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(context,task,attempt,filename) DO NOTHING`,
+        id, String(launch.context), String(launch.task), Number(launch.attempt), filename, askedAt,
         "document" in value ? JSON.stringify(questionDocumentSchema.parse(value.document)) : null,
         "diagnostic" in value ? value.diagnostic : null);
+      if (inserted.changes && "document" in value) recordEvent(database, taskObjective(database, String(launch.task)), `question:${id}`, "question_asked", askedAt,
+        { questionId: id, filename, ...value.document }, { contextId: String(launch.context), taskId: String(launch.task), attempt: Number(launch.attempt) });
     }));
   }
 
@@ -92,6 +96,7 @@ export class QuestionStore {
       const now = new Date().toISOString();
       const requestId = running ? randomUUID() : undefined;
       database.run("INSERT INTO question_answers VALUES(?,?,?,?,?)", questionId, answer, callerName(caller), now, requestId ?? null);
+      recordPersonEvents(database, [taskObjective(database, taskId)], `answer:${questionId}`);
       if (running) {
         const binding = JSON.parse(String(launch!.binding)) as RuntimeBinding;
         const request: ControlRequest = { version: 1, id: requestId!, kind: "steer", sender: callerName(caller),

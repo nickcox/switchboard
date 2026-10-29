@@ -10,6 +10,7 @@ import { ObjectiveStore } from "../objectives/store.ts";
 import { readQuestions } from "../runtime/questions-store.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 import { readNotes } from "./notes.ts";
+import { pendingEvents } from "./events.ts";
 
 type BriefingAttempt = {
   contextId: string; taskId: string; attempt: number; status: AttemptState | null; archived: boolean;
@@ -76,5 +77,5 @@ export async function briefing(deps: Dependencies, objectiveId: string) {
     ...criterion, status: criterion.completion === null ? "pending" : "completed",
   })) }, tasks, possiblyRunning: attempts.filter(attempt => attempt.possiblyRunning).map(attempt => ({
     contextId: attempt.contextId, taskId: attempt.taskId, attempt: attempt.attempt, warning: attempt.warning!,
-  })), openQuestions, notes: readNotes(database, objectiveId), personInterventions, diagnostics };
+  })), openQuestions, notes: readNotes(database, objectiveId), events: pendingEvents(database, objectiveId), personInterventions, diagnostics };
 }

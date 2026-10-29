@@ -3,6 +3,7 @@ import { checkObjectiveBudget, objectiveBudget, type BudgetRefusal } from "../ob
 import { requireAuthority } from "../dispatch/safety.ts";
 import { randomUUID } from "node:crypto";
 import { Database } from "../database.ts";
+import { observeBudgetEvents, recordPersonEvents, taskObjective } from "../supervise/events.ts";
 import { attemptSpecificationSchema } from "../attempts/specification.ts";
 import type { RuntimeBinding, ChildExit, ThinkingLevel } from "./records.ts";
 import type { ActivityEntry } from "./activity.ts";
@@ -18,6 +19,8 @@ const exists = () => Object.assign(new Error("This attempt already has a launch 
 export function enqueueRequest(database: Database, claimId: string, request: ControlRequest): void {
   database.run("INSERT INTO control_requests(id,claim_id,request,created_at,sender_pid,sender_started_at) VALUES(?,?,?,?,?,?)",
     request.id, claimId, JSON.stringify(request), request.createdAt, process.pid, ownerStartedAt);
+  const claim = database.get("SELECT task FROM worker_claims WHERE id = ?", claimId)!;
+  recordPersonEvents(database, [taskObjective(database, String(claim.task))], `request:${request.id}`);
 }
 
 /** Transactional worker records. No filesystem, provider or worker call happens inside a transaction. */
@@ -92,6 +95,9 @@ export class RuntimeStore {
   async recordObservation(directory: string, kind: "exit" | "session_start", value: ChildExit | ThinkingLevel): Promise<void> {
     await this.use(database => database.transaction(() => {
       database.run("INSERT INTO worker_observations VALUES(?,?,?,?)", directory, kind, new Date().toISOString(), JSON.stringify(value));
+      const launch = database.get("SELECT task FROM launches WHERE directory = ?", directory)!;
+      const objectiveId = taskObjective(database, String(launch.task));
+      if (objectiveId !== null) observeBudgetEvents(database, objectiveId);
     }));
   }
 
@@ -112,6 +118,8 @@ export class RuntimeStore {
       database.run("INSERT INTO confirmations(context,task,attempt,fact,confirmed_by,confirmed_at,scope,note) VALUES(?,?,?,?,?,?,?,?)",
         String(launch.context), String(launch.task), Number(launch.attempt), "worker_stopped", callerName(caller), new Date().toISOString(),
         JSON.stringify({ leaseId: binding.input.identity.leaseId, sessionId: binding.input.identity.sessionId }), note ?? null);
+      const index = Number(database.get("SELECT count(*) AS n FROM confirmations WHERE context = ? AND task = ? AND attempt = ?", launch.context!, launch.task!, launch.attempt!)!.n) - 1;
+      recordPersonEvents(database, [taskObjective(database, String(launch.task))], `confirmation:${JSON.stringify([launch.context, launch.task, launch.attempt])}:${index}`);
     }));
   }
 
@@ -150,16 +158,20 @@ export class RuntimeStore {
       database.run(`INSERT INTO worker_usage VALUES(?,?,?,?) ON CONFLICT(directory) DO UPDATE SET
         observed_at = excluded.observed_at, cost = excluded.cost, tokens = excluded.tokens`,
       directory, new Date().toISOString(), usage.cost, usage.tokens);
+      const launch = database.get("SELECT task FROM launches WHERE directory = ?", directory)!;
+      const objectiveId = taskObjective(database, String(launch.task));
+      if (objectiveId !== null) observeBudgetEvents(database, objectiveId);
     }));
   }
 
   async objectiveBudgetRefusal(directory: string): Promise<BudgetRefusal | undefined> {
-    return this.use(database => {
+    return this.use(database => database.transaction(() => {
       const row = database.get("SELECT t.objective_id FROM launches l JOIN tasks t ON t.id = l.task WHERE l.directory = ?", directory);
       if (row?.objective_id == null) return undefined;
       const id = String(row.objective_id);
+      observeBudgetEvents(database, id);
       return checkObjectiveBudget(id, objectiveBudget(database, id), true);
-    });
+    }));
   }
 
   async appendActivity(directory: string, entry: ActivityEntry): Promise<void> {
