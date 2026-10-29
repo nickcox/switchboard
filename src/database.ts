@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 18) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 19) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -430,6 +430,30 @@ export class Database {
           CREATE INDEX IF NOT EXISTS task_changes_by_task ON task_changes(task,changed_at,sequence);
           CREATE INDEX IF NOT EXISTS confirmations_by_attempt ON confirmations(context,task,attempt,id);
           PRAGMA user_version = 18;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 19) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 19) return;
+        db.exec(`
+          CREATE TABLE supervisor_usage (
+            session_id TEXT NOT NULL CHECK(length(trim(session_id)) > 0), sequence INTEGER NOT NULL,
+            objective TEXT NOT NULL REFERENCES objectives(id), observed_at TEXT NOT NULL,
+            cost REAL CHECK(cost >= 0), tokens REAL CHECK(tokens >= 0),
+            PRIMARY KEY(session_id, sequence));
+          CREATE INDEX supervisor_usage_by_objective ON supervisor_usage(objective,session_id,sequence);
+          CREATE TRIGGER supervisor_usage_not_replaced BEFORE INSERT ON supervisor_usage
+            WHEN EXISTS(SELECT 1 FROM supervisor_usage WHERE session_id = NEW.session_id AND sequence = NEW.sequence)
+            BEGIN SELECT RAISE(ABORT, 'Supervisor usage cannot be replaced'); END;
+          CREATE TRIGGER supervisor_usage_forward BEFORE INSERT ON supervisor_usage
+            WHEN EXISTS(SELECT 1 FROM supervisor_usage WHERE session_id = NEW.session_id AND
+              (objective <> NEW.objective OR sequence >= NEW.sequence OR cost > NEW.cost OR tokens > NEW.tokens
+                OR (cost IS NOT NULL AND NEW.cost IS NULL) OR (tokens IS NOT NULL AND NEW.tokens IS NULL)))
+            BEGIN SELECT RAISE(ABORT, 'Supervisor usage cannot be lowered or moved'); END;
+          CREATE TRIGGER supervisor_usage_immutable BEFORE UPDATE ON supervisor_usage
+            BEGIN SELECT RAISE(ABORT, 'Supervisor usage cannot be changed'); END;
+          CREATE TRIGGER supervisor_usage_not_removed BEFORE DELETE ON supervisor_usage
+            BEGIN SELECT RAISE(ABORT, 'Supervisor usage cannot be removed'); END;
+          PRAGMA user_version = 19;
         `);
       });
       return result;

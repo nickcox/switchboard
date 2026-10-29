@@ -1,5 +1,6 @@
 import type { Database } from "../database.ts";
 import type { AttemptRef } from "../attempts/log.ts";
+import { supervisorUsage, type SupervisorUsage } from "../supervise/usage.ts";
 
 export type AttemptSpending = AttemptRef & {
   cost: number | null;
@@ -13,6 +14,8 @@ export type ObjectiveSpending = {
   cost: number | null;
   workerTimeMs: number | null;
   unknown: (AttemptSpending & { confirmed: boolean })[];
+  workers: { cost: number | null; observedCost: number };
+  supervisors: { cost: number | null; observedCost: number; tokens: number | null; observedTokens: number; sessions: SupervisorUsage[] };
 };
 export type ObjectiveBudget = {
   budget: { maxCost: number | null; maxWorkerTimeMs: number | null };
@@ -70,13 +73,20 @@ export function objectiveBudget(database: Database, id: string, now = Date.now()
     contextId: String(row.context), taskId: String(row.task), attempt: Number(row.number),
   }, now));
   const unknown = attempts.filter(a => a.cost === null || a.workerTimeMs === null).map(a => ({ ...a, confirmed: confirmed.has(unknownKey(a)) }));
-  const observedCost = attempts.reduce((sum, a) => sum + (a.cost ?? 0), 0);
+  const workerCost = attempts.reduce((sum, a) => sum + (a.cost ?? 0), 0);
+  const sessions = supervisorUsage(database, id);
+  const supervisorCost = sessions.reduce((sum, session) => sum + (session.cost ?? 0), 0);
+  const supervisorTokens = sessions.reduce((sum, session) => sum + (session.tokens ?? 0), 0);
+  const workers = { observedCost: workerCost, cost: unknown.some(a => a.cost === null) ? null : workerCost };
+  const supervisors = { observedCost: supervisorCost, cost: sessions.some(s => s.cost === null) ? null : supervisorCost,
+    observedTokens: supervisorTokens, tokens: sessions.some(s => s.tokens === null) ? null : supervisorTokens, sessions };
+  const observedCost = workerCost + supervisorCost;
   const observedWorkerTimeMs = attempts.reduce((sum, a) => sum + (a.workerTimeMs ?? 0), 0);
   const deadline = objective.deadline as string | null;
   return {
     budget: JSON.parse(String(objective.budget)), deadline, timeLeftMs: deadline === null ? null : Math.max(0, Date.parse(deadline) - now),
-    spending: { observedCost, observedWorkerTimeMs, cost: unknown.some(a => a.cost === null) ? null : observedCost,
-      workerTimeMs: unknown.some(a => a.workerTimeMs === null) ? null : observedWorkerTimeMs, unknown },
+    spending: { observedCost, observedWorkerTimeMs, cost: workers.cost === null || supervisors.cost === null ? null : observedCost,
+      workerTimeMs: unknown.some(a => a.workerTimeMs === null) ? null : observedWorkerTimeMs, unknown, workers, supervisors },
   };
 }
 
@@ -94,5 +104,5 @@ export function checkObjectiveBudget(id: string, value: ObjectiveBudget, running
 export function describeObjectiveBudget(value: ObjectiveBudget): string {
   const { budget, spending } = value;
   const unknown = spending.unknown.map(a => `${a.contextId}/${a.taskId}/${a.attempt} (${[a.cost === null ? "cost" : "", a.workerTimeMs === null ? "worker time" : ""].filter(Boolean).join(", ")}${a.confirmed ? "; confirmed" : ""})`).join("; ");
-  return `budget: cost ${budget.maxCost ?? "unlimited"}, worker time ${budget.maxWorkerTimeMs === null ? "unlimited" : `${budget.maxWorkerTimeMs}ms`}; spending: cost ${spending.cost ?? `unknown (observed ${spending.observedCost})`}, worker time ${spending.workerTimeMs ?? `unknown (observed ${spending.observedWorkerTimeMs})`}ms; unknown usage: ${unknown || "none"}; deadline: ${value.deadline ?? "none"}${value.timeLeftMs === null ? "" : ` (${value.timeLeftMs}ms left)`}`;
+  return `budget: cost ${budget.maxCost ?? "unlimited"}, worker time ${budget.maxWorkerTimeMs === null ? "unlimited" : `${budget.maxWorkerTimeMs}ms`}; spending: cost ${spending.cost ?? `unknown (observed ${spending.observedCost})`}, worker time ${spending.workerTimeMs ?? `unknown (observed ${spending.observedWorkerTimeMs})`}ms; workers: cost ${spending.workers.cost ?? `unknown (observed ${spending.workers.observedCost})`}; supervisors: cost ${spending.supervisors.cost ?? `unknown (observed ${spending.supervisors.observedCost})`}, tokens ${spending.supervisors.tokens ?? `unknown (observed ${spending.supervisors.observedTokens})`}; unknown usage: ${unknown || "none"}; deadline: ${value.deadline ?? "none"}${value.timeLeftMs === null ? "" : ` (${value.timeLeftMs}ms left)`}`;
 }

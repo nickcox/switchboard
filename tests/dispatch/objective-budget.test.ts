@@ -7,6 +7,8 @@ import { ObjectiveStore } from "../../src/objectives/store.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { testCaller } from "../caller.ts";
+import { recordSupervisorUsage } from "../../src/supervise/usage.ts";
+import { pendingEvents } from "../../src/supervise/events.ts";
 import { fixture, task } from "./fixture.ts";
 
 async function objectiveFixture(options: Parameters<typeof fixture>[0] = {}) {
@@ -52,6 +54,32 @@ test("dispatch, dry run and continuation share objective refusal, while replay a
     await f.objectives.update("goal", { budget: { maxCost: 0.02, maxWorkerTimeMs: null } });
     assert.equal((await dispatchOnce(f.deps, { taskId: "next" })).reason, "held");
     assert.equal(f.objectives.show("goal").spending.cost, 0.02);
+  } finally { f.tasks.close(); }
+});
+
+test("workers and supervisor together reach the cost limit, record one event and refuse dispatch", async () => {
+  const f = await objectiveFixture();
+  try {
+    await f.objectives.update("goal", { budget: { maxCost: 1, maxWorkerTimeMs: null } });
+    assert.equal((await dispatchOnce(f.deps, { taskId: "first" })).reason, "held");
+    const supervisor = { kind: "supervisor", objectiveId: "goal" } as const;
+    await recordSupervisorUsage(f.tasks.database, supervisor, "goal", { sessionId: "pi-session", cost: 0.99, tokens: 500 });
+    const spending = f.objectives.show("goal").spending;
+    assert.equal(spending.workers.cost, 0.01);
+    assert.equal(spending.supervisors.cost, 0.99);
+    assert.equal(spending.cost, 1);
+    for (const dryRun of [true, false]) {
+      const refused = await dispatchOnce(f.deps, { taskId: "next", dryRun });
+      assert.equal(refused.observed.reason, "objective_cost_limit");
+      assert.equal(refused.nextAction.code, "review_objective_budget");
+      assert.equal(f.deps.attempts.taskAttemptCount("next"), 0);
+    }
+    await recordSupervisorUsage(f.tasks.database, supervisor, "goal", { sessionId: "pi-session", cost: 0.99, tokens: 500 });
+    const events = f.tasks.database.all("SELECT details FROM supervisor_events WHERE objective = 'goal' AND kind = 'budget_reached'");
+    assert.equal(events.length, 1);
+    assert.deepEqual(JSON.parse(String(events[0]!.details)), { budget: "cost", limit: 1, spent: 1 });
+    assert.ok(pendingEvents(f.tasks.database, "goal").count > 0);
+    assert.match(describeStatus(await status(f.deps)), /workers: cost 0.01; supervisors: cost 0.99, tokens 500/);
   } finally { f.tasks.close(); }
 });
 

@@ -12,6 +12,7 @@ All invocations accept `--config <path>` (default: `SWITCHBOARD_CONFIG`, then `.
 | --- | --- |
 | `briefing` | Rebuilds the supervisor's briefing from current records. No other arguments or options. |
 | `note "<text>"` | Appends a supervisor note to the objective. Text must not be blank. |
+| `usage` | Host-only accounting, not an agent tool. Requires `--session <id>`; optional `--cost <cumulative-cost>` and `--tokens <cumulative-tokens>`. Omitted values or `unknown` mean unreported. |
 | `ask "<question>"` | Records a question for the person. Optional repeatable `--choice <text>` and `--request-id <id>`. |
 | `wait` | Returns the first unhandled event, polling if none is pending. Optional `--timeout <seconds>` is a nonnegative number; omission waits indefinitely. |
 | `handled <event-id>` | Records that the next unhandled event has been dealt with. Safe to repeat. |
@@ -90,6 +91,27 @@ This reads Switchboard's records, not an earlier conversation. It returns one JS
 - `diagnostics`: context and owner-read failures. Unknown owner state is not evidence that a worker stopped or a lease was returned. For other contexts, inspection uses the configured workspace provider; an attempt in a pool it cannot inspect stays unknown, just as in `status`.
 
 The briefing is read-only and needs no task mutation permission or installed Pi runtime. It does not dispatch, accept output, return a lease, complete criteria or answer a question. Changing operations still re-read their owners and enforce their own safety checks; a briefing is not lasting permission to act. The existing rule that the restricted command requires an open objective applies to the briefing too.
+
+### Supervisor usage
+
+Trusted host code reports the supervisor's own model usage through this operation; do not offer it as a tool to the agent:
+
+```sh
+# Register the session before its first model request, with usage still unknown.
+switchboard supervise usage --objective release-notes --session <pi-session-id>
+# Report Pi's cumulative session counts, not a turn's delta.
+switchboard supervise usage --objective release-notes --session <pi-session-id> --cost 0.15 --tokens 12000
+```
+
+The response is `{ "ok": true, "action": "usage", "usage": ... }`. The snapshot contains `sessionId`, `objectiveId`, `sequence`, `observedAt`, `cost` and `tokens`. The operation supplies the observation time. Cost and tokens must be finite nonnegative numbers; omission or the literal `unknown` records `null` until that value is first reported. A provider-reported zero is known, not a fallback for missing usage. Tokens are Pi's cumulative total token count.
+
+Every call appends a snapshot, including repeat observations. Each value retains its session's highest reported value, independently: a delayed, lower or missing observation cannot reduce recorded spending. Reusing a session ID for another objective is refused. A resumed session uses the same ID; a new session uses a new ID, and their costs are added. Hosts should register each session even when usage reporting is unavailable. Switchboard cannot account for a session the host never identifies.
+
+`spending.workers` and `spending.supervisors` in the briefing and `objective show` list their costs separately. The latter also includes known token subtotals and each session's latest snapshot, so unreported usage remains visible as `null`, not zero. Combined cost is unknown if either side is unknown; `observedCost` is only the known subtotal. No registered sessions means an empty session list, not evidence about unreported sessions. The existing `spending.unknown` list and creator confirmations still concern finished worker attempts; supervisor snapshots do not assert session exit or elapsed worker time.
+
+Combined observed worker and supervisor cost counts towards the objective's cost limit. Recording usage also records any newly reached budget event in the same transaction. Further dispatch is refused at the limit; running workers retain the existing stop-on-overrun behaviour. Supervisor conversation time does not count towards `maxWorkerTimeMs`. Usage is an observation, not a hard provider-side spending cap.
+
+Schema 19 adds append-only `supervisor_usage` snapshots without changing existing records. Database triggers refuse changing, deleting, replacing, lowering or moving them. Accounting uses the latest cumulative snapshot per session, never the sum of its snapshots. Recording needs the bound supervisor and an open objective, but no task mutation permission. The Pi extension and launcher are separate work; this operation does not change either.
 
 ### Notes
 

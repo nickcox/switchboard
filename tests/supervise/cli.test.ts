@@ -57,6 +57,33 @@ test("supervisor asks the person; status, objective show and briefing expose it,
   assert.deepEqual(JSON.parse(f.raw("status", "--json").stdout).openPersonQuestions, []);
 });
 
+test("host usage records simple cumulative Pi counts and appears separately in show and briefing", () => {
+  const f = fixture();
+  const unknown = f.ok("usage", "--session", "pi-session").usage;
+  assert.equal(unknown.cost, null);
+  assert.equal(unknown.tokens, null);
+  assert.equal(f.ok("objective", "show").objective.spending.cost, null);
+  assert.equal(f.ok("briefing").objective.spending.supervisors.cost, null);
+  const snapshot = f.ok("usage", "--session", "pi-session", "--cost", "0.5", "--tokens", "1234").usage;
+  assert.equal(snapshot.sessionId, "pi-session");
+  assert.equal(snapshot.cost, 0.5);
+  assert.equal(snapshot.tokens, 1234);
+  const show = f.person("objective", "show", "goal").objective;
+  assert.equal(show.spending.workers.cost, 0);
+  assert.equal(show.spending.supervisors.cost, 0.5);
+  assert.equal(show.spending.cost, 0.5);
+  assert.deepEqual(f.ok("briefing").objective.spending, show.spending);
+  assert.equal(f.ok("usage", "--session", "pi-session", "--cost", "0.1", "--tokens", "2").usage.cost, 0.5);
+  assert.equal(f.ok("usage", "--session", "pi-session", "--cost", "unknown").usage.cost, 0.5);
+  for (const args of [[], ["--session", " "], ["--session", "s", "--cost", "NaN"], ["--session", "s", "--tokens", "-1"],
+    ["--session", "s", "--cost", ""], ["--session", "s", "extra"], ["--session", "s", "--task", "task"]]) {
+    assert.equal(f.run("usage", ...args).code, 2);
+  }
+  const other = f.raw("supervise", "usage", "--objective", "other", "--session", "pi-session");
+  assert.equal(other.status, 1);
+  assert.match(JSON.parse(other.stdout).detail, /cannot be moved/);
+});
+
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 15000;
   while (!(await check())) {

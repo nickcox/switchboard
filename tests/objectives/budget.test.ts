@@ -65,7 +65,8 @@ test("spending sums latest cost and worker time across tasks, attempts and conte
     await f.runtime.recordUsage(runningDirectory, { cost: 0, tokens: 10 });
     const now = Date.parse("2020-01-01T00:00:02.000Z");
     const before = objectiveBudget(f.tasks.database, "goal", now);
-    assert.deepEqual(before.spending, { cost: 5, observedCost: 5, workerTimeMs: 4000, observedWorkerTimeMs: 4000, unknown: [] });
+    assert.deepEqual(before.spending, { cost: 5, observedCost: 5, workerTimeMs: 4000, observedWorkerTimeMs: 4000, unknown: [],
+      workers: { cost: 5, observedCost: 5 }, supervisors: { cost: 0, observedCost: 0, tokens: 0, observedTokens: 0, sessions: [] } });
     await f.attempts.archiveAttempt(f.attempts.read(first), {}, []);
     const archive = JSON.parse(String(f.tasks.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", first.contextId, first.taskId, first.attempt)!.summary));
     assert.deepEqual(archive.spending, { ...first, cost: 2, workerTimeMs: 1000, finished: true }, "accounting does not retain the pruned entry log");

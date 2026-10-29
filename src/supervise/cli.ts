@@ -18,11 +18,13 @@ import { appendNote } from "./notes.ts";
 import { askPerson } from "./questions.ts";
 import { handleEvent, waitForEvent } from "./events.ts";
 import { detachedDispatch } from "./dispatch.ts";
+import { recordSupervisorUsage } from "./usage.ts";
 
 const usage = "Usage: switchboard supervise <operation> --objective <id> [options] [--config <path>]";
 const selectors = ["lease", "task", "attempt"];
 const definition = ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"];
 const allowed: Record<string, string[]> = {
+  usage: ["session", "cost", "tokens"],
   briefing: [], note: [], ask: ["choice", "request-id"], wait: ["timeout"], handled: [],
   "objective show": [], "objective complete": ["statements-file"],
   "task add": definition, "task show": [], "task list": ["state", "repo"], "task update": definition,
@@ -53,6 +55,7 @@ export async function superviseCommand(argv: string[]): Promise<number> {
 
 async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   const { values, positionals, tokens } = parseArgs({ args: argv, allowPositionals: true, tokens: true, options: {
+    session: { type: "string" }, cost: { type: "string" }, tokens: { type: "string" },
     objective: { type: "string" }, config: { type: "string" }, json: { type: "boolean" },
     title: { type: "string" }, body: { type: "string" }, "body-file": { type: "string" },
     repo: { type: "string" }, kind: { type: "string" }, criterion: { type: "string", multiple: true }, "criteria-file": { type: "string" },
@@ -95,6 +98,16 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   const wait = Number(values.wait ?? "10");
   if (!Number.isFinite(wait) || wait <= 0) invalid("--wait must be a positive number of seconds");
 
+  if (operation === "usage" && !values.session?.trim()) invalid("usage requires --session <id>");
+  const usageNumber = (text: string | undefined, name: string): number | null => {
+    if (text === undefined || text === "unknown") return null;
+    const value = Number(text);
+    if (!text.trim() || !Number.isFinite(value) || value < 0) invalid(`--${name} must be a finite nonnegative number or unknown`);
+    return value;
+  };
+  const cost = usageNumber(values.cost, "cost");
+  const tokensUsed = usageNumber(values.tokens, "tokens");
+
   const configPath = resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json");
   const config = await loadConfig(configPath);
   const caller = { kind: "supervisor", objectiveId: values.objective! } as const;
@@ -105,6 +118,8 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     const objectives = new ObjectiveStore(tasks.database, caller);
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
     if (objective.state !== "open") rejected(`Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
+    if (operation === "usage") return { code: 0, value: { ok: true, action, usage: await recordSupervisorUsage(tasks.database, caller, caller.objectiveId,
+      { sessionId: values.session!, cost, tokens: tokensUsed }) } };
     if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller, caller.objectiveId, timeout) };
     if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller, caller.objectiveId, args[0]!) } };
     if (operation === "ask") return { code: 0, value: { ok: true, action, question: await askPerson(tasks.database, caller, caller.objectiveId, args[0]!, values.choice, values["request-id"]) } };
