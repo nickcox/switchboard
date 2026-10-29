@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { personInterventions } from "./interventions.ts";
 import { objectiveBudget, unknownKey, type ObjectiveBudget } from "./budget.ts";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
 import { requireAuthority } from "../dispatch/safety.ts";
@@ -103,7 +104,7 @@ export class ObjectiveStore {
     }));
     return { ...objective, ...objectiveBudget(this.database, id), criteria: objective.acceptanceCriteria.map((criterion, index) => ({
       position: index + 1, criterion, completion: objective.completionStatements.find(statement => statement.position === index + 1) ?? null,
-    })), tasks, availableReferences: this.references(id), history: this.history(id) };
+    })), tasks, availableReferences: this.references(id), history: this.history(id), personInterventions: personInterventions(this.database, id) };
   }
   history(id: string) {
     return this.database.all("SELECT * FROM objective_changes WHERE objective = ? ORDER BY sequence", id).map(row => ({

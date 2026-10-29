@@ -233,7 +233,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
     f.tasks.database.run("DROP TRIGGER task_definition_changed");
     f.tasks.database.run("DROP INDEX tasks_by_objective");
     f.tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
-    for (const table of ["answer_deliveries", "question_answers", "question_files", "worker_usage"]) f.tasks.database.run(`DROP TABLE ${table}`);
+    for (const table of ["supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage"]) f.tasks.database.run(`DROP TABLE ${table}`);
     f.tasks.database.run("DROP TABLE task_changes");
     f.tasks.database.run("DROP TABLE objective_changes");
     f.tasks.database.run("DROP TABLE objectives");
@@ -246,7 +246,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
   const reopened = await Promise.all([SqliteTaskStore.open({ path: f.path }), SqliteTaskStore.open({ path: f.path })]);
   try {
     for (const tasks of reopened) {
-      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 13);
+      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 14);
       assert.deepEqual(await tasks.read("existing"), before);
       assert.deepEqual(new AttemptStore(tasks.database, "fixture").read(ref), attempt);
       assert.deepEqual(new ObjectiveStore(tasks.database, "operator:creator").list(), []);

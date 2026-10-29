@@ -100,6 +100,32 @@ test("supervise task operations bind the objective and record the supervisor for
   assert.equal(JSON.parse(prefixed.stdout).objective.id, "goal");
 });
 
+test("supervise note and briefing return one JSON object with current records, without Pi installed", async () => {
+  const f = fixture();
+  f.config.worker.piEntrypoint = join(f.dir, "missing-pi.js");
+  writeFileSync(f.configPath, JSON.stringify(f.config));
+  const note = f.ok("note", "Remember the smaller design").note;
+  assert.equal(note.writtenBy, "supervisor:goal");
+  assert.equal(note.sequence, 1);
+  f.ok("note", "Keep all leases for the person");
+  f.ok("task", "add", "work", "Work", "--criterion", "Useful output");
+  let value = f.ok("briefing");
+  assert.equal(value.objective.id, "goal");
+  assert.equal(value.tasks.length, 1);
+  assert.equal(value.personInterventions.count, 0);
+  assert.deepEqual(value.notes.map((item: { text: string }) => item.text), ["Remember the smaller design", "Keep all leases for the person"]);
+  f.person("task", "hold", "work", "--reason", "A person's decision");
+  value = f.ok("briefing");
+  assert.equal(value.tasks[0].holdReason, "A person's decision");
+  assert.equal(value.personInterventions.count, 1);
+  assert.deepEqual(value.personInterventions, f.person("objective", "show", "goal").objective.personInterventions);
+  assert.deepEqual(value.personInterventions, f.ok("objective", "show").objective.personInterventions);
+  for (const args of [["note"], ["note", ""], ["note", "   "], ["note", "First", "Second"], ["briefing", "extra"], ["briefing", "--task", "work"], ["note", "Text", "--as", "operator:admin"]]) {
+    assert.equal(f.run(...args).code, 2);
+  }
+  assert.equal((await f.rows("SELECT * FROM supervisor_notes")).length, 2);
+});
+
 test("supervise rejects every unavailable operation and identity or objective override before any change", async () => {
   const f = fixture();
   f.ok("task", "add", "work", "Work");
@@ -194,7 +220,7 @@ test("unknown and closed objectives refuse all operations with one JSON object",
   const f = fixture();
   for (const state of ["missing", "abandoned"]) {
     if (state === "abandoned") f.person("objective", "abandon", "goal");
-    for (const args of [["objective", "show"], ["task", "add", "no", "No"], ["task", "list"], ["dispatch", "--task", "foreign"], ["finish", "--task", "foreign"]]) {
+    for (const args of [["briefing"], ["note", "Remember"], ["objective", "show"], ["task", "add", "no", "No"], ["task", "list"], ["dispatch", "--task", "foreign"], ["finish", "--task", "foreign"]]) {
       const result = f.raw("supervise", ...args, "--objective", state === "missing" ? "missing" : "goal");
       assert.equal(result.status, 1, result.stdout + result.stderr);
       const value = JSON.parse(result.stdout);

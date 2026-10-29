@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 13) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 14) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -331,6 +331,23 @@ export class Database {
           CREATE TRIGGER answer_deliveries_not_removed BEFORE DELETE ON answer_deliveries BEGIN
             SELECT RAISE(ABORT, 'Answer deliveries cannot be removed'); END;
           PRAGMA user_version = 13;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 14) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 14) return;
+        db.exec(`
+          CREATE TABLE supervisor_notes (
+            objective TEXT NOT NULL REFERENCES objectives(id), sequence INTEGER NOT NULL CHECK(sequence > 0),
+            text TEXT NOT NULL CHECK(length(trim(text)) > 0), written_at TEXT NOT NULL, written_by TEXT NOT NULL,
+            PRIMARY KEY(objective, sequence));
+          CREATE TRIGGER supervisor_notes_not_replaced BEFORE INSERT ON supervisor_notes
+            WHEN EXISTS(SELECT 1 FROM supervisor_notes WHERE objective = NEW.objective AND sequence = NEW.sequence)
+            BEGIN SELECT RAISE(ABORT, 'Supervisor notes cannot be replaced'); END;
+          CREATE TRIGGER supervisor_notes_immutable BEFORE UPDATE ON supervisor_notes BEGIN
+            SELECT RAISE(ABORT, 'Supervisor notes cannot be changed'); END;
+          CREATE TRIGGER supervisor_notes_not_removed BEFORE DELETE ON supervisor_notes BEGIN
+            SELECT RAISE(ABORT, 'Supervisor notes cannot be removed'); END;
+          PRAGMA user_version = 14;
         `);
       });
       return result;

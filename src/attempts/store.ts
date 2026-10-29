@@ -15,6 +15,7 @@ import { attemptSpecificationSchema, startingPointSchema, storedSpecificationSch
 import { requestFingerprint, type RequestInputs } from "./requests.ts";
 import { parseAttemptEntry, type AttemptEntry, type AttemptRecord, type AttemptRef, type EntryData, type EntryKind } from "./log.ts";
 import { readQuestions } from "../runtime/questions-store.ts";
+import { interventionEntry } from "../objectives/interventions.ts";
 
 const nonempty = z.string().trim().min(1);
 const commit = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
@@ -402,6 +403,11 @@ export class AttemptStore {
       const archive = {
         ...identity(expected), summary, spending: attemptSpending(this.database, expected), entryCount: current.entries.length, finishedAt: current.entries.at(-1)!.recordedAt,
         archivedAt: new Date().toISOString(), archivedBy: callerName(this.caller), confirmations: this.confirmations(expected), acceptedCommits: this.acceptedCommits(expected),
+        interventionEntries: current.entries.filter(interventionEntry),
+        controlRequests: this.database.all(`SELECT r.* FROM control_requests r JOIN worker_claims c ON c.id = r.claim_id
+          WHERE c.context = ? AND c.task = ? AND c.attempt = ? ORDER BY r.created_at,r.id`, expected.contextId, expected.taskId, expected.attempt),
+        checks: latestChecks(current, this.startingPointCommit(expected)),
+        retention: [...current.entries].reverse().find(entry => entry.kind === "retention_checked") ?? null,
         outputBranchRecord: { commit: this.startingPointCommit(expected),
           targetBranch: [...current.entries].reverse().find(e => e.kind === "integrated")?.data.targetBranch ?? current.allocation?.baseRef ?? current.specification?.baseRef,
           discarded: current.entries.some(e => e.kind === "discarded") },
