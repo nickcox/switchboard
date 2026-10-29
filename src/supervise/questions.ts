@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
 import type { Database } from "../database.ts";
-import { requireAuthority } from "../dispatch/safety.ts";
+import { requireScope } from "../dispatch/safety.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 import { recordEvent } from "./events.ts";
 
@@ -25,7 +25,7 @@ export async function askPerson(database: Database, caller: Caller, objectiveId:
   if (caller.kind !== "supervisor" || caller.objectiveId !== objectiveId) throw new TaskStoreError("rejected", "Only the objective's supervisor can ask the person a question");
   if (!text.trim() || choices?.some(choice => !choice.trim()) || !requestId.trim()) throw new TaskStoreError("rejected", "Question text, choices and request ID must not be blank");
   return database.transaction(() => {
-    requireAuthority(database, caller, "recordAttempt", { objectiveId });
+    requireScope(database, caller, { objectiveId });
     if (database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before asking a question`);
     const existing = readPersonQuestions(database, objectiveId).find(question => question.requestId === requestId);
     if (existing) {

@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 17) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 18) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -422,6 +422,14 @@ export class Database {
           CREATE TRIGGER person_answers_not_removed BEFORE DELETE ON person_answers
             BEGIN SELECT RAISE(ABORT, 'Person answers cannot be removed'); END;
           PRAGMA user_version = 17;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 18) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 18) return;
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS task_changes_by_task ON task_changes(task,changed_at,sequence);
+          CREATE INDEX IF NOT EXISTS confirmations_by_attempt ON confirmations(context,task,attempt,id);
+          PRAGMA user_version = 18;
         `);
       });
       return result;

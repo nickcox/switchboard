@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
-import { requireAuthority } from "../dispatch/safety.ts";
+import { requireScope } from "../dispatch/safety.ts";
 import type { AttemptEntry, AttemptRef } from "../attempts/log.ts";
 import type { Database } from "../database.ts";
 import { objectiveBudget } from "../objectives/budget.ts";
-import { interventionEntry, personInterventions } from "../objectives/interventions.ts";
+import { interventionEntry, personIntervention } from "../objectives/interventions.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 
 export type SupervisorEvent = {
@@ -28,11 +28,10 @@ export function taskObjective(database: Database, taskId: string): string | null
 }
 
 /** Use the same decision and duplicate rules as the briefing, while the source write is still uncommitted. */
-export function recordPersonEvents(database: Database, objectiveIds: (string | null | undefined)[], id: string): void {
+export function recordPersonEvents(database: Database, objectiveIds: (string | null | undefined)[], id: string, entryRef?: AttemptRef): void {
   for (const objectiveId of new Set(objectiveIds)) {
     if (!objectiveId) continue;
-    const interventions = personInterventions(database, objectiveId);
-    const item = [...interventions.items, ...interventions.leaseReturns.items].find(item => item.id === id);
+    const item = personIntervention(database, objectiveId, id, entryRef);
     if (item) recordEvent(database, objectiveId, `person:${id}`, "person_intervention", item.at, item, item);
   }
 }
@@ -50,28 +49,47 @@ export function recordEntryEvents(database: Database, entry: AttemptEntry): void
   if (!interventionEntry(entry) || typeof actor !== "string" || !actor || actor.startsWith("supervisor:")) return;
   const specification = database.get("SELECT specification FROM attempt_specifications WHERE context = ? AND task = ? AND attempt = ?", entry.contextId, entry.taskId, entry.attempt);
   const captured = specification ? JSON.parse(String(specification.specification)).objectiveId : null;
-  recordPersonEvents(database, [objectiveId, captured], entry.kind === "operator_request" ? `request:${entry.data.id}` : source);
+  recordPersonEvents(database, [objectiveId, captured], entry.kind === "operator_request" ? `request:${entry.data.id}` : source, entry);
 }
 
-/** Record limits reached by a budget, usage or task-membership write in that same transaction. */
-export function recordBudgetEvents(database: Database, objectiveId: string, now = Date.now()): void {
+function budgetEvents(database: Database, objectiveId: string, now: number) {
   const value = objectiveBudget(database, objectiveId, now);
-  const at = new Date(now).toISOString();
+  const events: { source: string; kind: string; details: unknown }[] = [];
   for (const [name, limit, spent] of [
     ["cost", value.budget.maxCost, value.spending.observedCost],
     ["worker_time", value.budget.maxWorkerTimeMs, value.spending.observedWorkerTimeMs],
   ] as const) {
-    if (limit !== null && spent >= limit) recordEvent(database, objectiveId, `budget:${name}:${limit}`, "budget_reached", at, { budget: name, limit, spent });
+    if (limit !== null && spent >= limit) events.push({ source: `budget:${name}:${limit}`, kind: "budget_reached", details: { budget: name, limit, spent } });
+  }
+  return events;
+}
+
+/** Record limits reached by a budget, usage or task-membership write in that same transaction. */
+export function recordBudgetEvents(database: Database, objectiveId: string, now = Date.now()): void {
+  for (const event of budgetEvents(database, objectiveId, now)) {
+    recordEvent(database, objectiveId, event.source, event.kind, new Date(now).toISOString(), event.details);
   }
 }
 
 /** Time passing has no source write; wait and dispatcher checks record the first observation. */
 export function observeBudgetEvents(database: Database, objectiveId: string, now = Date.now()): void {
-  recordBudgetEvents(database, objectiveId, now);
+  for (const event of observableBudgetEvents(database, objectiveId, now)) {
+    recordEvent(database, objectiveId, event.source, event.kind, new Date(now).toISOString(), event.details);
+  }
+}
+
+function observableBudgetEvents(database: Database, objectiveId: string, now: number) {
+  const events = budgetEvents(database, objectiveId, now);
   const row = database.get("SELECT deadline FROM objectives WHERE id = ?", objectiveId)!;
   if (row.deadline !== null && Date.parse(String(row.deadline)) <= now) {
-    recordEvent(database, objectiveId, `deadline:${row.deadline}`, "deadline_reached", new Date(now).toISOString(), { deadline: row.deadline });
+    events.push({ source: `deadline:${row.deadline}`, kind: "deadline_reached", details: { deadline: row.deadline } });
   }
+  return events;
+}
+
+function hasBudgetEventsToRecord(database: Database, objectiveId: string): boolean {
+  return observableBudgetEvents(database, objectiveId, Date.now()).some(event =>
+    !database.get("SELECT 1 FROM supervisor_events WHERE objective = ? AND source = ?", objectiveId, event.source));
 }
 
 function event(row: NonNullable<ReturnType<Database["get"]>>): SupervisorEvent {
@@ -88,7 +106,7 @@ export function pendingEvents(database: Database, objectiveId: string): { count:
 
 function requireSupervisor(database: Database, caller: Caller, objectiveId: string): void {
   if (caller.kind !== "supervisor" || caller.objectiveId !== objectiveId) throw new TaskStoreError("rejected", "Only the objective's supervisor can wait for or handle its events");
-  requireAuthority(database, caller, "recordAttempt", { objectiveId });
+  requireScope(database, caller, { objectiveId });
   if (database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") {
     throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before supervising its events`);
   }
@@ -99,11 +117,12 @@ export async function waitForEvent(database: Database, caller: Caller, objective
   if (timeoutSeconds !== undefined && (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0)) throw new Error("Timeout must be a nonnegative number of seconds");
   const until = timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000;
   for (;;) {
-    const next = await database.transaction(() => {
+    requireSupervisor(database, caller, objectiveId);
+    const next = hasBudgetEventsToRecord(database, objectiveId) ? await database.transaction(() => {
       requireSupervisor(database, caller, objectiveId);
       observeBudgetEvents(database, objectiveId);
       return pendingEvents(database, objectiveId).first;
-    });
+    }) : pendingEvents(database, objectiveId).first;
     if (next) return { ok: true, action: "wait", event: next, timedOut: false };
     if (Date.now() >= until) return { ok: true, action: "wait", event: null, timedOut: true };
     await sleep(Math.min(200, until - Date.now()));
