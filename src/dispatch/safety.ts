@@ -36,6 +36,15 @@ export function checkCaller(caller: Caller, operation: AuthorityOperation, objec
   return objective.permissions[permission] ? permit : refuse("permission_denied", `Objective ${objective.id} does not permit ${permission}`, "inspect_attempt", { operation, permission });
 }
 
+/** Inspection and supervisor notes need scope, not a narrowable permission. */
+export function requireScope(database: Database, caller: Caller, options: { taskId?: string; objectiveId?: string | null } = {}): void {
+  if (caller.kind === "person") return;
+  const objectiveId = options.taskId === undefined ? options.objectiveId : database.get("SELECT objective_id FROM tasks WHERE id = ?", options.taskId)?.objective_id as string | null | undefined;
+  if (objectiveId !== caller.objectiveId || !database.get("SELECT id FROM objectives WHERE id = ?", objectiveId)) {
+    throw new TaskStoreError("rejected", "outside_objective: The supervisor can act only within its named objective");
+  }
+}
+
 export function requireImportAuthority(caller: Caller): void {
   const permission = checkCaller(callerSchema.parse(caller), "import");
   if (!permission.allowed) throw new TaskStoreError("rejected", `${permission.reason}: ${permission.detail}`);

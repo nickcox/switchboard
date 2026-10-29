@@ -344,8 +344,14 @@ test("supervise passes through existing scope and permission refusals, including
     assert.equal(result.code, 1, JSON.stringify(result));
     assert.match(result.value.detail, /permission_denied/);
   }
-  assert.equal(f.ok("task", "show", "work").task.id, "work", "Read-only inspection does not need manageTasks");
+  assert.equal(f.ok("task", "show", "work").task.id, "work", "Read-only inspection does not need a mutation permission");
   assert.equal(f.ok("task", "list").tasks.length, 1);
+  const note = f.ok("note", "Continue from the records even with no task permissions").note;
+  const briefing = f.ok("briefing");
+  assert.deepEqual(briefing.notes, [note]);
+  assert.deepEqual(briefing.tasks.map((task: { id: string }) => task.id), ["work"]);
+  assert.ok(Object.values(briefing.objective.permissions).every(value => value === false));
+  assert.equal(Object.hasOwn(briefing.objective.permissions, "recordAttempt"), false);
   const event = f.ok("wait", "--timeout", "0").event;
   assert.equal(event.kind, "person_intervention", "Waiting does not need a task mutation permission");
   f.ok("handled", event.id);

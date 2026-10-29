@@ -7,7 +7,7 @@ import { requestControl } from "../dispatch/control.ts";
 import { dispatchOnce } from "../dispatch/dispatch.ts";
 import { finish } from "../dispatch/finish.ts";
 import { createReview } from "../dispatch/review.ts";
-import { requireAuthority } from "../dispatch/safety.ts";
+import { requireScope } from "../dispatch/safety.ts";
 import { leaseOfTask } from "../dispatch/select.ts";
 import { requireRetainedStorage } from "../infra/storage.ts";
 import { ObjectiveStore } from "../objectives/store.ts";
@@ -124,8 +124,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
       switch (action) {
         case "add": value = await tasks.add({ ...changes, id: args[0]!, title: args[1] ?? values.title!, objectiveId: caller.objectiveId }); break;
         case "show":
-          // Reads need scope, not a mutation permission. Use the existing scope-only authority check.
-          requireAuthority(tasks.database, caller, "recordAttempt", { taskId: args[0]! });
+          requireScope(tasks.database, caller, { taskId: args[0]! });
           value = await tasks.read(args[0]!);
           if (!value) rejected(`Task ${args[0]} does not exist`);
           break;

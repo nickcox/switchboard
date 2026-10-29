@@ -7,7 +7,7 @@ import { AttemptStore } from "../../src/attempts/store.ts";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { createReview } from "../../src/dispatch/review.ts";
 import { status } from "../../src/dispatch/status.ts";
-import { ObjectiveStore } from "../../src/objectives/store.ts";
+import { ObjectiveStore, defaultPermissions } from "../../src/objectives/store.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
 import { QuestionStore } from "../../src/runtime/questions-store.ts";
 import { briefing } from "../../src/supervise/briefing.ts";
@@ -118,6 +118,24 @@ test("briefing summarises current records, agrees with status in several states,
     assert.deepEqual(value.personInterventions, f.objectives.show("goal").personInterventions);
     assert.ok(!JSON.stringify(value).includes("Other work"));
     await f.runtime.recordChildExit(runtime, { started: true, code: 0, signal: null });
+  } finally { f.close(); }
+});
+
+test("briefing and notes remain available only within the supervisor's objective when all permissions are removed", async () => {
+  const f = await setup();
+  try {
+    await f.supervisorTasks.add({ id: "work", title: "Work", objectiveId: "goal" });
+    await f.objectives.update("goal", { permissions: Object.fromEntries(Object.keys(defaultPermissions).map(key => [key, false])) as typeof defaultPermissions });
+    const note = await appendNote(f.tasks.database, supervisor, "goal", "Start the next session from these records");
+    const before = contents(f);
+    const value = await briefing(f.deps, "goal");
+    assert.deepEqual(value.notes, [note]);
+    assert.deepEqual(value.tasks.map(task => task.id), ["work"]);
+    assert.ok(Object.values(value.objective.permissions).every(permission => permission === false));
+    assert.equal(Object.hasOwn(value.objective.permissions, "recordAttempt"), false);
+    await assert.rejects(briefing(f.deps, "other"), /outside_objective/);
+    await assert.rejects(appendNote(f.tasks.database, supervisor, "other", "No"), /Only the objective's supervisor/);
+    assert.deepEqual(contents(f), before, "Inspection and refused operations leave the records unchanged");
   } finally { f.close(); }
 });
 

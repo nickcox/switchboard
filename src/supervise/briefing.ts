@@ -3,7 +3,7 @@ import type { CheckResult } from "../attempts/checks.ts";
 import type { ReviewRecord } from "../attempts/reviews.ts";
 import type { AttemptEntry } from "../attempts/log.ts";
 import type { Dependencies } from "../dispatch/dependencies.ts";
-import { requireAuthority } from "../dispatch/safety.ts";
+import { requireScope } from "../dispatch/safety.ts";
 import { status, type AttemptStatus } from "../dispatch/status.ts";
 import type { AttemptState } from "../dispatch/state.ts";
 import { ObjectiveStore } from "../objectives/store.ts";
@@ -25,7 +25,7 @@ type BriefingAttempt = {
 /** A read-only briefing uses status itself, so it cannot introduce another attempt classification. */
 export async function briefing(deps: Dependencies, objectiveId: string) {
   const database = deps.attempts.database;
-  requireAuthority(database, deps.caller, "recordAttempt", { objectiveId });
+  requireScope(database, deps.caller, { objectiveId });
   const shown = new ObjectiveStore(database, deps.caller).show(objectiveId);
   if (shown.state !== "open") throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before supervising it`);
   const { tasks: linked, personInterventions, ...objective } = shown;
