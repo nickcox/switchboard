@@ -23,7 +23,7 @@ test("version 4 bindings migrate once without borrowing missing facts from the c
   });
   await f.tasks.update("snapshot-a1", { title: "Today's title", body: "Today's instructions", kind: "unconfigured" });
   await f.tasks.database.transaction(() => {
-    for (const table of ["supervisor_dispatches", "supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage"]) f.tasks.database.run(`DROP TABLE ${table}`);
+    for (const table of ["person_answers", "person_questions", "supervisor_dispatches", "supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage"]) f.tasks.database.run(`DROP TABLE ${table}`);
     f.tasks.database.run("DROP TABLE review_tasks");
     f.tasks.database.run("DROP TABLE request_records");
     f.tasks.database.run("DROP TABLE attempt_specifications");

@@ -210,7 +210,7 @@ test("opening a version 2 database removes the body snapshot and preserves tasks
   await store.database.transaction(() => {
     store.database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
     store.database.run("UPDATE tasks SET started_body = 'Original instructions' WHERE id = 'a'");
-    for (const table of ["supervisor_dispatches", "supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage", "review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims"]) store.database.run(`DROP TABLE ${table}`);
+    for (const table of ["person_answers", "person_questions", "supervisor_dispatches", "supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage", "review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims"]) store.database.run(`DROP TABLE ${table}`);
     store.database.run("DROP INDEX worker_stop_per_attempt");
     store.database.run("ALTER TABLE confirmations DROP COLUMN note");
     store.database.run("DROP TRIGGER task_definition_changed");

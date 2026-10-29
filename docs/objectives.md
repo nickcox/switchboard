@@ -24,6 +24,7 @@ All objective commands accept `--config <path>` and `--json`. Add takes either t
 - `spending`: total cost and worker time, known subtotals, and each attempt with unknown usage, including whether the creator has confirmed that uncertainty
 - each criterion's 1-based position, text and any completion statement
 - linked tasks, their states and hold reasons, and the latest attempt in each context, including archived attempts
+- `openPersonQuestions`, unanswered questions asked by the objective's supervisor; answer with `objective answer <id> --question <question-id> "<answer>"` (see [questions to the person](supervisor.md#questions-to-the-person))
 - `availableReferences`, the accepted commits and recorded reviews that completion statements can cite
 - `history`, an ordered record of who changed what and when
 - `personInterventions`, a count and oldest-first list derived from the existing actor-bearing records, excluding objective creation and supervisor actions, with lease-return confirmations listed and counted separately. It is the same accounting as the [supervisor briefing](supervisor.md#person-interventions), not another audit table.

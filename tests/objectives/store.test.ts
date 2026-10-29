@@ -233,7 +233,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
     f.tasks.database.run("DROP TRIGGER task_definition_changed");
     f.tasks.database.run("DROP INDEX tasks_by_objective");
     f.tasks.database.run("ALTER TABLE tasks DROP COLUMN objective_id");
-    for (const table of ["supervisor_dispatches", "supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage"]) f.tasks.database.run(`DROP TABLE ${table}`);
+    for (const table of ["person_answers", "person_questions", "supervisor_dispatches", "supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage"]) f.tasks.database.run(`DROP TABLE ${table}`);
     f.tasks.database.run("DROP TABLE task_changes");
     f.tasks.database.run("DROP TABLE objective_changes");
     f.tasks.database.run("DROP TABLE objectives");

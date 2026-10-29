@@ -81,8 +81,12 @@ test("only the bound supervisor asks; only a person answers once for the matchin
     assert.equal(event.kind, "person_answered");
     assert.deepEqual(event.details, { questionId: question.id, question: question.text, answer: result.answer });
     assert.equal(f.database.all("SELECT * FROM supervisor_events").length, 1);
+    const late = await askPerson(f.database, supervisor, "goal", "A late answer?", undefined, "late");
     await f.objectives.abandon("goal");
     await assert.rejects(askPerson(f.database, supervisor, "goal", "No?"), /must be open|abandoned/);
+    const lateAnswer = await answerPersonQuestion(f.database, { kind: "person", id: "operator:another" }, "goal", late.id, "Still useful");
+    assert.equal(lateAnswer.answer!.answeredBy, "operator:another");
+    assert.equal(f.objectives.show("goal").state, "abandoned");
   } finally { f.tasks.close(); }
 });
 
@@ -119,6 +123,9 @@ test("schema 16 migrates concurrently to 17 without changing existing data", asy
   await f.objectives.update("goal", { scope: "Keep this scope", budget: { maxCost: 10, maxWorkerTimeMs: 2000 } });
   await appendNote(f.database, supervisor, "goal", "Keep this note");
   await f.database.transaction(() => {
+    f.database.run(`INSERT INTO supervisor_dispatches(context,request_id,caller,inputs,fingerprint,config_path,runtime_root,output_path,recorded_at,process_pid,result)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "context", "keep-request", JSON.stringify(supervisor), JSON.stringify({ taskId: "work" }), "keep-fingerprint",
+      join(root, "config.json"), root, "supervisor-dispatches/keep/output.log", new Date().toISOString(), 123, JSON.stringify({ ok: false, reason: "held" }));
     f.database.run("DROP TABLE person_answers");
     f.database.run("DROP TABLE person_questions");
     f.database.run("PRAGMA user_version = 16");
