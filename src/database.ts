@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 16) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 17) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -394,6 +394,34 @@ export class Database {
           CREATE TRIGGER supervisor_dispatches_result_once BEFORE UPDATE OF result ON supervisor_dispatches
             WHEN OLD.result IS NOT NULL BEGIN SELECT RAISE(ABORT, 'Supervisor dispatch result already recorded'); END;
           PRAGMA user_version = 16;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 17) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 17) return;
+        db.exec(`
+          CREATE TABLE person_questions (
+            id TEXT PRIMARY KEY, objective TEXT NOT NULL REFERENCES objectives(id),
+            text TEXT NOT NULL CHECK(length(trim(text)) > 0), choices TEXT CHECK(choices IS NULL OR json_valid(choices)),
+            asked_at TEXT NOT NULL, asked_by TEXT NOT NULL, request_id TEXT NOT NULL,
+            UNIQUE(objective, request_id));
+          CREATE TABLE person_answers (
+            question_id TEXT PRIMARY KEY REFERENCES person_questions(id), text TEXT NOT NULL CHECK(length(trim(text)) > 0),
+            answered_by TEXT NOT NULL, answered_at TEXT NOT NULL);
+          CREATE TRIGGER person_questions_not_replaced BEFORE INSERT ON person_questions
+            WHEN EXISTS(SELECT 1 FROM person_questions WHERE id = NEW.id OR (objective = NEW.objective AND request_id = NEW.request_id))
+            BEGIN SELECT RAISE(ABORT, 'Person questions cannot be replaced'); END;
+          CREATE TRIGGER person_questions_immutable BEFORE UPDATE ON person_questions
+            BEGIN SELECT RAISE(ABORT, 'Person questions cannot be changed'); END;
+          CREATE TRIGGER person_questions_not_removed BEFORE DELETE ON person_questions
+            BEGIN SELECT RAISE(ABORT, 'Person questions cannot be removed'); END;
+          CREATE TRIGGER person_answers_not_replaced BEFORE INSERT ON person_answers
+            WHEN EXISTS(SELECT 1 FROM person_answers WHERE question_id = NEW.question_id)
+            BEGIN SELECT RAISE(ABORT, 'Person answers cannot be replaced'); END;
+          CREATE TRIGGER person_answers_immutable BEFORE UPDATE ON person_answers
+            BEGIN SELECT RAISE(ABORT, 'Person answers cannot be changed'); END;
+          CREATE TRIGGER person_answers_not_removed BEFORE DELETE ON person_answers
+            BEGIN SELECT RAISE(ABORT, 'Person answers cannot be removed'); END;
+          PRAGMA user_version = 17;
         `);
       });
       return result;

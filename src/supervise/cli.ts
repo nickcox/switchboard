@@ -15,6 +15,7 @@ import { SqliteTaskStore, type TaskChanges } from "../tasks/sqlite.ts";
 import { TaskStoreError, type TaskState } from "../tasks/store.ts";
 import { briefing } from "./briefing.ts";
 import { appendNote } from "./notes.ts";
+import { askPerson } from "./questions.ts";
 import { handleEvent, waitForEvent } from "./events.ts";
 import { detachedDispatch } from "./dispatch.ts";
 
@@ -22,7 +23,7 @@ const usage = "Usage: switchboard supervise <operation> --objective <id> [option
 const selectors = ["lease", "task", "attempt"];
 const definition = ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"];
 const allowed: Record<string, string[]> = {
-  briefing: [], note: [], wait: ["timeout"], handled: [],
+  briefing: [], note: [], ask: ["choice", "request-id"], wait: ["timeout"], handled: [],
   "objective show": [], "objective complete": ["statements-file"],
   "task add": definition, "task show": [], "task list": ["state", "repo"], "task update": definition,
   "task hold": ["reason"], "task release": [], "task block": ["by"], "task unblock": ["by"], "task done": ["note"],
@@ -58,7 +59,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     state: { type: "string" }, reason: { type: "string" }, by: { type: "string" }, note: { type: "string" }, "note-file": { type: "string" },
     "statements-file": { type: "string" }, task: { type: "string" }, lease: { type: "string" }, attempt: { type: "string" },
     "from-attempt": { type: "string" }, "dry-run": { type: "boolean" }, "request-id": { type: "string" },
-    question: { type: "string" }, wait: { type: "string" }, timeout: { type: "string" }, after: { type: "boolean" }, as: { type: "string" },
+    choice: { type: "string", multiple: true }, question: { type: "string" }, wait: { type: "string" }, timeout: { type: "string" }, after: { type: "boolean" }, as: { type: "string" },
     "accept-output": { type: "boolean" }, rebase: { type: "boolean" },
   } });
   const grouped = positionals[0] === "task" || positionals[0] === "objective";
@@ -70,7 +71,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   if (misplaced.length) invalid(`${operation} does not take ${misplaced.map(key => `--${key}`).join(", ")}`);
   const taskOperation = operation.startsWith("task ");
   const action = grouped ? positionals[1]! : operation;
-  const expected = taskOperation && action !== "list" || operation === "steer" || operation === "answer" || operation === "note" || operation === "handled" ? 1 : 0;
+  const expected = taskOperation && action !== "list" || operation === "steer" || operation === "answer" || operation === "note" || operation === "ask" || operation === "handled" ? 1 : 0;
   if (args.length !== expected && !(operation === "task add" && args.length === 2)) invalid(`Invalid arguments for ${operation}`);
   if (operation === "task add" && args[1] === undefined && values.title === undefined) invalid("task add requires a title");
   if (operation === "task hold" && !values.reason) invalid("task hold requires --reason");
@@ -106,6 +107,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     if (objective.state !== "open") rejected(`Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
     if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller, caller.objectiveId, timeout) };
     if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller, caller.objectiveId, args[0]!) } };
+    if (operation === "ask") return { code: 0, value: { ok: true, action, question: await askPerson(tasks.database, caller, caller.objectiveId, args[0]!, values.choice, values["request-id"]) } };
     if (operation === "note") return { code: 0, value: { ok: true, action, note: await appendNote(tasks.database, caller, caller.objectiveId, args[0]!) } };
     if (operation === "objective show") return { code: 0, value: { ok: true, action, objective: objectives.show(caller.objectiveId) } };
     if (operation === "objective complete") {

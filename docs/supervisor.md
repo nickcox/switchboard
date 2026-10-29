@@ -2,7 +2,7 @@
 
 `switchboard supervise <operation> --objective <id> [options]` is the restricted command for a supervisor working on one objective. It always constructs the caller `{ kind: "supervisor", objectiveId: "<id>" }` itself. There is no caller option or environment override. Every operation requires exactly one `--objective`, naming an existing, open objective.
 
-This is the shared command interface, not a supervisor agent or host. The Pi extension, host skills and questions to the person are separate work. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
+This is the shared command interface, not a supervisor agent or host. The Pi extension and host skills are separate work. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
 
 ## Operations
 
@@ -12,6 +12,7 @@ All invocations accept `--config <path>` (default: `SWITCHBOARD_CONFIG`, then `.
 | --- | --- |
 | `briefing` | Rebuilds the supervisor's briefing from current records. No other arguments or options. |
 | `note "<text>"` | Appends a supervisor note to the objective. Text must not be blank. |
+| `ask "<question>"` | Records a question for the person. Optional repeatable `--choice <text>` and `--request-id <id>`. |
 | `wait` | Returns the first unhandled event, polling if none is pending. Optional `--timeout <seconds>` is a nonnegative number; omission waits indefinitely. |
 | `handled <event-id>` | Records that the next unhandled event has been dealt with. Safe to repeat. |
 | `objective show` | Shows the named objective, its tasks, attempts, criteria, spending, references, history and person interventions. No positional objective ID. |
@@ -80,6 +81,7 @@ This reads Switchboard's records, not an earlier conversation. It returns one JS
 - Archived attempts have `archived: true`, their saved assessment's `status`, summary, checks, reviews and retention evidence where retained. They are not reclassified from incomplete archive data; missing historical classification or retention is `null`. Archiving preserves the evidence needed for later briefings and intervention counts.
 - `possiblyRunning`: attempt identities and a plain warning that their worker may still be running and the task must not be started again. The same warning is on each affected attempt. This includes workers with fresh dispatcher heartbeats as well as workers whose dispatcher is gone.
 - `openQuestions`: unanswered worker questions, with their IDs, task and attempt, text, choices and waiting flag, including questions left open after exit or archive.
+- `openPersonQuestions`: unanswered questions the supervisor asked the person, with IDs, objective, text, optional choices, author and time.
 - `notes`: the supervisor's notes, oldest first.
 - `personInterventions`: the same count and list as ordinary `objective show`, described below.
 - `events`: `count` of unhandled events and `first`, the first such event or `null`. Reading the briefing does not acknowledge events or record a passed deadline.
@@ -96,6 +98,22 @@ switchboard supervise note --objective release-notes "Use the smaller design; th
 The response is `{ "ok": true, "action": "note", "note": ... }`. A note contains `objectiveId`, a per-objective `sequence` starting at 1, the exact `text`, `writtenAt` and `writtenBy` (`supervisor:<objective-id>`). The command fixes the author, as for every other supervisor operation. Notes remain available even if task permissions have been narrowed, and writing one does not count as a person intervention.
 
 Schema 14 adds `supervisor_notes` without changing existing records. Appending and allocating its sequence are one transaction. Notes cannot be edited, deleted or replaced: database triggers reject those operations, not just the command interface. Write a later note to correct an earlier one. Notes survive session restarts, objective changes and attempt pruning. They contain reminders and decisions, not authority to change the objective's permissions, budget, instructions or delivery contract.
+
+### Questions to the person
+
+```sh
+switchboard supervise ask --objective release-notes --choice "Small" --choice "Large" \
+  --request-id design-1 "Which design should we use?"
+switchboard objective answer release-notes --question <question-id> "Small"
+```
+
+Only the bound supervisor can ask, and only about its own open objective. Asking needs no task mutation permission. The response is `{ "ok": true, "action": "ask", "question": ... }`. Each question records `id`, `objectiveId`, exact `text`, optional `choices`, `askedAt`, `askedBy`, `requestId` and `answer` (initially `null`). Text and choices must not be blank. Choices are suggestions, not a restriction on the person's answer.
+
+Supply a stable request ID to make replay safe. Repeating it within that objective returns the original question, including its answer if one has since been recorded. Reusing it with different text or choices is refused. Omission generates an ID. Request IDs are scoped to the objective and do not expire.
+
+Open questions appear as `openPersonQuestions` in the briefing, ordinary `status --json` and `objective show`. Human-readable status shows the question, choices and answer command. A person's answer records exact `text`, `answeredBy` (the operating-system caller) and `answeredAt`. Any person can answer, including after the objective closes; an answer does not reopen it. A supervisor cannot answer these questions, even with `answerQuestions` permission – that permission concerns worker questions. Unknown questions and another objective's questions are refused. A second answer is refused with the first answer's author, time and text.
+
+Schema 17 adds `person_questions` and `person_answers` without changing existing records. Questions and answers cannot be edited, deleted or replaced; database triggers enforce this. Recording the answer also records a `person_answered` event in the same transaction, with the question ID, question text and answer. `wait` delivers it through the ordinary event protocol. Each answer counts once as a person intervention with action `answer`, not as an extra generic intervention event. These records survive attempt pruning.
 
 ### Events, waiting and acknowledgement
 
@@ -115,6 +133,7 @@ Each event has an opaque stable `id`, `objectiveId`, increasing per-objective `s
 - `review_recorded`: a review was recorded against the reviewed task and attempt, with the exact commit, verdict and findings.
 - `budget_reached`: observed objective cost or worker time reached a configured limit. Details name the budget, limit and observed spending. Cost and worker-time limits have separate events.
 - `deadline_reached`: the first wait or dispatcher check observed a passed deadline.
+- `person_answered`: a person answered a supervisor's question; details include its question ID, text and recorded answer.
 - `person_intervention`: one of the person decisions or lease-return confirmations described below. Details retain the original intervention identity and record. Forwarded messages, answer-delivery copies and mirrored confirmation entries do not create extra events.
 
 Only facts about the objective, its tasks and their attempts produce events. Supervisor notes, inspection, unrelated tasks and successful housekeeping do not. A recorded owner-read failure during an archived attempt's cleanup still produces `decision_needed`. A worker finishing and its attempt being held are distinct facts and may produce separate events. Event facts are recorded in the same database transaction as their source records; failed transactions leave neither behind. Deadline and elapsed-time observations have no source write, so wait and dispatcher checks record them transactionally when first observed. A particular deadline or budget limit produces at most one event per objective; changing to a different deadline or limit can produce another. Existing records are not backfilled on migration. Events and their sequence numbers survive attempt pruning and task membership changes.

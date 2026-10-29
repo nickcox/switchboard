@@ -77,5 +77,5 @@ export async function briefing(deps: Dependencies, objectiveId: string) {
     ...criterion, status: criterion.completion === null ? "pending" : "completed",
   })) }, tasks, possiblyRunning: attempts.filter(attempt => attempt.possiblyRunning).map(attempt => ({
     contextId: attempt.contextId, taskId: attempt.taskId, attempt: attempt.attempt, warning: attempt.warning!,
-  })), openQuestions, notes: readNotes(database, objectiveId), events: pendingEvents(database, objectiveId), personInterventions, diagnostics };
+  })), openQuestions, openPersonQuestions: shown.openPersonQuestions, notes: readNotes(database, objectiveId), events: pendingEvents(database, objectiveId), personInterventions, diagnostics };
 }

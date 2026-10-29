@@ -1,5 +1,6 @@
 import type { OutputBranchCleanup } from "../workspaces/output-branch.ts";
 import { describeOutputBranch } from "./output-branch.ts";
+import { readPersonQuestions, type PersonQuestion } from "../supervise/questions.ts";
 import { ObjectiveStore, type ObjectiveBrief } from "../objectives/store.ts";
 import { readQuestions, type Question, type InvalidQuestionFile } from "../runtime/questions-store.ts";
 import { describeQuestions } from "../runtime/questions.ts";
@@ -128,6 +129,7 @@ export type StatusResult = {
   blockingDispatch: AttemptSummary[];
   objectives: ObjectiveBrief[];
   openQuestions?: Question[];
+  openPersonQuestions: PersonQuestion[];
   /** The context's resolved finalisation policy, or why it could not be resolved. Absent when none is configured. */
   policy?: { resolved: ResolvedPolicy } | { error: string };
   detail?: string;
@@ -189,9 +191,10 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     : await resolvePolicy(deps.policy).then(resolved => ({ resolved }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   // A policy that cannot be resolved needs fixing before any attempt can be finished.
   const openQuestions = readQuestions(deps.attempts.database, { contextId: deps.contextId }).questions.filter(question => !question.answer);
-  const attention = openQuestions.length > 0 || attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
+  const openPersonQuestions = readPersonQuestions(deps.attempts.database).filter(question => !question.answer);
+  const attention = openPersonQuestions.length > 0 || openQuestions.length > 0 || attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
   return {
-    version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts, objectives,
+    version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts, objectives, openPersonQuestions,
     capacity: { maximum: deps.maxAttempts ?? 1, active }, blockingDispatch,
     ...(openQuestions.length ? { openQuestions } : {}),
     ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
@@ -267,6 +270,11 @@ export function describeStatus(value: StatusResult): string {
     if (a.transcript) lines.push(`  Transcript: ${a.transcript}`);
     if (a.takeover) lines.push(`  Take over by hand: ${a.takeover}`);
     if (a.nextAction.code !== "none") lines.push(`  Next: ${a.nextAction.description}`);
+  }
+  for (const question of value.openPersonQuestions) {
+    lines.push(`Open person question ${question.id}: objective ${question.objectiveId} – ${question.text}`);
+    if (question.choices) lines.push(`  Choices: ${question.choices.join("; ")}`);
+    lines.push(`  Answer with switchboard objective answer ${question.objectiveId} --question ${question.id} "<answer>"`);
   }
   for (const question of value.openQuestions ?? []) {
     lines.push(`Open question ${question.id}: task ${question.taskId}, attempt ${question.attempt} – ${question.text}`);

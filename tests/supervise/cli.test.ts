@@ -14,6 +14,48 @@ const root = resolve(".investigation/supervise-cli");
 mkdirSync(root, { recursive: true });
 const cleanups: (() => Promise<void>)[] = [];
 
+test("supervisor asks the person; status, objective show and briefing expose it, and an answer reaches wait", async () => {
+  const f = fixture();
+  const question = f.ok("ask", "Which design?", "--choice", "Small", "--choice", "Large", "--request-id", "design").question;
+  assert.equal(question.askedBy, "supervisor:goal");
+  assert.deepEqual(question.choices, ["Small", "Large"]);
+  assert.deepEqual(f.ok("ask", "Which design?", "--choice", "Small", "--choice", "Large", "--request-id", "design").question, question);
+  assert.equal(f.run("ask", "Different?", "--request-id", "design").code, 1);
+  assert.equal(f.run("ask", " ").code, 1);
+  assert.equal(f.run("objective", "answer", "--question", question.id, "Small").code, 2);
+  assert.deepEqual(f.ok("briefing").openPersonQuestions, [question]);
+  assert.deepEqual(f.person("objective", "show", "goal").objective.openPersonQuestions, [question]);
+  const jsonStatus = f.raw("status", "--json");
+  assert.deepEqual(JSON.parse(jsonStatus.stdout).openPersonQuestions, [question]);
+  const textStatus = f.raw("status");
+  assert.match(textStatus.stdout, /Open person question.*objective goal – Which design\?/);
+  assert.ok(textStatus.stdout.includes(`switchboard objective answer goal --question ${question.id}`));
+  assert.match(textStatus.stdout, /Choices: Small; Large/);
+  const wrong = f.raw("objective", "answer", "other", "--question", question.id, "Small", "--json");
+  assert.equal(wrong.status, 1);
+  assert.match(JSON.parse(wrong.stdout).detail, /Unknown question/);
+  const answered = f.person("objective", "answer", "goal", "--question", question.id, "Small").question;
+  assert.equal(answered.answer.text, "Small");
+  assert.match(answered.answer.answeredBy, /^operator:/);
+  const repeat = f.raw("objective", "answer", "goal", "--question", question.id, "Large", "--json");
+  assert.equal(repeat.status, 1);
+  assert.match(JSON.parse(repeat.stdout).detail, /already answered.*Small/);
+  const briefing = f.ok("briefing");
+  assert.deepEqual(briefing.openPersonQuestions, []);
+  const intervention = briefing.personInterventions.items.find((item: { source: string }) => item.source === "person_answers");
+  assert.equal(intervention.action, "answer");
+  assert.equal(intervention.details.questionId, question.id);
+  let event = f.ok("wait", "--timeout", "0").event;
+  while (event && event.kind !== "person_answered") {
+    f.ok("handled", event.id);
+    event = f.ok("wait", "--timeout", "0").event;
+  }
+  assert.equal(event.kind, "person_answered");
+  assert.equal(event.details.questionId, question.id);
+  assert.equal(event.details.answer.text, "Small");
+  assert.deepEqual(JSON.parse(f.raw("status", "--json").stdout).openPersonQuestions, []);
+});
+
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 15000;
   while (!(await check())) {

@@ -28,6 +28,10 @@ export function personInterventions(database: Database, objectiveId: string): Pe
   for (const row of database.all("SELECT * FROM objective_changes WHERE objective = ? AND action <> 'add' ORDER BY sequence", objectiveId)) {
     add({ id: `objective:${objectiveId}:${row.sequence}`, source: "objective_changes", action: String(row.action), actor: String(row.changed_by), at: String(row.changed_at), details: JSON.parse(String(row.changes)) });
   }
+  for (const row of database.all(`SELECT q.id, a.* FROM person_answers a JOIN person_questions q ON q.id = a.question_id WHERE q.objective = ?`, objectiveId)) {
+    add({ id: `person_answer:${row.id}`, source: "person_answers", action: "answer", actor: String(row.answered_by), at: String(row.answered_at),
+      details: { questionId: String(row.id), text: String(row.text) } });
+  }
   const memberships = new Map<string, { at: number; before: string | null | undefined; after: string | null | undefined }[]>();
   // Before and after retain membership changes, including a task moved away from this objective.
   for (const row of database.all("SELECT * FROM task_changes ORDER BY changed_at,sequence")) {

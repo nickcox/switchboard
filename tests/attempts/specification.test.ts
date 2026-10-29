@@ -42,7 +42,7 @@ test("version 4 bindings migrate once without borrowing missing facts from the c
   const reopened = await Promise.all([Database.open(path), Database.open(path)]);
   try {
     for (const database of reopened) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 16);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 17);
       assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);
       assert.equal(database.get("SELECT definition_revision FROM tasks WHERE id = 'snapshot-a1'")!.definition_revision, 1);
       const attempts = new AttemptStore(database, f.deps.contextId);

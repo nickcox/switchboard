@@ -113,7 +113,7 @@ test("a version 1 database gains the attempt tables without changing its tasks",
   const reopened = await SqliteTaskStore.open({ path });
   try {
     assert.deepEqual(await reopened.list(), before);
-    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 16);
+    assert.equal(reopened.database.get("PRAGMA user_version")!.user_version, 17);
     assert.deepEqual(new AttemptStore(reopened.database, "context").list(), []);
   } finally { reopened.close(); }
 });

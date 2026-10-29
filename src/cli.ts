@@ -23,7 +23,7 @@ const usage = `Usage:
   switchboard --version
   switchboard supervise <operation> --objective <id> [options] [--config <path>]
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
-  switchboard objective <add|show|list|update|complete|abandon|reopen> [id] [options] [--json]
+  switchboard objective <add|show|list|update|complete|abandon|reopen|answer> [id] [options] [--json]
   switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
   switchboard dispatch --once [--dry-run] [--task <id> [--from-attempt <n> [--note <text> | --note-file <path>]]] [--request-id <id>] [--json] [--config <path>]
   switchboard review --task <id> [--attempt <n>] [--json] [--config <path>]

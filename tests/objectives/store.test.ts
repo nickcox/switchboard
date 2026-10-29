@@ -246,7 +246,7 @@ test("version 9 migration preserves task definitions and attempts, with null lin
   const reopened = await Promise.all([SqliteTaskStore.open({ path: f.path }), SqliteTaskStore.open({ path: f.path })]);
   try {
     for (const tasks of reopened) {
-      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 16);
+      assert.equal(tasks.database.get("PRAGMA user_version")!.user_version, 17);
       assert.deepEqual(await tasks.read("existing"), before);
       assert.deepEqual(new AttemptStore(tasks.database, "fixture").read(ref), attempt);
       assert.deepEqual(new ObjectiveStore(tasks.database, "operator:creator").list(), []);
