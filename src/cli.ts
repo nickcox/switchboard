@@ -23,6 +23,7 @@ import { answerQuestion } from "./dispatch/answer.ts";
 const usage = `Usage:
   switchboard --version
   switchboard supervise <operation> --objective <id> [options] [--config <path>]
+  switchboard supervisor start --objective <id> [--config <path>]
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen> [id] [options] [--json]
   switchboard objective <add|show|list|update|complete|abandon|reopen|answer> [id] [options] [--json]
   switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]
@@ -105,6 +106,7 @@ async function main(argv: string[]): Promise<number> {
   }
   const taskArgs = [...argv.slice(0, commandIndex), ...argv.slice(commandIndex + 1)];
   if (argv[commandIndex] === "supervise") return (await import("./supervise/cli.ts")).superviseCommand(taskArgs);
+  if (argv[commandIndex] === "supervisor") return (await import("./hosts/pi/start.ts")).supervisorCommand(taskArgs);
   if (argv[commandIndex] === "task") return taskCommand(taskArgs);
   if (argv[commandIndex] === "objective") return (await import("./objectives/cli.ts")).objectiveCommand(taskArgs);
   if (argv[commandIndex] === "import") return (await import("./tasks/import.ts")).importCommand(taskArgs);

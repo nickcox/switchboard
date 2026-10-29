@@ -15,6 +15,10 @@ The old `tasks.file` setting is removed. Switchboard never silently reads a back
 
 Use local storage, not network or synced folders. Switchboard probes exclusive creation in the database's directory and refuses linked or non-canonical paths. Do not copy an open database without its WAL; stop Switchboard first or use SQLite backup tooling. Restoring a backup is not an ordinary restart: [ADR-0007 requires dispatch to stay fenced until application identities and external owners have been reconciled](adr/0007-one-sqlite-database.md#decision). A full operator disaster-recovery procedure is still required.
 
+## Supervisor model
+
+`supervisor` is an optional object with optional `provider`, `model` and `thinking` fields. `switchboard supervisor start` uses these for its interactive Pi session; each omitted field defaults to the worker's corresponding field. Thinking accepts the same levels as `worker.thinking`. The Pi entrypoint remains `worker.piEntrypoint`. See [starting a Pi supervisor](supervisor.md#starting-a-pi-supervisor) for session isolation and limits.
+
 ## Provider availability
 
 Loading configuration validates its shape without opening providers. Task commands open only the database. Other inspection and finalisation commands read external owners only when needed – a missing Git or Treehouse executable leaves the affected observations unknown, without hiding local task or runtime records. Unknown evidence never permits a change.

@@ -2,7 +2,29 @@
 
 `switchboard supervise <operation> --objective <id> [options]` is the restricted command for a supervisor working on one objective. It always constructs the caller `{ kind: "supervisor", objectiveId: "<id>" }` itself. There is no caller option or environment override. Every operation requires exactly one `--objective`, naming an existing, open objective.
 
-This is the shared command interface, not a supervisor agent or host. The Pi extension and host skills are separate work. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
+This is the shared command interface. The [Pi host](#starting-a-pi-supervisor) binds it to an agent session; other hosts can use the same operations. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
+
+## Starting a Pi supervisor
+
+```sh
+switchboard supervisor start --objective release-notes --config /absolute/path/switchboard.json
+```
+
+Run this in a terminal with Pi installed at `worker.piEntrypoint` and credentials available to Pi. The command refuses unknown, completed or abandoned objectives before starting Pi. Each invocation starts a fresh interactive session and asks it to call `sb_briefing` first. After an interruption, run the command again: the briefing and notes rebuild its understanding from current records, without resuming an old transcript. Workers already dispatched continue independently.
+
+The optional configuration object `supervisor` can set `provider`, `model` and `thinking`; each omitted setting defaults to the worker's corresponding setting. For example:
+
+```json
+{ "supervisor": { "provider": "openai-codex", "model": "gpt-6.1-sol", "thinking": "high" } }
+```
+
+The session's working directory, Pi session directory and private tool-input directory are under `<runtimeRoot>/supervisors/<objective-hash>/session-<unique-suffix>/`. The extension fixes the objective and absolute configuration path at startup. Tool inputs cannot change either, supply a caller or choose a request ID. The `sb_` tools mirror the operations below (spaces become underscores, for example `sb_task_add`). File-backed inputs are supplied as text or structured data, not paths: `body`, `criteria`, dispatch `note` and objective-completion `statements`. The host creates private files for them. Dispatch and ask derive a stable request ID from the session and tool call; retrying that call does not dispatch or ask twice.
+
+Only these supervisor tools are offered to the model. There is no shell, file reader, editor or file-writing tool, and no discovered skills, extensions, prompt templates, context files or MCP servers. The initial routine in `src/hosts/pi/routine.md` is appended to the system prompt, so compaction does not remove it and no `read` tool is needed. It is a short placeholder pending the shared supervisor skill. Pi still uses the operator's provider credentials and model settings. This is a restricted agent interface, not an operating-system sandbox; trusted extension code runs as the operator.
+
+`wait` and `handled` are not agent tools. The extension waits in background code and sends one event at a time as a user follow-up, including while Pi is busy. It acknowledges only after Pi reports delivery of that exact message to the agent, not when it was queued or a turn ended. Failed waits and acknowledgements are retried with a delay. No later event is fetched until acknowledgement succeeds. A session ending before delivery leaves the event unhandled for the next session. Acknowledgement records delivery, not proof that the model made the right decision; the briefing remains the source of current facts.
+
+The supervisor cannot change its objective's authority, budget or criteria, act on unrelated tasks, bypass safety refusals, or confirm that all worker processes have stopped. In particular, it cannot return leases. A person must inspect and confirm lease return separately. Supervisor-session model usage is not yet charged to the objective budget; worker accounting is unchanged.
 
 ## Operations
 

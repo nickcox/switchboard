@@ -57,6 +57,11 @@ export const configSchema = z.strictObject({
    * ~/.config/switchboard/policy.json). The repository layer is read from the base branch.
    */
   finalisation: operatorPolicySchema.extend({ globalFile: absolute.optional() }).default({}),
+  supervisor: z.strictObject({
+    provider: nonempty.optional(),
+    model: nonempty.optional(),
+    thinking: thinkingLevelSchema.optional(),
+  }).optional(),
   worker: z.strictObject({
     /** The Pi CLI entry point run with this Node.js executable, for example .../pi-coding-agent/dist/bundle/cli.js. */
     piEntrypoint: absolute,
