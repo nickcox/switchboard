@@ -157,6 +157,7 @@ export async function createDependencies(config: Config, caller: Caller, options
       caller,
       contextId: config.contextId,
       checks: config.checks,
+      keepAwake,
       checkEnvironment: hostEnvironment,
       tasks,
       maxAttempts: config.maxAttempts,

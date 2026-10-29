@@ -1,3 +1,4 @@
+import { withKeepAwake } from "../runtime/keep-awake.ts";
 import { cleanupOutputBranch, describeOutputBranch, outputTarget, retentionReferences } from "./output-branch.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 import { callerName } from "../caller.ts";
@@ -163,9 +164,11 @@ const unexpected = (command: "finish" | "discard") => (error: unknown) => readRe
 });
 
 export async function finish(deps: Dependencies, options: FinishOptions): Promise<DispatchResult> {
-  try { requireOperationAuthority(deps, ["acceptOutput", "completeTasks", ...(options.rebase ? ["rebase" as const] : []), ...(options.noProcesses ? ["returnLease" as const] : [])], options); }
-  catch (error) { return refused("inspect_attempt", error instanceof Error ? error.message : String(error)); }
-  return finishAttempt({ ...deps, reads: new OwnerReads(deps, "finish", options.leaseId) }, options).catch(unexpected("finish"));
+  return withKeepAwake(options.dryRun ? false : deps.keepAwake ?? true, async () => {
+    try { requireOperationAuthority(deps, ["acceptOutput", "completeTasks", ...(options.rebase ? ["rebase" as const] : []), ...(options.noProcesses ? ["returnLease" as const] : [])], options); }
+    catch (error) { return refused("inspect_attempt", error instanceof Error ? error.message : String(error)); }
+    return finishAttempt({ ...deps, reads: new OwnerReads(deps, "finish", options.leaseId) }, options).catch(unexpected("finish"));
+  }, deps.progress);
 }
 
 export async function discard(deps: Dependencies, options: { leaseId: string; noProcesses: boolean; confirm: boolean; dryRun?: boolean; note?: string }): Promise<DispatchResult> {

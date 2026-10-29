@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { runCommand } from "../infra/command.ts";
 import { shorten } from "./activity.ts";
@@ -31,8 +32,51 @@ export function defaultKeepAwakeCommand(platform: NodeJS.Platform = process.plat
   }
 }
 
-/** The command owns its power assertion; stopping it releases that assertion on every worker exit path. */
+type Notes = { subscribe: (note: (text: string) => void) => () => void };
+const current = new AsyncLocalStorage<Notes>();
+
+/** Nested worker supervision shares the command and replays notes recorded before its activity log existed. */
+export async function withKeepAwake<T>(setting: KeepAwake, run: () => Promise<T>, note?: (text: string) => void): Promise<T> {
+  if (current.getStore()) return run();
+  const notes: string[] = [];
+  const listeners = new Set<(text: string) => void>(note ? [note] : []);
+  const stop = await startKeepAwake(setting, text => {
+    if (notes.length < 100 || text.includes("unavailable")) notes.push(text);
+    for (const listener of listeners) listener(text);
+  });
+  const interrupt = (signal: NodeJS.Signals) => {
+    // An operation's own handler can finish gracefully. Otherwise clean up before the default termination.
+    if (process.listenerCount(signal) > 1) return;
+    void stop().finally(() => {
+      process.removeListener("SIGINT", onInt);
+      process.removeListener("SIGTERM", onTerm);
+      process.kill(process.pid, signal);
+    });
+  };
+  const onInt = () => interrupt("SIGINT");
+  const onTerm = () => interrupt("SIGTERM");
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
+  try {
+    return await current.run({ subscribe: listener => {
+      for (const text of notes) listener(text);
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    } }, run);
+  } finally {
+    process.removeListener("SIGINT", onInt);
+    process.removeListener("SIGTERM", onTerm);
+    await stop();
+  }
+}
+
+/** The command owns its power assertion; stopping it releases that assertion on every exit path. */
 export async function startKeepAwake(setting: KeepAwake, note: (text: string) => void): Promise<() => Promise<void>> {
+  const shared = current.getStore();
+  if (shared) {
+    const unsubscribe = shared.subscribe(note);
+    return async () => { unsubscribe(); };
+  }
   if (setting === false) return async () => {};
   const command = setting === true ? defaultKeepAwakeCommand() : setting.command;
   const warn = (detail: string) => note(`Keep-awake command unavailable; the computer may sleep: ${shorten(detail, 400)}`);
@@ -60,7 +104,7 @@ export async function startKeepAwake(setting: KeepAwake, note: (text: string) =>
         note(`Keep-awake command output: ${shorten(text, 400)}`);
       });
     }
-    // Observe spawn failure before launching the worker, without making it a refusal.
+    // Observe spawn failure before proceeding, without making it a refusal.
     await new Promise<void>(resolve => { child.once("spawn", resolve); child.once("error", () => resolve()); });
     if (!ended) note(`Keep-awake command started (pid ${child.pid})`);
     return async () => {

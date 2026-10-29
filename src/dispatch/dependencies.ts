@@ -1,3 +1,4 @@
+import type { KeepAwake } from "../runtime/keep-awake.ts";
 import type { Caller } from "../caller.ts";
 import type { CheckCommand } from "../attempts/checks.ts";
 import type { AttemptStore } from "../attempts/store.ts";
@@ -28,6 +29,7 @@ export type Dependencies = {
   workspaces: WorkspaceProvider;
   attempts: AttemptStore;
   checks?: CheckCommand[];
+  keepAwake?: KeepAwake;
   checkEnvironment?: Record<string, string>;
   maxAttempts?: number;
   maxAttemptsPerTask?: number;

@@ -1,3 +1,4 @@
+import { withKeepAwake } from "../runtime/keep-awake.ts";
 import { resolve } from "node:path";
 import type { RequestInputs } from "../attempts/requests.ts";
 import { callerSchema } from "../caller.ts";
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
       if (resolve(databasePath(config)) !== resolve(path) || config.contextId !== context || config.runtimeRoot !== row.runtime_root) {
         throw new Error("The configuration no longer names the recorded database, context and runtime root");
       }
+      await withKeepAwake(config.keepAwake, async () => {
       const deps = await createDependencies(config, caller, { dispatch: true, progress: message => console.log(message) });
       try {
         const controller = new AbortController();
@@ -45,6 +47,7 @@ async function main(): Promise<void> {
           process.removeListener("SIGTERM", interrupt);
         }
       } finally { deps.close(); }
+      }, message => console.log(message));
     } catch (error) {
       console.error(error);
       await recordDispatchResult(database, context, requestId, dispatchStartFailed(requestId, String(row.output_path), error instanceof Error ? error.message : String(error)));

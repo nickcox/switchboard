@@ -1,3 +1,4 @@
+import { withKeepAwake } from "../runtime/keep-awake.ts";
 import { retentionReferences } from "./output-branch.ts";
 import { randomUUID } from "node:crypto";
 import { latestChecks } from "../attempts/checks.ts";
@@ -93,10 +94,10 @@ export async function dispatchOnce(
   deps: Dependencies, options: DispatchOptions = {},
 ): Promise<DispatchResult> {
   const reads = new OwnerReads(deps, "dispatch");
-  return dispatchAttempt(deps, options, reads).catch(error => {
+  return withKeepAwake(options.dryRun ? false : deps.keepAwake ?? true, () => dispatchAttempt(deps, options, reads).catch(error => {
     const failed = readRefusal(error);
     return failed ? { ...failed, lease: reads.effectAttempted ? "unknown" : "none" } : refusal("preflight", "inspect_attempt", message(error));
-  });
+  }), deps.progress);
 }
 
 async function dispatchAttempt(deps: Dependencies, options: DispatchOptions, reads: OwnerReads): Promise<DispatchResult> {

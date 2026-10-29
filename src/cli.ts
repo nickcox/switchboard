@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createDependencies, loadConfig } from "./config.ts";
+import { withKeepAwake } from "./runtime/keep-awake.ts";
 import { dispatchOnce } from "./dispatch/dispatch.ts";
 import { describe } from "./dispatch/result.ts";
 import { requestControl } from "./dispatch/control.ts";
@@ -212,16 +213,21 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
   const configPath = resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json");
-  let deps;
-  try {
-    const config = await loadConfig(configPath);
-    deps = await createDependencies(config, commandLineCaller(), {
-      dispatch: command === "dispatch", progress: message => { if (!values.json) console.error(message); },
-    });
-  } catch (error) {
+  let config;
+  try { config = await loadConfig(configPath); }
+  catch (error) {
     console.error(`Configuration error (${configPath}): ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
+  const progress = (message: string) => { if (!values.json) console.error(message); };
+  return withKeepAwake(!values["dry-run"] && (command === "dispatch" || command === "finish") ? config.keepAwake : false, async () => {
+    let deps;
+    try {
+      deps = await createDependencies(config, commandLineCaller(), { dispatch: command === "dispatch", progress });
+    } catch (error) {
+      console.error(`Configuration error (${configPath}): ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
 
   try {
     // A task's attempt is acted on through its lease, so --task is resolved to the attempt's lease ID first.
@@ -320,6 +326,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(values.json ? JSON.stringify(value, null, 2) : describe(value));
     return value.ok ? 0 : 1;
   } finally { deps.close(); }
+  }, progress);
 }
 
 process.exitCode = await main(process.argv.slice(2)).catch(error => {
