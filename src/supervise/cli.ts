@@ -16,6 +16,7 @@ import { TaskStoreError, type TaskState } from "../tasks/store.ts";
 import { briefing } from "./briefing.ts";
 import { appendNote } from "./notes.ts";
 import { handleEvent, waitForEvent } from "./events.ts";
+import { detachedDispatch } from "./dispatch.ts";
 
 const usage = "Usage: switchboard supervise <operation> --objective <id> [options] [--config <path>]";
 const selectors = ["lease", "task", "attempt"];
@@ -93,7 +94,8 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   const wait = Number(values.wait ?? "10");
   if (!Number.isFinite(wait) || wait <= 0) invalid("--wait must be a positive number of seconds");
 
-  const config = await loadConfig(resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json"));
+  const configPath = resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json");
+  const config = await loadConfig(configPath);
   const caller = { kind: "supervisor", objectiveId: values.objective! } as const;
   const path = databasePath(config);
   await requireRetainedStorage(path, [config.workspaces.poolRoot]);
@@ -137,7 +139,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     }
   } finally { tasks.close(); }
 
-  const deps = await createDependencies(config, caller, { dispatch: operation === "dispatch" });
+  const deps = await createDependencies(config, caller, { dispatch: operation === "dispatch" && values["dry-run"] === true });
   try {
     let leaseId = values.lease;
     if (byAttempt && values.task !== undefined) {
@@ -150,14 +152,19 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
       case "briefing": return { code: 0, value: await briefing(deps, caller.objectiveId) };
       case "dispatch": {
         const note = values["note-file"] === undefined ? values.note : await readFile(resolve(values["note-file"]), "utf8");
+        const inputs = { taskId: values.task!,
+          ...(fromAttempt === undefined ? {} : { startingPoint: { taskId: values.task!, attempt: fromAttempt } }),
+          ...(note === undefined ? {} : { note }) };
+        if (!values["dry-run"]) {
+          value = await detachedDispatch(deps, config, configPath, inputs, values["request-id"]);
+          break;
+        }
         const controller = new AbortController();
         const interrupt = () => controller.abort();
         process.once("SIGINT", interrupt);
         try {
-          value = await dispatchOnce(deps, { taskId: values.task!, dryRun: values["dry-run"] === true, signal: controller.signal,
-            ...(values["request-id"] === undefined ? {} : { requestId: values["request-id"] }),
-            ...(fromAttempt === undefined ? {} : { startingPoint: { taskId: values.task!, attempt: fromAttempt } }),
-            ...(note === undefined ? {} : { note }) });
+          value = await dispatchOnce(deps, { ...inputs, dryRun: true, signal: controller.signal,
+            ...(values["request-id"] === undefined ? {} : { requestId: values["request-id"] }) });
         } finally { process.removeListener("SIGINT", interrupt); }
         break;
       }

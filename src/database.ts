@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 15) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 16) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -371,6 +371,29 @@ export class Database {
           CREATE TRIGGER supervisor_positions_forward BEFORE UPDATE ON supervisor_positions WHEN NEW.sequence < OLD.sequence BEGIN
             SELECT RAISE(ABORT, 'Supervisor positions cannot move backwards'); END;
           PRAGMA user_version = 15;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 16) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 16) return;
+        db.exec(`
+          CREATE TABLE supervisor_dispatches (
+            context TEXT NOT NULL, request_id TEXT NOT NULL, caller TEXT NOT NULL CHECK(json_valid(caller)),
+            inputs TEXT NOT NULL CHECK(json_valid(inputs)), fingerprint TEXT NOT NULL, config_path TEXT NOT NULL,
+            runtime_root TEXT NOT NULL, output_path TEXT NOT NULL, recorded_at TEXT NOT NULL,
+            process_pid INTEGER, result TEXT CHECK(result IS NULL OR json_valid(result)), PRIMARY KEY(context, request_id));
+          CREATE TRIGGER supervisor_dispatches_identity_immutable
+            BEFORE UPDATE OF context, request_id, caller, inputs, fingerprint, config_path, runtime_root, output_path, recorded_at ON supervisor_dispatches
+            BEGIN SELECT RAISE(ABORT, 'Supervisor dispatch requests cannot be changed'); END;
+          CREATE TRIGGER supervisor_dispatches_not_replaced BEFORE INSERT ON supervisor_dispatches
+            WHEN EXISTS(SELECT 1 FROM supervisor_dispatches WHERE context = NEW.context AND request_id = NEW.request_id)
+            BEGIN SELECT RAISE(ABORT, 'Supervisor dispatch requests cannot be replaced'); END;
+          CREATE TRIGGER supervisor_dispatches_not_removed BEFORE DELETE ON supervisor_dispatches
+            BEGIN SELECT RAISE(ABORT, 'Supervisor dispatch requests cannot be removed'); END;
+          CREATE TRIGGER supervisor_dispatches_process_once BEFORE UPDATE OF process_pid ON supervisor_dispatches
+            WHEN OLD.process_pid IS NOT NULL BEGIN SELECT RAISE(ABORT, 'Supervisor dispatch process already started'); END;
+          CREATE TRIGGER supervisor_dispatches_result_once BEFORE UPDATE OF result ON supervisor_dispatches
+            WHEN OLD.result IS NOT NULL BEGIN SELECT RAISE(ABORT, 'Supervisor dispatch result already recorded'); END;
+          PRAGMA user_version = 16;
         `);
       });
       return result;

@@ -145,7 +145,7 @@ test("a staging failure does not migrate the original schema, and the next run b
   const path = databasePath(f.config);
   const database = await Database.open(path);
   await database.transaction(() => {
-    for (const table of ["supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage", "review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) database.run(`DROP TABLE ${table}`);
+    for (const table of ["supervisor_dispatches", "supervisor_positions", "supervisor_events", "supervisor_notes", "answer_deliveries", "question_answers", "question_files", "worker_usage", "review_tasks", "request_records", "attempt_specifications", "control_requests", "worker_activity", "worker_observations", "launches", "worker_claims", "attempt_entries", "confirmations", "pending_attempt_deletions", "archived_attempts", "attempts", "attempt_numbers"]) database.run(`DROP TABLE ${table}`);
     database.run("ALTER TABLE tasks ADD COLUMN started_body TEXT");
     database.run("DROP TRIGGER task_definition_changed");
     database.run("ALTER TABLE tasks DROP COLUMN acceptance_criteria");

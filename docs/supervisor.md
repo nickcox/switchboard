@@ -2,7 +2,7 @@
 
 `switchboard supervise <operation> --objective <id> [options]` is the restricted command for a supervisor working on one objective. It always constructs the caller `{ kind: "supervisor", objectiveId: "<id>" }` itself. There is no caller option or environment override. Every operation requires exactly one `--objective`, naming an existing, open objective.
 
-This is the shared command interface, not a supervisor agent or host. The Pi extension, host skills, questions to the person and detached dispatch are separate work. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
+This is the shared command interface, not a supervisor agent or host. The Pi extension, host skills and questions to the person are separate work. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
 
 ## Operations
 
@@ -24,7 +24,7 @@ All invocations accept `--config <path>` (default: `SWITCHBOARD_CONFIG`, then `.
 | `task release <id>` | Releases a task's hold. |
 | `task block <id>` / `task unblock <id>` | `--by <task-id>` is required. |
 | `task done <id>` | Optional `--note <text>`. |
-| `dispatch` | Requires `--task <id>`. Accepts `--from-attempt <n>` with `--note <text>` or `--note-file <path>`, `--dry-run` and `--request-id <id>`. Runs one attempt in the foreground, like ordinary `dispatch --once`, but takes no `--once` flag. |
+| `dispatch` | Requires `--task <id>`. Accepts `--from-attempt <n>` with `--note <text>` or `--note-file <path>`, `--dry-run` and `--request-id <id>`. Starts one detached dispatch and returns when its attempt is reserved or the dispatch is refused. `--dry-run` stays in the foreground. Takes no `--once` flag. |
 | `review` | `--task <id>` and optional `--attempt <n>`. Creates a review task in the same objective; dispatch it separately. |
 | `answer` | `--task <id> --question <question-id> "<answer>"`, with optional `--wait <seconds>`. |
 | `steer` | An attempt selector and `"<message>"`, with optional `--after`, `--as <label>` and `--wait <seconds>`. |
@@ -50,7 +50,19 @@ switchboard supervise finish --objective release-notes --task write-notes
 switchboard supervise objective complete --objective release-notes --statements-file completion.json
 ```
 
-Dispatch stays in the foreground until the worker finishes, so the caller must keep the command alive. Interrupting it asks the worker to stop and preserves the lease. It prints no progress stream, only the final JSON result. Stable request IDs retain the ordinary dispatch replay behaviour and exit codes.
+### Detached dispatch
+
+Unlike ordinary `dispatch --once`, supervisor dispatch records the request and its fixed supervisor caller in the database, then starts a separate Node.js process. That process reads its caller and explicit inputs from the recorded request – no argument or environment variable supplies its caller. It has its own process group, no terminal input, and standard output and error go to `supervisor-dispatches/<request-hash>/output.log` under the runtime root. The database stores that path relative to the runtime root; responses name it as `observed.outputPath`.
+
+The command returns `dispatch_started` with exit code 0 as soon as the attempt is reserved. `attempt` contains `contextId`, `taskId`, the attempt number and `requestId`. Reservation is not proof that acquisition or worker launch succeeded. The dispatcher continues after the calling command or agent session exits, including normal worker supervision, budget checks, keep-awake when configured, and finalisation. Use `wait` for the worker's eventual events, or read the briefing. Stop a worker with `supervise stop`, not by interrupting the command that asked for dispatch.
+
+A refusal before reservation returns its ordinary reason and exit code 1. If the process ends before reserving, the response is `dispatch_start_failed`, naming its output file in `detail` and `observed.outputPath`. Inspect that output before making a new request. If the caller dies between recording launch intent and confirming process start, a replay reports `reconciliation_required` when the start remains unconfirmed; it never starts another process for that ID.
+
+Supply a stable `--request-id` to make a repeated tool call safe. Omission generates one, returned with the attempt. Replaying a reserved request returns `existing_request` and the original attempt, including after pruning, without starting another dispatcher or worker. A pre-reservation refusal or startup failure is retained and returned on replay, even if the task later becomes ready; make a new request with a new ID after addressing it. Different explicit inputs or a different supervisor caller refuse as `request_input_mismatch`. A concurrent replay waits for the original reservation or refusal. Request and launch records do not expire.
+
+`--dry-run` still runs in the calling process and launches nothing. It retains ordinary dispatch dry-run checks and replay behaviour, and does not record a detached request. Ordinary `dispatch --once` is unchanged and stays in the foreground. Both commands print only one JSON response through this restricted interface; the detached process's progress is written to its output file.
+
+Schema 16 adds the detached launch records. The request identity, caller, explicit inputs and relative output path are immutable. The process claims a recorded launch once; repeating the internal entry point cannot launch another worker. Attempts and their request-ID records remain authoritative for reservation and attempt state.
 
 ## Briefing and continuity
 

@@ -1,15 +1,35 @@
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Database } from "../../src/database.ts";
 import { defaultPermissions } from "../../src/objectives/store.ts";
+import type { KeepAwake } from "../../src/runtime/keep-awake.ts";
 
 const cli = resolve("src/cli.ts");
 const root = resolve(".investigation/supervise-cli");
 mkdirSync(root, { recursive: true });
+const cleanups: (() => Promise<void>)[] = [];
+
+async function until(check: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 15000;
+  while (!(await check())) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for detached dispatch");
+    await sleep(25);
+  }
+}
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+}
+
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+});
 
 function fixture() {
   const dir = realpathSync(mkdtempSync(join(root, "case-")));
@@ -30,7 +50,7 @@ function fixture() {
   const log = join(dir, "requests.jsonl");
   const config = {
     contextId: "supervise-fixture", runtimeRoot: join(dir, "runtime"), tasks: { repo: "fixture" },
-    workspaces: { repository, poolRoot: join(dir, "pool") }, maxAttemptsPerTask: 6,
+    workspaces: { repository, poolRoot: join(dir, "pool") }, maxAttemptsPerTask: 6, keepAwake: false as KeepAwake,
     delivery: { baseRef: "main", byTaskKind: { review: { kind: "artefact", acceptance: "independent_deliverable", requiredDeliverables: ["report"] } } },
     finalisation: { kind: "manual", globalFile: join(dir, "no-policy.json") },
     worker: { piEntrypoint: resolve("tests/fixtures/pi-rpc.ts"), provider: "fixture", model: "fixture", runMs: 20000,
@@ -66,7 +86,25 @@ function fixture() {
     const db = await Database.open(join(config.runtimeRoot, "switchboard.db"));
     try { return db.all(sql, ...args); } finally { db.close(); }
   };
-  return { dir, configPath, config, log, environment, git, raw, run, ok, person, scenario, rows };
+  const finished = async (requestId: string) => {
+    let value: unknown;
+    await until(async () => {
+      const row = (await rows("SELECT result FROM supervisor_dispatches WHERE request_id = ?", requestId))[0];
+      if (!row?.result) return false;
+      value = JSON.parse(String(row.result));
+      return true;
+    });
+    return value as ReturnType<typeof run>["value"];
+  };
+  const f = { dir, configPath, config, log, environment, git, raw, run, ok, person, scenario, rows, finished };
+  cleanups.push(async () => {
+    for (const row of await rows("SELECT process_pid, result FROM supervisor_dispatches WHERE process_pid IS NOT NULL")) {
+      const pid = Number(row.process_pid);
+      if (row.result === null && alive(pid)) process.kill(pid, "SIGTERM");
+      await until(() => !alive(pid));
+    }
+  });
+  return f;
 }
 
 test("supervise task operations bind the objective and record the supervisor for every change", async () => {
@@ -293,7 +331,9 @@ test("dispatch, continuation, review, finish and completion record the fixed sup
   assert.equal(dry.reason, "dry_run");
   assert.deepEqual(await f.rows("SELECT * FROM attempts"), []);
   const initial = f.run("dispatch", "--task", "work", "--request-id", "initial");
-  assert.equal(initial.code, 1);
+  assert.equal(initial.code, 0);
+  assert.equal(initial.value.reason, "dispatch_started");
+  initial.value = await f.finished(initial.value.attempt.requestId);
   assert.equal(initial.value.reason, "held");
   const replay = f.run("dispatch", "--task", "work", "--request-id", "initial");
   assert.equal(replay.code, 1);
@@ -303,7 +343,9 @@ test("dispatch, continuation, review, finish and completion record the fixed sup
   writeFileSync(note, "Repair from kept output");
   assert.equal(f.ok("dispatch", "--task", "work", "--from-attempt", "1", "--note-file", note, "--dry-run").reason, "dry_run");
   const continued = f.run("dispatch", "--task", "work", "--from-attempt", "1", "--note-file", note, "--request-id", "repair");
-  assert.equal(continued.value.reason, "held", JSON.stringify(continued));
+  assert.equal(continued.value.reason, "dispatch_started", JSON.stringify(continued));
+  continued.value = await f.finished(continued.value.attempt.requestId);
+  assert.equal(continued.value.reason, "held");
   assert.equal(continued.value.attempt.attempt, 2);
   const unsafe = f.run("finish", "--task", "work", "--attempt", "2", "--accept-output");
   assert.equal(unsafe.code, 1);
@@ -314,7 +356,8 @@ test("dispatch, continuation, review, finish and completion record the fixed sup
   assert.ok(reviewChanges.length > 0);
   assert.ok(reviewChanges.every(row => row.changed_by === "supervisor:goal"));
   f.scenario("review-pass");
-  assert.equal(f.run("dispatch", "--task", review.task.id).value.reason, "held");
+  const reviewing = f.ok("dispatch", "--task", review.task.id);
+  assert.equal((await f.finished(reviewing.attempt.requestId)).reason, "held");
   const planned = f.ok("finish", "--task", "work", "--attempt", "2", "--dry-run");
   assert.equal(planned.reason, "planned");
   const finished = f.ok("finish", "--task", "work", "--attempt", "2", "--accept-output");
@@ -347,12 +390,9 @@ for (const operation of ["steer", "stop", "answer"] as const) test(`${operation}
   const f = fixture();
   f.ok("task", "add", "work", "Work");
   f.scenario(operation === "answer" ? "await-question" : "await-steer");
-  const child = execFile(process.execPath, [cli, "supervise", "dispatch", "--task", "work", "--objective", "goal", "--config", f.configPath], { env: f.environment });
-  const completed = new Promise<{ code: number | string | null; stdout: string; stderr: string }>(resolve => child.on("close", code => resolve({ code, stdout, stderr })));
-  let stdout = "", stderr = "";
-  child.stdout!.on("data", data => { stdout += data; });
-  child.stderr!.on("data", data => { stderr += data; });
-  try {
+  const started = f.ok("dispatch", "--task", "work");
+  assert.equal(started.reason, "dispatch_started");
+  {
     let ready = false;
     for (let i = 0; i < 400; i++) {
       if (operation === "answer") ready = (await f.rows("SELECT * FROM question_files WHERE document IS NOT NULL")).length > 0;
@@ -360,7 +400,7 @@ for (const operation of ["steer", "stop", "answer"] as const) test(`${operation}
       if (ready) break;
       await sleep(25);
     }
-    assert.ok(ready, `The synthetic worker must start: ${stderr}`);
+    assert.ok(ready, "The synthetic worker must start");
     const permissions = join(f.dir, "permissions.json");
     const permission = operation === "answer" ? "answerQuestions" : operation === "steer" ? "steerWorkers" : "stopWorkers";
     writeFileSync(permissions, JSON.stringify({ ...defaultPermissions, [permission]: false }));
@@ -373,8 +413,7 @@ for (const operation of ["steer", "stop", "answer"] as const) test(`${operation}
     writeFileSync(permissions, JSON.stringify(defaultPermissions));
     f.person("objective", "update", "goal", "--permissions-file", permissions);
     f.ok(operation, "--task", "work", ...args, "--wait", "5");
-    await completed;
-    assert.equal(JSON.parse(stdout).reason, "held", stderr + stdout);
+    assert.equal((await f.finished(started.attempt.requestId)).reason, "held");
     if (operation === "answer") {
       assert.deepEqual((await f.rows("SELECT answered_by FROM question_answers")).map(row => row.answered_by), ["supervisor:goal"]);
     } else {
@@ -383,8 +422,118 @@ for (const operation of ["steer", "stop", "answer"] as const) test(`${operation}
       assert.equal(requests[0].sender, "supervisor:goal");
       assert.equal(requests[0].label, "operator:admin");
     }
-  } finally {
-    if (child.exitCode === null) child.kill("SIGINT");
-    await completed;
   }
+});
+
+test("detached dispatch outlives its caller, replays without another process and holds keep-awake", async () => {
+  const f = fixture();
+  const marker = join(f.dir, "keep-awake.json");
+  f.config.keepAwake = { command: [process.execPath, resolve("tests/fixtures/keep-awake.ts"), marker, "{pid}", "parent={pid}/{pid}"] };
+  f.scenario("await-release");
+  f.ok("task", "add", "work", "Work");
+  f.ok("task", "add", "another", "Another task");
+  assert.equal(f.ok("dispatch", "--task", "work", "--dry-run", "--request-id", "survivor").reason, "dry_run");
+  assert.deepEqual(await f.rows("SELECT * FROM supervisor_dispatches"), []);
+
+  // run uses spawnSync: the calling CLI has exited before any of these assertions run.
+  const started = f.ok("dispatch", "--task", "work", "--request-id", "survivor");
+  assert.equal(started.reason, "dispatch_started");
+  assert.deepEqual(started.attempt, { contextId: f.config.contextId, taskId: "work", attempt: 1, requestId: "survivor" });
+  const recorded = (await f.rows("SELECT * FROM supervisor_dispatches"))[0]!;
+  const pid = Number(recorded.process_pid);
+  assert.ok(alive(pid));
+  assert.deepEqual(JSON.parse(String(recorded.caller)), { kind: "supervisor", objectiveId: "goal" });
+  assert.equal(isAbsolute(String(recorded.output_path)), false);
+  assert.equal(recorded.output_path, started.observed.outputPath);
+  if (process.platform !== "win32") assert.equal(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim(), String(pid));
+  await until(() => existsSync(marker) && existsSync(f.log) && readFileSync(f.log, "utf8").includes('"type":"prompt"'));
+  const assertion = JSON.parse(readFileSync(marker, "utf8"));
+  assert.equal(assertion.dispatcher, String(pid));
+  assert.ok(alive(assertion.pid), "The detached process holds its own power assertion");
+  assert.equal((await f.rows("SELECT result FROM supervisor_dispatches"))[0]!.result, null, "The worker is still running after the caller exits");
+  const replay = f.run("dispatch", "--task", "work", "--request-id", "survivor");
+  assert.equal(replay.value.reason, "existing_request");
+  assert.deepEqual(replay.value.attempt.requestId, "survivor");
+  assert.equal(replay.value.attempt.attempt, 1);
+  assert.equal(f.run("dispatch", "--task", "another", "--request-id", "survivor").value.reason, "request_input_mismatch");
+  assert.equal((await f.rows("SELECT process_pid FROM supervisor_dispatches"))[0]!.process_pid, pid);
+  assert.equal((await f.rows("SELECT * FROM attempts")).length, 1);
+  assert.equal((readFileSync(f.log, "utf8").match(/"type":"prompt"/g) ?? []).length, 1);
+
+  // Even an explicit second internal invocation cannot claim the recorded launch again.
+  const duplicate = spawnSync(process.execPath, [resolve("src/supervise/dispatch-process.ts"), join(f.config.runtimeRoot, "switchboard.db"), f.config.contextId, "survivor"], { env: f.environment, encoding: "utf8" });
+  assert.equal(duplicate.status, 0, duplicate.stderr);
+  writeFileSync(join(f.dir, "release"), "finish normally");
+  const finished = await f.finished("survivor");
+  assert.equal(finished.worker.status, "reported");
+  assert.equal(finished.worker.outcome, "completed");
+  assert.equal(finished.reason, "held", "Normal code completion retains the lease for review");
+  await until(() => !alive(pid) && !alive(assertion.pid));
+  const entries = (await f.rows("SELECT entry FROM attempt_entries WHERE task = 'work'")).map(row => JSON.parse(String(row.entry)));
+  assert.ok(entries.every(entry => entry.askedBy === "supervisor:goal"));
+  assert.ok((await f.rows("SELECT kind FROM supervisor_events WHERE task = 'work'")).some(row => row.kind === "worker_finished"));
+  assert.match(readFileSync(join(f.config.runtimeRoot, String(recorded.output_path)), "utf8"), /Task work, attempt 1/);
+  assert.equal(f.run("dispatch", "--task", "work", "--request-id", "survivor").value.reason, "existing_request");
+  assert.equal((await f.rows("SELECT process_pid FROM supervisor_dispatches"))[0]!.process_pid, pid);
+});
+
+test("concurrent calls with the same request ID start only one detached process and worker", async () => {
+  const f = fixture();
+  f.scenario("await-release");
+  f.ok("task", "add", "work", "Work");
+  const invoke = () => new Promise<{ code: number; value: any }>((resolve, reject) => {
+    execFile(process.execPath, [cli, "supervise", "dispatch", "--task", "work", "--objective", "goal", "--request-id", "concurrent", "--config", f.configPath],
+      { env: f.environment }, (error, stdout, stderr) => {
+        if (error && error.code !== 1) { reject(new Error(stderr + stdout)); return; }
+        resolve({ code: error ? 1 : 0, value: JSON.parse(stdout) });
+      });
+  });
+  const calls = await Promise.all([invoke(), invoke()]);
+  assert.deepEqual(calls.map(call => call.value.reason).sort(), ["dispatch_started", "existing_request"]);
+  assert.deepEqual(calls.map(call => call.code).sort(), [0, 1]);
+  assert.ok(calls.every(call => call.value.attempt.taskId === "work" && call.value.attempt.attempt === 1 && call.value.attempt.requestId === "concurrent"));
+  assert.equal((await f.rows("SELECT * FROM supervisor_dispatches")).length, 1);
+  assert.equal((await f.rows("SELECT * FROM attempts")).length, 1);
+  await until(() => existsSync(f.log) && readFileSync(f.log, "utf8").includes('"type":"prompt"'));
+  assert.equal((readFileSync(f.log, "utf8").match(/"type":"prompt"/g) ?? []).length, 1);
+  writeFileSync(join(f.dir, "release"), "finish normally");
+  assert.equal((await f.finished("concurrent")).worker.outcome, "completed");
+});
+
+test("a dispatcher exiting before reservation reports its relative output path and never restarts on replay", async () => {
+  const f = fixture();
+  f.ok("task", "add", "work", "Work");
+  Object.assign(f.environment, { NODE_OPTIONS: `--import="${pathToFileURL(resolve("tests/fixtures/exit-detached.ts")).href}"` });
+  const failed = f.run("dispatch", "--task", "work", "--request-id", "early-exit");
+  assert.equal(failed.code, 1);
+  assert.equal(failed.value.reason, "dispatch_start_failed");
+  assert.match(failed.value.detail, /17/);
+  assert.match(failed.value.summary, /ended before reserving an attempt/);
+  const recorded = (await f.rows("SELECT * FROM supervisor_dispatches"))[0]!;
+  const outputPath = String(recorded.output_path);
+  assert.equal(isAbsolute(outputPath), false);
+  assert.equal(failed.value.observed.outputPath, outputPath);
+  assert.ok(failed.value.detail.includes(outputPath));
+  const output = readFileSync(join(f.config.runtimeRoot, outputPath), "utf8");
+  assert.match(output, /Synthetic dispatcher exit before reservation/);
+  assert.deepEqual(await f.rows("SELECT * FROM attempts"), []);
+  assert.equal(existsSync(f.log), false);
+  Object.assign(f.environment, { NODE_OPTIONS: "" });
+  assert.deepEqual(f.run("dispatch", "--task", "work", "--request-id", "early-exit"), failed);
+  assert.equal(readFileSync(join(f.config.runtimeRoot, outputPath), "utf8"), output);
+  assert.equal((await f.rows("SELECT * FROM supervisor_dispatches")).length, 1);
+});
+
+test("detached dispatch returns and retains the original pre-reservation refusal", async () => {
+  const f = fixture();
+  f.ok("task", "add", "work", "Work");
+  f.ok("task", "hold", "work", "--reason", "Not ready yet");
+  const refused = f.run("dispatch", "--task", "work", "--request-id", "not-ready");
+  assert.equal(refused.code, 1);
+  assert.equal(refused.value.reason, "refused");
+  assert.match(refused.value.detail, /not ready/);
+  f.ok("task", "release", "work");
+  assert.deepEqual(f.run("dispatch", "--task", "work", "--request-id", "not-ready"), refused);
+  assert.deepEqual(await f.rows("SELECT * FROM attempts"), []);
+  assert.equal(existsSync(f.log), false);
 });

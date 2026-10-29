@@ -15,6 +15,8 @@ export const reasons = {
   answered: "The answer was recorded. Delivery outcomes are shown below; a finished worker is never restarted.",
   review_created: "A review task was created for the exact recorded output commit. No worker was launched.",
   dry_run: "A ready task and its delivery contract were selected. Nothing was changed or launched.",
+  dispatch_started: "The detached dispatcher reserved the attempt. It will continue independently of this command.",
+  dispatch_start_failed: "The detached dispatcher ended before reserving an attempt. Inspect its output before making a new request.",
   no_ready_work: "No task is ready in the configured repository.",
   done: "The worker's result satisfied the completion contract and the task is recorded as done.",
   held: "The attempt finished and the task is recorded as held. Its hold reason and the next action say why.",
