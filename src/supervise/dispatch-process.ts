@@ -30,23 +30,23 @@ async function main(): Promise<void> {
         throw new Error("The configuration no longer names the recorded database, context and runtime root");
       }
       await withKeepAwake(config.keepAwake, async () => {
-      const deps = await createDependencies(config, caller, { dispatch: true, progress: message => console.log(message) });
-      try {
-        const controller = new AbortController();
-        const interrupt = () => controller.abort();
-        process.once("SIGINT", interrupt);
-        process.once("SIGTERM", interrupt);
+        const deps = await createDependencies(config, caller, { dispatch: true, progress: message => console.log(message) });
         try {
-          const dispatched = await dispatchOnce(deps, { ...inputs, requestId, signal: controller.signal });
-          const value = { ...dispatched, observed: { ...dispatched.observed, outputPath: String(row.output_path) } };
-          await recordDispatchResult(database, context, requestId, value);
-          console.log(JSON.stringify(value));
-          process.exitCode = value.ok ? 0 : 1;
-        } finally {
-          process.removeListener("SIGINT", interrupt);
-          process.removeListener("SIGTERM", interrupt);
-        }
-      } finally { deps.close(); }
+          const controller = new AbortController();
+          const interrupt = () => controller.abort();
+          process.once("SIGINT", interrupt);
+          process.once("SIGTERM", interrupt);
+          try {
+            const dispatched = await dispatchOnce(deps, { ...inputs, requestId, signal: controller.signal });
+            const value = { ...dispatched, observed: { ...dispatched.observed, outputPath: String(row.output_path) } };
+            await recordDispatchResult(database, context, requestId, value);
+            console.log(JSON.stringify(value));
+            process.exitCode = value.ok ? 0 : 1;
+          } finally {
+            process.removeListener("SIGINT", interrupt);
+            process.removeListener("SIGTERM", interrupt);
+          }
+        } finally { deps.close(); }
       }, message => console.log(message));
     } catch (error) {
       console.error(error);

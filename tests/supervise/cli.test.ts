@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Database } from "../../src/database.ts";
+import { onPath } from "../../src/infra/executables.ts";
 import { defaultPermissions } from "../../src/objectives/store.ts";
 import type { KeepAwake } from "../../src/runtime/keep-awake.ts";
 
@@ -476,12 +477,25 @@ for (const operation of ["steer", "stop", "answer"] as const) test(`${operation}
 test("detached dispatch outlives its caller, replays without another process and holds keep-awake", async () => {
   const f = fixture();
   const marker = join(f.dir, "keep-awake.json");
-  f.config.keepAwake = { command: [process.execPath, resolve("tests/fixtures/keep-awake.ts"), marker, "{pid}", "parent={pid}/{pid}"] };
+  const starts = join(f.dir, "keep-awake-starts.txt");
+  const script = "const fs = require('node:fs'); fs.appendFileSync(process.argv[3], JSON.stringify({ pid: process.pid, dispatcher: process.argv[2] }) + '\\n'); fs.writeFileSync(process.argv[1], JSON.stringify({ pid: process.pid, dispatcher: process.argv[2] })); setInterval(() => { try { process.kill(Number(process.argv[2]), 0); } catch { process.exit(0); } }, 100)";
+  f.config.keepAwake = { command: [process.execPath, "-e", script, marker, "{pid}", starts] };
+  const acquisition = join(f.dir, "awake-during-acquisition.json");
+  if (process.platform !== "win32") {
+    const bin = join(f.dir, "bin");
+    mkdirSync(bin);
+    const treehouse = onPath("treehouse");
+    const probe = join(f.dir, "probe.cjs");
+    writeFileSync(probe, `const fs = require('node:fs'); const end = Date.now() + 10000; while (!fs.existsSync(${JSON.stringify(marker)})) { if (Date.now() > end) process.exit(1); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10); } const assertion = JSON.parse(fs.readFileSync(${JSON.stringify(marker)}, 'utf8')); process.kill(assertion.pid, 0); fs.writeFileSync(${JSON.stringify(acquisition)}, JSON.stringify(assertion));`);
+    writeFileSync(join(bin, "treehouse"), `#!/bin/sh\nif [ "$3" = get ]; then '${process.execPath}' '${probe}' || exit 1; fi\nexec '${treehouse}' "$@"\n`, { mode: 0o755 });
+    Object.assign(f.environment, { PATH: `${bin}:${process.env.PATH}` });
+  }
   f.scenario("await-release");
   f.ok("task", "add", "work", "Work");
   f.ok("task", "add", "another", "Another task");
   assert.equal(f.ok("dispatch", "--task", "work", "--dry-run", "--request-id", "survivor").reason, "dry_run");
   assert.deepEqual(await f.rows("SELECT * FROM supervisor_dispatches"), []);
+  assert.equal(existsSync(marker), false, "A dry run starts no keep-awake command");
 
   // run uses spawnSync: the calling CLI has exited before any of these assertions run.
   const started = f.ok("dispatch", "--task", "work", "--request-id", "survivor");
@@ -498,6 +512,7 @@ test("detached dispatch outlives its caller, replays without another process and
   const assertion = JSON.parse(readFileSync(marker, "utf8"));
   assert.equal(assertion.dispatcher, String(pid));
   assert.ok(alive(assertion.pid), "The detached process holds its own power assertion");
+  if (process.platform !== "win32") assert.deepEqual(JSON.parse(readFileSync(acquisition, "utf8")), assertion, "Keep-awake is already held during treehouse get");
   assert.equal((await f.rows("SELECT result FROM supervisor_dispatches"))[0]!.result, null, "The worker is still running after the caller exits");
   const replay = f.run("dispatch", "--task", "work", "--request-id", "survivor");
   assert.equal(replay.value.reason, "existing_request");
@@ -517,6 +532,9 @@ test("detached dispatch outlives its caller, replays without another process and
   assert.equal(finished.worker.outcome, "completed");
   assert.equal(finished.reason, "held", "Normal code completion retains the lease for review");
   await until(() => !alive(pid) && !alive(assertion.pid));
+  const commands = readFileSync(starts, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(commands.filter(command => command.dispatcher === String(pid)), [assertion], "The detached worker shares one assertion");
+  for (const command of commands) await until(() => !alive(command.pid));
   const entries = (await f.rows("SELECT entry FROM attempt_entries WHERE task = 'work'")).map(row => JSON.parse(String(row.entry)));
   assert.ok(entries.every(entry => entry.askedBy === "supervisor:goal"));
   assert.ok((await f.rows("SELECT kind FROM supervisor_events WHERE task = 'work'")).some(row => row.kind === "worker_finished"));

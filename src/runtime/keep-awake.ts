@@ -44,10 +44,12 @@ export async function withKeepAwake<T>(setting: KeepAwake, run: () => Promise<T>
     if (notes.length < 100 || text.includes("unavailable")) notes.push(text);
     for (const listener of listeners) listener(text);
   });
+  let stopping: Promise<void> | undefined;
+  const cleanup = () => stopping ??= stop();
   const interrupt = (signal: NodeJS.Signals) => {
     // An operation's own handler can finish gracefully. Otherwise clean up before the default termination.
     if (process.listenerCount(signal) > 1) return;
-    void stop().finally(() => {
+    void cleanup().finally(() => {
       process.removeListener("SIGINT", onInt);
       process.removeListener("SIGTERM", onTerm);
       process.kill(process.pid, signal);
@@ -66,7 +68,7 @@ export async function withKeepAwake<T>(setting: KeepAwake, run: () => Promise<T>
   } finally {
     process.removeListener("SIGINT", onInt);
     process.removeListener("SIGTERM", onTerm);
-    await stop();
+    await cleanup();
   }
 }
 

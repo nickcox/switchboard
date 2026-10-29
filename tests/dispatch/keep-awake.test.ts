@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { finish } from "../../src/dispatch/finish.ts";
@@ -24,7 +25,7 @@ function assertion(f: Awaited<ReturnType<typeof fixture>>) {
   const marker = join(f.dir, "assertions.jsonl");
   const script = "require('node:fs').appendFileSync(process.argv[1], JSON.stringify({ pid: process.pid, dispatcher: process.argv[2] }) + '\\n'); setInterval(() => { try { process.kill(Number(process.argv[2]), 0); } catch { process.exit(0); } }, 100)";
   f.deps.keepAwake = { command: [process.execPath, "-e", script, marker, "{pid}"] };
-  const records = (): { pid: number; dispatcher: string }[] => existsSync(marker) ? readFileSync(marker, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+  const records = (): { pid: number; dispatcher: string }[] => existsSync(marker) ? readFileSync(marker, "utf8").split("\n").slice(0, -1).map(line => JSON.parse(line)) : [];
   return {
     marker, records,
     async running() {
@@ -138,3 +139,50 @@ test("finish holds keep-awake during configured checks and task completion, and 
     await power.stopped();
   } finally { f.tasks.close(); }
 });
+
+for (const operation of ["dispatch", "finish"] as const) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    test(`${operation} releases keep-awake on ${signal}`, { skip: process.platform === "win32" }, async () => {
+      const f = await fixture({ tasks: [task("awake-a1")], scenario: operation === "finish" ? "commit-result" : "await-steer" });
+      let leaseId: string | undefined;
+      if (operation === "finish") {
+        f.deps.keepAwake = false;
+        leaseId = (await dispatchOnce(f.deps)).attempt!.leaseId!;
+      }
+      const power = assertion(f);
+      const ready = join(f.dir, "ready.json");
+      const config = JSON.parse(readFileSync(f.config, "utf8"));
+      config.keepAwake = f.deps.keepAwake;
+      if (operation === "finish") {
+        config.checks = [{ name: "wait", command: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid })); const parent = process.ppid; setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 100)`], timeoutMs: 10_000 }];
+      }
+      writeFileSync(f.config, JSON.stringify(config));
+      const args = [resolve("src/cli.ts"), operation, ...(operation === "dispatch" ? ["--once"] : ["--lease", leaseId!]), "--json", "--config", f.config];
+      // The check watches its dispatcher so interruption cannot leave a test subprocess behind.
+      const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+      let stderr = "";
+      child.stdout.resume();
+      child.stderr.setEncoding("utf8").on("data", text => { stderr += text; });
+      const exited = new Promise<void>((resolve, reject) => { child.once("exit", () => resolve()); child.once("error", reject); });
+      let checkPid: number | undefined;
+      try {
+        if (operation === "finish") {
+          await until(() => existsSync(ready));
+          checkPid = JSON.parse(readFileSync(ready, "utf8")).pid;
+        } else await until(() => existsSync(join(f.dir, "requests.jsonl")) && readFileSync(join(f.dir, "requests.jsonl"), "utf8").includes('"type":"prompt"'));
+        await until(() => power.records().length > 0);
+        assert.ok(alive(power.records()[0]!.pid), stderr);
+        child.kill(signal);
+        await exited;
+        assert.equal(power.records().length, 1);
+        await power.stopped();
+        if (checkPid) await until(() => !alive(checkPid!));
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await exited;
+        if (checkPid && alive(checkPid)) process.kill(checkPid, "SIGKILL");
+        f.tasks.close();
+      }
+    });
+  }
+}
