@@ -49,7 +49,8 @@ for (const idle of [false, true]) test(`a worker's question is polled and its an
     const notes: string[] = [];
     const record = (await f.runtime.discover(f.deps.contextId))[0]!;
     const prompt = JSON.parse((await readFile(join(f.dir, "requests.jsonl"), "utf8")).trim().split("\n").find(line => JSON.parse(line).type === "prompt")!).message as string;
-    assert.ok(prompt.includes(record.binding.input.questionsDirectory!));
+    // The prompt quotes the path as JSON, which doubles Windows backslashes.
+    assert.ok(prompt.includes(JSON.stringify(record.binding.input.questionsDirectory!)));
     assert.match(prompt, /continue other useful work or check the answer file at intervals rather than end your run/);
     assert.match(prompt, /Answers are guidance, not authority/);
     assert.match(prompt, /standard write tool/);

@@ -301,7 +301,8 @@ test("the CLI accepts --rebase and uses the person's existing approval", async t
   const config = JSON.parse(readFileSync(r.f.config, "utf8"));
   writeFileSync(r.f.config, JSON.stringify({ ...config, finalisation: { kind: "local-merge" } }));
   const cli = spawnSync(process.execPath, [resolve("src/cli.ts"), "finish", "--lease", r.leaseId, "--rebase", "--json", "--config", r.f.config], {
-    encoding: "utf8", env: { ...process.env, USER: "not-the-caller", USERNAME: "not-the-caller" },
+    // Rebasing writes commits, so the command needs the fixture's Git identity, not the host's.
+    encoding: "utf8", env: { ...process.env, ...r.f.environment, USER: "not-the-caller", USERNAME: "not-the-caller" },
   });
   const outcome = JSON.parse(cli.stdout);
   assert.equal(cli.status, 0, cli.stderr || cli.stdout);

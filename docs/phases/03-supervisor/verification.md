@@ -1,6 +1,6 @@
 # Phase 3 verification
 
-Status: written on 31 October 2026, at commit `f787f2a`, after implementation steps 1 to 11 and `finish --rebase` were marked complete in the [PRD](PRD.md). Step 12, the supervisor, is in progress. Criteria 2 to 9, 11 and 12 are met. Criterion 1 is met except for the step runner and the dispatcher loop, which are used by `finish` only (see [Not yet met](#not-yet-met)). Criterion 10 needs step 12. Criterion 13 is met on macOS, and CI is recorded below.
+Status: written on 31 October 2026, at commit `f787f2a`, after implementation steps 1 to 11 and `finish --rebase` were marked complete in the [PRD](PRD.md). Step 12, the supervisor, is in progress. Criteria 2 to 9, 11 and 12 are met. Criterion 1 is met except for the step runner and the dispatcher loop, which are used by `finish` only (see [Not yet met](#not-yet-met)). Criterion 10 needs step 12. Criterion 13 is met on macOS; on Linux and Windows it waits for CI on the test fixes described below.
 
 The root suite (`npm test`) passes under Node.js 26.7.0 on macOS: 939 tests, 937 passed and 2 skipped (platform-specific), on 31 October 2026.
 
@@ -33,7 +33,7 @@ This record maps each acceptance criterion in the PRD to its evidence. Unless st
 10. **The supervisor.** The scripted part is met: a supervisor with three workers receives each worker's finish and question as events in the order they happen, and an event when one worker's dispatch process stops while the other two keep running (`tests/supervise/cli.test.ts`; the stale-heartbeat event's conditions are in `tests/supervise/events.test.ts`, each disabled in turn to confirm a test fails). The real run in Pi is not done; see [Not yet met](#not-yet-met).
 11. **`finish --rebase`.** `tests/dispatch/rebase.test.ts`: a moved target refuses `finish` with a next action naming `--rebase` and changes nothing; a clean rebase integrates and records the original, rebased and target commits; a conflict, a dirty workspace (uncommitted or untracked files), commits beyond the result commit and merge commits are refused without changing the branch; a commit that becomes empty stops the rebase. A person's command line is their approval, and a supervisor needs the objective's rebase permission, including on dry runs. Interrupted rebases are recovered without rebasing again, and a second rebase replays only the attempt's commits.
 12. **Several attempts at once.** `tests/dispatch/concurrency.test.ts`: with `maxAttempts` 2, two dispatch processes start different tasks and a third refuses at capacity; the default of 1 still allows one; racing dispatches start one attempt for one task, and automatic selection moves on while a named dispatch refuses; a fresh heartbeat, and a launch logged without a launch row, block only their own task; a missing, released, unreadable, stale, future-dated or invalid heartbeat blocks all dispatch, including while another worker's heartbeat is fresh; `status` text and JSON show capacity, active attempts and the blocking attempt, and an unreadable count as unknown. Continuations and reviews keep their task-scoped stopped-worker checks. The import refuses fresh heartbeats (`tests/tasks/import.test.ts`), and an objective budget stops only its own attempt (`tests/dispatch/objective-budget.test.ts`).
-13. **Platforms.** The suite passes on macOS (above). CI on Linux and Windows: see [CI](#ci).
+13. **Platforms.** The suite passes on macOS (above). Linux and Windows: see [CI](#ci).
 
 ## Not yet met
 
@@ -42,4 +42,9 @@ This record maps each acceptance criterion in the PRD to its evidence. Unless st
 
 ## CI
 
-Pending for `f787f2a`.
+CI run 41141491092 for `f787f2a` passed on macOS and failed on Linux and Windows. Both causes were in the tests, not in Switchboard:
+
+- `tests/dispatch/rebase.test.ts`, "the CLI accepts --rebase and uses the person's existing approval" (Linux and Windows): the test started the command without the fixture's Git identity, and the CI hosts have none, so Git refused to write the rebased commit. The test now passes the fixture's environment. It was reproduced on macOS by hiding the host's Git identity, and passes there with the fix.
+- `tests/dispatch/questions.test.ts`, both "a worker's question is polled and its answer reaches it" tests (Windows): the prompt quotes the questions directory as JSON, which doubles Windows backslashes, and the test looked for the unquoted path. The test now looks for the quoted path. This fix is checked only by CI on Windows.
+
+Criterion 13 is met once CI passes with these fixes.
