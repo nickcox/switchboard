@@ -342,7 +342,7 @@ Claude Agent ACP is the second runtime, as the [ACP runtime survey](acp-runtime-
 
 ## Implementation order
 
-Each step is implemented, tested and recorded in the verification record before the next starts. Each shared mechanism is implemented before the first step that needs it.
+Each step is implemented, tested and recorded in the [verification record](verification.md) before the next starts. Each shared mechanism is implemented before the first step that needs it.
 
 1. **One database.** Complete.
 2. **Reading, deciding and reporting.** Complete.
