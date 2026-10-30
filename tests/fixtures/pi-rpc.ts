@@ -115,12 +115,21 @@ function handle(request: Record<string, unknown>) {
       send({ type: "response", id: request.id, command: "other", success: true }); return;
     }
     if (scenario === "handled") { respond(request, { disposition: "handled" }); return; }
-    if (scenario === "await-release") {
+    if (scenario === "await-release" || scenario === "await-task-release") {
       send({ type: "agent_start" });
       respond(request, { disposition: "started" });
-      // Keep several synthetic workers running until the test releases them.
+      // Keep several synthetic workers running until the test releases them, all at once or each by its task.
+      const task = scenario === "await-task-release" ? `-${binding.input.identity.taskId}` : "";
+      const files = dirname(process.env.FAKE_PI_LOG!);
+      let asked = false;
       hold = setInterval(() => {
-        if (!existsSync(join(dirname(process.env.FAKE_PI_LOG!), "release"))) return;
+        if (task && !asked && existsSync(join(files, `ask${task}`))) {
+          asked = true;
+          writeFileSync(join(binding.input.questionsDirectory!, "design.question.json"), JSON.stringify({
+            text: "Which design should I use?", choices: ["Small", "Large"], waiting: true,
+          }));
+        }
+        if (!existsSync(join(files, `release${task}`))) return;
         clearInterval(hold);
         reportResult();
         send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Synthetic worker released" }], stopReason: "stop" } });

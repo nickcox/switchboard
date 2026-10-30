@@ -603,3 +603,54 @@ test("detached dispatch returns and retains the original pre-reservation refusal
   assert.deepEqual(await f.rows("SELECT * FROM attempts"), []);
   assert.equal(existsSync(f.log), false);
 });
+
+test("a supervisor with three workers receives each event in the order it happens, including a stopped dispatch process", { timeout: 60000 }, async () => {
+  const f = fixture();
+  Object.assign(f.config, { maxAttempts: 3 });
+  f.scenario("await-task-release");
+  const files = f.dir;
+  const started: Record<string, string> = {};
+  for (const task of ["a", "b", "c"]) {
+    f.ok("task", "add", task, `Task ${task}`);
+    const value = f.ok("dispatch", "--task", task);
+    assert.equal(value.reason, "dispatch_started", JSON.stringify(value));
+    started[task] = value.attempt.requestId;
+  }
+  await until(async () => (await f.rows("SELECT 1 FROM launches WHERE kind = 'launch'")).length === 3);
+  f.ok("task", "add", "d", "Task d");
+  const full = f.run("dispatch", "--task", "d");
+  assert.equal(full.code, 1);
+  assert.equal(full.value.observed.reason, "capacity", JSON.stringify(full.value));
+  const next = async () => {
+    const value = f.ok("wait", "--timeout", "15").event;
+    assert.ok(value, "An event must arrive");
+    f.ok("handled", value.id);
+    return `${value.kind} ${value.taskId}`;
+  };
+
+  writeFileSync(join(files, "release-b"), "");
+  assert.equal((await f.finished(started.b!)).reason, "held");
+  assert.deepEqual([await next(), await next()], ["worker_finished b", "attempt_held b"]);
+
+  writeFileSync(join(files, "ask-a"), "");
+  assert.equal(await next(), "question_asked a");
+
+  const dispatcher = Number((await f.rows("SELECT process_pid FROM supervisor_dispatches WHERE request_id = ?", started.c!))[0]!.process_pid);
+  process.kill(dispatcher, "SIGKILL");
+  await until(() => !alive(dispatcher));
+  assert.equal(f.ok("wait", "--timeout", "0").event, null, "A fresh heartbeat is not yet an event");
+  // The killed process cannot refresh its heartbeat, so ageing it stands in for 30 seconds passing.
+  const db = await Database.open(join(f.config.runtimeRoot, "switchboard.db"));
+  try {
+    await db.transaction(() => db.run("UPDATE worker_claims SET heartbeat_at = ? WHERE task = 'c'", new Date(Date.now() - 60_000).toISOString()));
+  } finally { db.close(); }
+  const stale = f.ok("wait", "--timeout", "15").event;
+  assert.partialDeepStrictEqual(stale, { kind: "dispatcher_heartbeat_stale", taskId: "c", details: { claimReleased: false } });
+  f.ok("handled", stale.id);
+  assert.equal(f.ok("wait", "--timeout", "0").event, null, "A stale heartbeat is reported once, and the other workers' heartbeats stay fresh");
+
+  writeFileSync(join(files, "release-a"), "");
+  assert.equal((await f.finished(started.a!)).reason, "held");
+  assert.deepEqual([await next(), await next()], ["worker_finished a", "attempt_held a"]);
+  assert.equal(f.ok("wait", "--timeout", "0").event, null);
+});

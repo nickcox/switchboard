@@ -5,6 +5,7 @@ import { requireScope } from "../dispatch/safety.ts";
 import type { AttemptEntry, AttemptRef } from "../attempts/log.ts";
 import type { Database } from "../database.ts";
 import { objectiveBudget } from "../objectives/budget.ts";
+import { heartbeatFresh } from "../runtime/heartbeat.ts";
 import { interventionEntry, personIntervention } from "../objectives/interventions.ts";
 import { TaskStoreError } from "../tasks/store.ts";
 
@@ -87,8 +88,36 @@ function observableBudgetEvents(database: Database, objectiveId: string, now: nu
   return events;
 }
 
-function hasBudgetEventsToRecord(database: Database, objectiveId: string): boolean {
-  return observableBudgetEvents(database, objectiveId, Date.now()).some(event =>
+/**
+ * A dispatch process that stops cannot record that it stopped. Its worker may still be running until an exit is observed or a
+ * person confirms it stopped. Each heartbeat that goes stale is its own event, so a dispatcher that resumes and stops again is reported again.
+ */
+function heartbeatEvents(database: Database, objectiveId: string, now: number) {
+  return database.all(`SELECT l.context, l.task, l.attempt, l.lease_id, c.id AS claim, c.heartbeat_at, c.released_at FROM launches l
+    JOIN tasks t ON t.id = l.task JOIN worker_claims c ON c.id = l.claim_id
+    WHERE t.objective_id = ? AND l.kind = 'launch'
+      AND NOT EXISTS(SELECT 1 FROM worker_observations o WHERE o.directory = l.directory AND o.kind = 'exit')
+      AND NOT EXISTS(SELECT 1 FROM confirmations f WHERE f.context = l.context AND f.task = l.task AND f.attempt = l.attempt
+        AND f.fact = 'worker_stopped' AND json_extract(f.scope, '$.leaseId') = l.lease_id
+        AND (json_extract(f.scope, '$.sessionId') IS NULL OR json_extract(f.scope, '$.sessionId') = json_extract(l.binding, '$.input.identity.sessionId')))`, objectiveId)
+    .filter(row => row.released_at !== null || !heartbeatFresh(String(row.heartbeat_at), now))
+    .map(row => ({
+      source: `heartbeat:${row.claim}:${row.heartbeat_at}`, kind: "dispatcher_heartbeat_stale",
+      ref: { contextId: String(row.context), taskId: String(row.task), attempt: Number(row.attempt) },
+      details: { leaseId: String(row.lease_id), heartbeatAt: String(row.heartbeat_at), claimReleased: row.released_at !== null },
+    }));
+}
+
+/** Record dispatch processes whose heartbeat went stale while their worker may still be running. */
+export function observeHeartbeatEvents(database: Database, objectiveId: string, now = Date.now()): void {
+  for (const event of heartbeatEvents(database, objectiveId, now)) {
+    recordEvent(database, objectiveId, event.source, event.kind, new Date(now).toISOString(), event.details, event.ref);
+  }
+}
+
+function hasObservedEventsToRecord(database: Database, objectiveId: string): boolean {
+  const now = Date.now();
+  return [...observableBudgetEvents(database, objectiveId, now), ...heartbeatEvents(database, objectiveId, now)].some(event =>
     !database.get("SELECT 1 FROM supervisor_events WHERE objective = ? AND source = ?", objectiveId, event.source));
 }
 
@@ -118,9 +147,10 @@ export async function waitForEvent(database: Database, caller: Caller, objective
   const until = timeoutSeconds === undefined ? Infinity : Date.now() + timeoutSeconds * 1000;
   for (;;) {
     requireSupervisor(database, caller, objectiveId);
-    const next = hasBudgetEventsToRecord(database, objectiveId) ? await database.transaction(() => {
+    const next = hasObservedEventsToRecord(database, objectiveId) ? await database.transaction(() => {
       requireSupervisor(database, caller, objectiveId);
       observeBudgetEvents(database, objectiveId);
+      observeHeartbeatEvents(database, objectiveId);
       return pendingEvents(database, objectiveId).first;
     }) : pendingEvents(database, objectiveId).first;
     if (next) return { ok: true, action: "wait", event: next, timedOut: false };

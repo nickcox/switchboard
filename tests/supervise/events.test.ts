@@ -147,6 +147,36 @@ test("the first wait or dispatcher check observing a passed deadline records one
   }
 });
 
+test("wait reports each stale dispatcher heartbeat once, while the worker may still be running", async () => {
+  const f = await fixture();
+  try {
+    const runtime = new RuntimeStore(f.database);
+    const launched = Object.fromEntries(await Promise.all(["fresh", "stale", "future", "released", "exited", "confirmed"].map(async id => [id, await f.launch(id)] as const)));
+    const heartbeat = (task: string, at: number) => f.database.transaction(() => f.database.run("UPDATE worker_claims SET heartbeat_at = ? WHERE task = ?", new Date(at).toISOString(), task));
+    const stale = Date.now() - 60_000;
+    for (const task of ["stale", "exited", "confirmed"]) await heartbeat(task, stale);
+    // A released claim needs no stale heartbeat: its dispatcher ended without recording the worker's exit.
+    await heartbeat("future", Date.now() + 60_000);
+    await f.database.transaction(() => f.database.run("UPDATE worker_claims SET released_at = ? WHERE task = 'released'", new Date().toISOString()));
+    await runtime.recordObservation(launched.exited!.directory, "exit", { started: true, code: 0, signal: null });
+    await runtime.confirmStopped(launched.confirmed!.directory, person);
+    const reported = async () => {
+      const kinds: string[] = [];
+      for (let event = (await waitForEvent(f.database, "goal", 0)).event; event; event = (await waitForEvent(f.database, "goal", 0)).event) {
+        if (event.kind === "dispatcher_heartbeat_stale") kinds.push(`${event.taskId} ${(event.details as { claimReleased: boolean }).claimReleased}`);
+        await handleEvent(f.database, "goal", event.id);
+      }
+      return kinds.sort();
+    };
+    assert.deepEqual(await reported(), ["future false", "released true", "stale false"]);
+    assert.deepEqual(await reported(), [], "Each stale heartbeat is reported once");
+    await heartbeat("stale", Date.now());
+    assert.deepEqual(await reported(), [], "A refreshed heartbeat is not reported");
+    await heartbeat("stale", stale + 1000);
+    assert.deepEqual(await reported(), ["stale false"], "A heartbeat that goes stale again is reported again");
+  } finally { f.tasks.close(); }
+});
+
 test("wait polls for new events, times out without moving the position, and reoffers events after reopening", async () => {
   const f = await fixture();
   const second = await Database.open(f.path);

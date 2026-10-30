@@ -2,6 +2,12 @@ import type { RuntimeAddress } from "./store.ts";
 
 const freshMs = 30_000;
 
+/** A heartbeat dated in the future is not fresh. */
+export function heartbeatFresh(heartbeatAt: string, now = Date.now()): boolean {
+  const age = now - Date.parse(heartbeatAt);
+  return age >= 0 && age < freshMs;
+}
+
 /** Diagnostic only: absence or staleness never proves that the worker has stopped. */
 export async function dispatcherRunning(record: RuntimeAddress, now?: number): Promise<boolean> {
   try { return await readDispatcherHeartbeat(record, now); }
@@ -12,8 +18,7 @@ export async function dispatcherRunning(record: RuntimeAddress, now?: number): P
 export async function readDispatcherHeartbeat(record: RuntimeAddress, now?: number): Promise<boolean> {
   const claim = await record.storage.heartbeat(record.claimId);
   if (!claim || claim.released_at !== null) return false;
-  const age = (now ?? Date.now()) - Date.parse(String(claim.heartbeat_at));
-  return age >= 0 && age < freshMs;
+  return heartbeatFresh(String(claim.heartbeat_at), now);
 }
 
 /** Refresh only this dispatcher's claim. Releasing it never removes launch permission or permits a takeover. */
