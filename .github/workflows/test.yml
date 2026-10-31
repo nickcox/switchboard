@@ -66,8 +66,24 @@ jobs:
       - run: npm ci
       - run: npm run check
 
+      # Temporary: record every child process the Windows tests start, to find where their time goes.
+      - name: Trace processes (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $module = ([System.Uri](Resolve-Path investigations/process-trace/trace-processes.mjs).Path).AbsoluteUri
+          Add-Content -Path $env:GITHUB_ENV -Value "NODE_OPTIONS=--import=$module"
+          Add-Content -Path $env:GITHUB_ENV -Value "TRACE_PROCESSES_FILE=$(Join-Path $env:RUNNER_TEMP 'processes.jsonl')"
+
       # npm test with this job's share of the test files. Node applies --test-shard only before the file pattern.
       - run: node --test --test-timeout=30000 --test-shard=${{ matrix.shard }}/3 "tests/**/*.test.ts"
+
+      - name: Process summary (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:NODE_OPTIONS = ""
+          node investigations/process-trace/summary.mjs $env:TRACE_PROCESSES_FILE
 
       # ADR-0007's evidence that SQLite's locking and crash behaviour hold on each platform.
       - if: matrix.shard == 1
