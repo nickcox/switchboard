@@ -322,7 +322,8 @@ for (const valid of [true, false]) {
     if (valid) {
       const recorded = (await f.runtime.discover("fixture-context"))[0]!.validatedResult!;
       writeFileSync(runtime.binding.resultPath, "{}");
-      assert.equal((await finish(f.deps, { leaseId, noProcesses: true })).reason, "finished");
+      const returned = await finish(f.deps, { leaseId, noProcesses: true });
+      assert.equal(returned.reason, "finished", JSON.stringify(returned));
       assert.deepEqual((await f.runtime.discover("fixture-context"))[0]!.validatedResult, recorded);
     }
   });

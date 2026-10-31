@@ -368,8 +368,8 @@ test("CLI rejects invalid starting-point and note options before opening any own
   assert.ok(unreadable.stderr.startsWith("Could not read --note-file:"));
 });
 
-test("the earlier attempt can still be finished, discarded or resolved without changing the new branch or records", async () => {
-  for (const action of ["finish", "discard", "resolve"]) {
+for (const [action, done] of [["finish", "finished"], ["discard", "discarded"], ["resolve", "resolved"]] as const) {
+  test(`the earlier attempt can still be ${done} without changing the new branch or records`, async () => {
     const f = await completed();
     try {
       const next = await dispatchOnce(f.deps, options);
@@ -390,5 +390,5 @@ test("the earlier attempt can still be finished, discarded or resolved without c
       assert.deepEqual(f.deps.attempts.read(record), record);
       assert.ok((await f.deps.workspaces.leases()).some(l => l.leaseId === next.attempt!.leaseId));
     } finally { f.tasks.close(); }
-  }
-});
+  });
+}

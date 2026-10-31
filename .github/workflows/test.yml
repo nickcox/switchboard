@@ -15,10 +15,12 @@ env:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}, ${{ matrix.shard }}/3)
     strategy:
       fail-fast: false
       matrix:
+        # The suite is split by file into three jobs per platform, which run at the same time.
+        shard: [1, 2, 3]
         # Windows runs take several times longer, so they run only for main, pull requests and manual runs, not for
         # every push to another branch.
         os: ${{ fromJSON((github.event_name != 'push' || github.ref == 'refs/heads/main') && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["macos-latest", "ubuntu-latest"]') }}
@@ -63,7 +65,20 @@ jobs:
       - run: treehouse --version
       - run: npm ci
       - run: npm run check
-      - run: npm test
+
+      # npm test with this job's share of the test files. Node applies --test-shard only before the file pattern.
+      - run: node --test --test-timeout=30000 --test-shard=${{ matrix.shard }}/3 "tests/**/*.test.ts"
 
       # ADR-0007's evidence that SQLite's locking and crash behaviour hold on each platform.
-      - run: node investigations/sqlite-trial/trial.ts
+      - if: matrix.shard == 1
+        run: node investigations/sqlite-trial/trial.ts
+
+  # One check that passes only when every job above passed.
+  tests-passed:
+    name: Tests passed
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.test.result != 'success'
+        run: exit 1
