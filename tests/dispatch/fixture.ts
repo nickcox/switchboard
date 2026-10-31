@@ -55,10 +55,12 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
     executable: process.execPath, entrypoint: resolve(import.meta.dirname, "../fixtures/pi-rpc.ts"),
     provider: "fixture", model: "fixture", shellTool: "bash", requestMs: 2000, runMs: options.runMs ?? 5000, stopMs: 600,
     environment: { ...environment, FAKE_PI_SCENARIO: options.scenario ?? "normal", FAKE_PI_LOG: log },
+    // Keep-awake has its own tests. Elsewhere it would start a helper per operation, which on Windows is PowerShell compiling C#.
+    keepAwake: false,
     ...options.worker,
   });
   const deps: Dependencies & { attempts: FixtureAttemptStore } = {
-    caller: testCaller, contextId: "fixture-context", tasks, runtimeSettings: structuredClone(runtimeSettings), configurationProvenance: { configuration: "fixture" },
+    caller: testCaller, contextId: "fixture-context", tasks, keepAwake: false, runtimeSettings: structuredClone(runtimeSettings), configurationProvenance: { configuration: "fixture" },
     workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
     attempts: new FixtureAttemptStore(tasks.database, "fixture-context", testCaller), runtime,
     ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
@@ -73,7 +75,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   // The same setup as a configuration file, for tests that run Switchboard in a separate process.
   const config = join(dir, "switchboard.json");
   writeFileSync(config, JSON.stringify({
-    contextId: "fixture-context", runtimeRoot, databasePath: join(dir, "tasks.db"), tasks: { repo: "fixture" },
+    contextId: "fixture-context", runtimeRoot, databasePath: join(dir, "tasks.db"), tasks: { repo: "fixture" }, keepAwake: false,
     ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
     workspaces: { repository, poolRoot: join(dir, "pool") },
     delivery: { baseRef: deps.delivery.baseRef, branchPrefix: deps.delivery.branchPrefix, ...deps.delivery.default, byTaskKind: deps.delivery.byTaskKind },
