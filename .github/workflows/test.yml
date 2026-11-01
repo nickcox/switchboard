@@ -23,7 +23,7 @@ jobs:
         shard: [1, 2, 3]
         # Windows runs take several times longer, so they run only for main, pull requests and manual runs, not for
         # every push to another branch.
-        os: ${{ fromJSON((github.event_name != 'push' || github.ref == 'refs/heads/main') && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["macos-latest", "ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name != 'push' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-faster-windows-tests') && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["macos-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
