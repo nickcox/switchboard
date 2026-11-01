@@ -23,7 +23,7 @@ jobs:
         shard: [1, 2, 3]
         # Windows runs take several times longer, so they run only for main, pull requests and manual runs, not for
         # every push to another branch.
-        os: ${{ fromJSON((github.event_name != 'push' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-faster-windows-tests') && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["macos-latest", "ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name != 'push' || github.ref == 'refs/heads/main') && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["macos-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,24 +67,7 @@ jobs:
       - run: npm run check
 
       # npm test with this job's share of the test files. Node applies --test-shard only before the file pattern.
-      - if: runner.os != 'Windows'
-        run: node --test --test-timeout=30000 --test-shard=${{ matrix.shard }}/3 "tests/**/*.test.ts"
-
-      # Temporary: the same tests, recording every child process they start, to find where Windows time goes.
-      # Actions refuses NODE_OPTIONS through GITHUB_ENV, so it is set inside this step.
-      - name: Test with process trace (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:TRACE_PROCESSES_FILE = Join-Path $env:RUNNER_TEMP 'processes.jsonl'
-          $env:NODE_OPTIONS = "--import=" + ([System.Uri](Resolve-Path investigations/process-trace/trace-processes.mjs).Path).AbsoluteUri
-          node --test --test-timeout=30000 --test-shard=${{ matrix.shard }}/3 "tests/**/*.test.ts"
-
-      - name: Process summary (Windows)
-        if: always() && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          node investigations/process-trace/summary.mjs (Join-Path $env:RUNNER_TEMP 'processes.jsonl')
+      - run: node --test --test-timeout=30000 --test-shard=${{ matrix.shard }}/3 "tests/**/*.test.ts"
 
       # ADR-0007's evidence that SQLite's locking and crash behaviour hold on each platform.
       - if: matrix.shard == 1
