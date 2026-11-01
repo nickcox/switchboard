@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { join, resolve } from "node:path";
 import { configSchema } from "../src/config.ts";
 import { onPath } from "../src/infra/executables.ts";
+import { cliInProcess } from "./cli-in-process.ts";
 
 // Runs the real CLI with a configuration file that points at disposable fixtures and the synthetic Pi peer.
 const git = onPath("git");
@@ -79,21 +80,21 @@ test("--version prints the package version without loading configuration", () =>
   assert.match(help.stderr, /switchboard --version/);
 });
 
-test("an option that does not apply to the command is refused before loading configuration", () => {
+test("an option that does not apply to the command is refused before loading configuration", async () => {
   // Review finding 16: in particular, --dry-run on a command that changes something must not be ignored.
   for (const args of [
     ["stop", "--lease", "lease-1", "--dry-run"], ["steer", "--lease", "lease-1", "--dry-run", "Message"],
     ["resolve", "--lease", "lease-1", "--worker-stopped", "--dry-run"], ["status", "--task", "cli-a1"],
     ["dispatch", "--once", "--lease", "lease-1"], ["watch", "--lease", "lease-1", "--as", "someone"],
   ]) {
-    const result = spawnSync(process.execPath, [cli, ...args, "--config", "missing.json"], { encoding: "utf8" });
+    const result = await cliInProcess([...args, "--config", "missing.json"]);
     assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
     assert.match(result.stderr, /does not take/);
     assert.doesNotMatch(result.stderr, /Configuration error/);
   }
 });
 
-test("invalid options print a one-line error and usage without a stack trace", () => {
+test("invalid options print a one-line error and usage without a stack trace", async () => {
   const invalid = [
     { args: ["--no-such-option"], problem: /Unknown option '--no-such-option'/ },
     { args: ["--config"], problem: /Option '--config <value>' argument missing/ },
@@ -101,7 +102,7 @@ test("invalid options print a one-line error and usage without a stack trace", (
     { args: ["--once=value"], problem: /Option '--once' does not take an argument/ },
   ];
   for (const { args, problem } of invalid) {
-    const result = spawnSync(process.execPath, [cli, "dispatch", "--once", ...args], { encoding: "utf8" });
+    const result = await cliInProcess(["dispatch", "--once", ...args]);
     assert.equal(result.status, 2, result.stderr);
     assert.equal(result.stdout, "");
     assert.match(result.stderr.split("\n")[0]!, problem);
@@ -110,7 +111,7 @@ test("invalid options print a one-line error and usage without a stack trace", (
   }
 });
 
-test("resolve validates task and lease selectors before loading configuration", () => {
+test("resolve validates task and lease selectors before loading configuration", async () => {
   const invalid = [
     [], ["--lease-returned"], ["--task", "cli-a1"], ["--task", "cli-a1", "--worker-stopped"],
     ["--lease", "lease-1", "--task", "cli-a1", "--lease-returned"],
@@ -118,7 +119,7 @@ test("resolve validates task and lease selectors before loading configuration", 
     ...["0", "-1", "1.5", "bad"].map(n => ["--task", "cli-a1", "--lease-returned", "--attempt", n]),
   ];
   for (const args of invalid) {
-    const result = spawnSync(process.execPath, [cli, "resolve", ...args, "--config", "missing.json"], { encoding: "utf8" });
+    const result = await cliInProcess(["resolve", ...args, "--config", "missing.json"]);
     assert.equal(result.status, 2, result.stderr);
     assert.doesNotMatch(result.stderr, /Configuration error/);
   }
@@ -130,14 +131,14 @@ test("resolve validates task and lease selectors before loading configuration", 
   }
 });
 
-test("finish, discard, watch, stop and steer validate their attempt selectors before loading configuration", () => {
+test("finish, discard, watch, stop and steer validate their attempt selectors before loading configuration", async () => {
   const invalid = [
     [], ["--lease", "lease-1", "--task", "cli-a1"], ["--lease", "lease-1", "--attempt", "1"], ["--task", ""], ["--lease", ""],
     ...["0", "-1", "1.5", "bad"].map(n => ["--task", "cli-a1", "--attempt", n]),
   ];
   for (const command of ["finish", "discard", "watch", "stop", "steer"]) {
     for (const args of invalid) {
-      const result = spawnSync(process.execPath, [cli, command, ...args, ...(command === "steer" ? ["message"] : []), "--config", "missing.json"], { encoding: "utf8" });
+      const result = await cliInProcess([command, ...args, ...(command === "steer" ? ["message"] : []), "--config", "missing.json"]);
       assert.equal(result.status, 2, `${command} ${args.join(" ")}: ${result.stderr}`);
       assert.doesNotMatch(result.stderr, /Configuration error/);
     }

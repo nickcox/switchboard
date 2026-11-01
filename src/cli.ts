@@ -333,13 +333,18 @@ async function main(argv: string[]): Promise<number> {
   }, progress);
 }
 
-process.exitCode = await main(process.argv.slice(2)).catch(error => {
-  if (error instanceof Error && "code" in error && (
-    error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" || error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
-  )) {
-    console.error(`${error.message.split("\n")[0]}\n\n${usage}`);
-  } else {
-    console.error(error instanceof Error ? error.stack : String(error));
-  }
-  return 2;
-});
+/** Runs one command and returns its exit status. Tests also call it in-process for refusals that need no process of their own. */
+export function runCli(argv: string[]): Promise<number> {
+  return main(argv).catch(error => {
+    if (error instanceof Error && "code" in error && (
+      error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" || error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE"
+    )) {
+      console.error(`${error.message.split("\n")[0]}\n\n${usage}`);
+    } else {
+      console.error(error instanceof Error ? error.stack : String(error));
+    }
+    return 2;
+  });
+}
+
+if (import.meta.main) process.exitCode = await runCli(process.argv.slice(2));

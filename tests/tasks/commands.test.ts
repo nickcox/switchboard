@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { cliInProcess } from "../cli-in-process.ts";
 import { once } from "node:events";
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -98,7 +99,7 @@ test("conversion command reports converted and unconverted tasks in text and JSO
 test("task CLI refuses usage errors before opening configuration; operators cannot start tasks", async () => {
   for (const args of [[], ["start", "a"], ["add", "a"], ["show"], ["show", "a", "extra"], ["hold", "a"], ["block", "a"],
     ["update", "a", "--body", "x", "--body-file", "x"], ["add", "a", "A", "--criterion", "x", "--criteria-file", "x"], ["convert-criteria", "a"], ["done", "a", "--reason", "x"], ["list", "--state", "invalid"], ["ready", "--dry-run"]]) {
-    const result = spawnSync(process.execPath, [cli, "task", ...args, "--config", "missing.json"], { encoding: "utf8" });
+    const result = await cliInProcess(["task", ...args, "--config", "missing.json"]);
     assert.equal(result.status, 2, args.join(" ") + result.stderr);
     assert.match(result.stderr, /Usage:/);
   }
