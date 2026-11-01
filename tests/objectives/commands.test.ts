@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { cliInProcess } from "../cli-in-process.ts";
 import { userInfo } from "node:os";
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -104,13 +105,13 @@ test("task CLI links and clears objectives with definition revisions; complete c
   assert.equal(f.json("task", "update", "work", "--clear-objective").task.objectiveId, null);
 });
 
-test("objective and task-link usage errors refuse before reading configuration", () => {
+test("objective and task-link usage errors refuse before reading configuration", async () => {
   for (const args of [["objective"], ["objective", "unknown"], ["objective", "show"], ["objective", "add", "goal"],
     ["objective", "add", "goal", "Request", "--request-file", "request"], ["objective", "list", "extra"], ["objective", "list", "--state", "bad"],
     ["objective", "update", "goal", "--criterion", "A", "--criteria-file", "criteria"], ["objective", "update", "goal", "--deadline", "date", "--clear-deadline"],
     ["objective", "update", "goal", "--state", "abandoned"], ["objective", "complete", "goal"], ["objective", "confirm-budget", "goal"],
     ["task", "update", "work", "--objective", "goal", "--clear-objective"]]) {
-    const result = spawnSync(process.execPath, [cli, ...args, "--config", "missing.json"], { encoding: "utf8" });
+    const result = await cliInProcess([...args, "--config", "missing.json"]);
     assert.equal(result.status, 2, args.join(" ") + result.stderr);
     assert.match(result.stderr, /Usage:/);
   }

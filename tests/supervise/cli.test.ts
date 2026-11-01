@@ -9,6 +9,7 @@ import { Database } from "../../src/database.ts";
 import { onPath } from "../../src/infra/executables.ts";
 import { defaultPermissions } from "../../src/objectives/store.ts";
 import type { KeepAwake } from "../../src/runtime/keep-awake.ts";
+import { cliInProcess } from "../cli-in-process.ts";
 
 const cli = resolve("src/cli.ts");
 const root = resolve(".investigation/supervise-cli");
@@ -111,6 +112,14 @@ function fixture() {
     assert.equal(result.stdout.trim().split("\n").length, 1, result.stdout);
     return { code: result.status, value: JSON.parse(result.stdout) };
   };
+  // The same as run and raw, in this process, for refusals that change nothing.
+  const localRaw = (...args: string[]) => cliInProcess([...args, "--config", configPath], environment);
+  const local = async (...args: string[]) => {
+    const result = await localRaw("supervise", ...args, "--objective", "goal");
+    assert.equal(result.stderr, "", result.stderr);
+    assert.equal(result.stdout.trim().split("\n").length, 1, result.stdout);
+    return { code: result.status, value: JSON.parse(result.stdout) };
+  };
   const ok = (...args: string[]) => {
     const result = run(...args);
     assert.equal(result.code, 0, JSON.stringify(result));
@@ -139,7 +148,7 @@ function fixture() {
     });
     return value as ReturnType<typeof run>["value"];
   };
-  const f = { dir, configPath, config, log, environment, git, raw, run, ok, person, scenario, rows, finished };
+  const f = { dir, configPath, config, log, environment, git, raw, run, localRaw, local, ok, person, scenario, rows, finished };
   cleanups.push(async () => {
     for (const row of await rows("SELECT process_pid, result FROM supervisor_dispatches WHERE process_pid IS NOT NULL")) {
       const pid = Number(row.process_pid);
@@ -202,7 +211,7 @@ test("supervise note and briefing return one JSON object with current records, w
   assert.deepEqual(value.personInterventions, f.person("objective", "show", "goal").objective.personInterventions);
   assert.deepEqual(value.personInterventions, f.ok("objective", "show").objective.personInterventions);
   for (const args of [["note"], ["note", ""], ["note", "   "], ["note", "First", "Second"], ["briefing", "extra"], ["briefing", "--task", "work"], ["note", "Text", "--as", "operator:admin"]]) {
-    assert.equal(f.run(...args).code, 2);
+    assert.equal((await f.local(...args)).code, 2);
   }
   assert.equal((await f.rows("SELECT * FROM supervisor_notes")).length, 2);
 });
@@ -231,7 +240,7 @@ test("supervise wait reoffers unhandled events across processes and handled pers
   assert.deepEqual(f.ok("briefing").events, { count: 0, first: null });
   assert.equal(f.ok("wait", "--timeout", "0.01").timedOut, true);
   for (const args of [["wait", "--timeout", "-1"], ["wait", "--timeout", "NaN"], ["wait", "--timeout", "Infinity"], ["wait", "--timeout", ""], ["wait", "extra"], ["handled"], ["handled", first.event.id, "extra"], ["handled", first.event.id, "--timeout", "1"]]) {
-    assert.equal(f.run(...args).code, 2);
+    assert.equal((await f.local(...args)).code, 2);
   }
 });
 
@@ -280,7 +289,7 @@ test("supervise rejects every unavailable operation and identity or objective ov
     ["task", "add", "injected", "Injected", "--caller", "operator:admin"], ["task", "add", "injected", "Injected", "--as", "operator:admin"],
     ["dispatch", "--once", "--task", "work"], ["stop", "--task", "work", "--dry-run"],
   ]) {
-    const result = f.run(...args);
+    const result = await f.local(...args);
     assert.equal(result.code, 2, `${args.join(" ")}: ${JSON.stringify(result)}`);
     assert.equal(result.value.ok, false);
   }
@@ -294,7 +303,11 @@ test("supervise rejects every unavailable operation and identity or objective ov
   assert.deepEqual(await f.rows("SELECT * FROM control_requests"), []);
 });
 
-test("usage and configuration errors are one JSON object with the ordinary exit code", () => {
+test("usage and configuration errors are one JSON object with the ordinary exit code", async () => {
+  const missing = join(root, "missing-config.json");
+  const spawned = spawnSync(process.execPath, [cli, "supervise", "--config", missing], { encoding: "utf8" });
+  assert.equal(spawned.status, 2, spawned.stdout + spawned.stderr);
+  assert.equal(JSON.parse(spawned.stdout).ok, false);
   for (const args of [[], ["task", "list"], ["task", "list", "--objective"], ["task", "list", "--objective", "goal", "--unknown"],
     ["task", "list", "--objective", "goal", "--objective", "other"], ["dispatch", "--objective", "goal"],
     ["dispatch", "--objective", "goal", "--task", "work", "--from-attempt", "0"],
@@ -305,7 +318,7 @@ test("usage and configuration errors are one JSON object with the ordinary exit 
     ["task", "list", "--objective", "goal", "--json=value"],
     ["objective", "show", "--objective", "goal"],
   ]) {
-    const result = spawnSync(process.execPath, [cli, "supervise", ...args, "--config", join(root, "missing-config.json")], { encoding: "utf8" });
+    const result = await cliInProcess(["supervise", ...args, "--config", missing]);
     assert.equal(result.status, 2, result.stdout + result.stderr);
     assert.equal(result.stdout.trim().split("\n").length, 1);
     assert.equal(JSON.parse(result.stdout).ok, false);
@@ -323,12 +336,12 @@ test("supervise passes through existing scope and permission refusals, including
   const foreign = await f.rows("SELECT * FROM tasks WHERE id IN ('foreign','unlinked') ORDER BY id");
   for (const task of ["foreign", "unlinked"]) {
     for (const args of [["show"], ["update", "--title", "No"], ["hold", "--reason", "No"], ["release"], ["block", "--by", "work"], ["unblock", "--by", "work"], ["done"]]) {
-      const result = f.run("task", args[0]!, task, ...args.slice(1));
+      const result = await f.local("task", args[0]!, task, ...args.slice(1));
       assert.equal(result.code, 1);
       assert.match(result.value.detail, /outside_objective/);
     }
     for (const args of [["dispatch", "--dry-run"], ["review"], ["answer", "--question", "unknown", "No"], ["finish"], ["steer", "No"], ["stop"]]) {
-      const result = f.run(...args, "--task", task);
+      const result = await f.local(...args, "--task", task);
       assert.equal(result.code, 1, JSON.stringify(result));
       assert.match(result.value.detail, /outside_objective/);
     }
@@ -341,7 +354,7 @@ test("supervise passes through existing scope and permission refusals, including
   for (const args of [["task", "add", "denied", "Denied"], ["task", "update", "work", "--title", "Denied"], ["task", "done", "work"],
     ["dispatch", "--task", "work", "--dry-run"], ["review", "--task", "work"], ["answer", "--task", "work", "--question", "q", "No"],
     ["objective", "complete", "--statements-file", statements]]) {
-    const result = f.run(...args);
+    const result = await f.local(...args);
     assert.equal(result.code, 1, JSON.stringify(result));
     assert.match(result.value.detail, /permission_denied/);
   }
@@ -359,12 +372,12 @@ test("supervise passes through existing scope and permission refusals, including
   assert.deepEqual(await f.rows("SELECT * FROM tasks WHERE id IN ('foreign','unlinked') ORDER BY id"), foreign);
 });
 
-test("unknown and closed objectives refuse all operations with one JSON object", () => {
+test("unknown and closed objectives refuse all operations with one JSON object", async () => {
   const f = fixture();
   for (const state of ["missing", "abandoned"]) {
     if (state === "abandoned") f.person("objective", "abandon", "goal");
     for (const args of [["briefing"], ["wait", "--timeout", "0"], ["handled", "unknown"], ["note", "Remember"], ["objective", "show"], ["task", "add", "no", "No"], ["task", "list"], ["dispatch", "--task", "foreign"], ["finish", "--task", "foreign"]]) {
-      const result = f.raw("supervise", ...args, "--objective", state === "missing" ? "missing" : "goal");
+      const result = await f.localRaw("supervise", ...args, "--objective", state === "missing" ? "missing" : "goal");
       assert.equal(result.status, 1, result.stdout + result.stderr);
       const value = JSON.parse(result.stdout);
       assert.equal(value.ok, false);
