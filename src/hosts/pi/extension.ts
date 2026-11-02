@@ -19,11 +19,14 @@ export type SupervisorTool = {
   name: string; label: string; description: string; parameters: Record<string, unknown>;
   execute(toolCallId: string, params: unknown, signal?: AbortSignal): Promise<ToolResult>;
 };
-type PiEvent = { prompt?: string; message?: { role: string; content: string | { type: string; text?: string }[] } };
+type PiUsage = { totalTokens?: number; cost?: { total?: number } };
+type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage };
+type PiEvent = { prompt?: string; message?: PiMessage; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
+type PiContext = { sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
 /** The small part of Pi's extension API used here; Pi loads the extension, not Switchboard. */
 export interface SupervisorPi {
   registerTool(tool: SupervisorTool): void;
-  on(event: string, handler: (event: PiEvent) => void | Promise<void>): void;
+  on(event: string, handler: (event: PiEvent, context?: PiContext) => void | Promise<void>): void;
   sendUserMessage(text: string, options: { deliverAs: "followUp" }): void | Promise<void>;
 }
 
@@ -82,6 +85,65 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let controller: AbortController | undefined;
   let loop: Promise<void> | undefined;
   let pending: { text: string; delivered(): void } | undefined;
+  let sessionId = binding.sessionId;
+  let registered = false;
+  let registration: Promise<void> | undefined;
+  let reporting = Promise.resolve();
+  const seen = new Set<string>();
+  let cost = 0;
+  let tokens = 0;
+  let observed = false;
+  let unknownCost = false;
+  let unknownTokens = false;
+  const valid = (value: number | undefined): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const addUsage = (usage: PiUsage | undefined, id?: string) => {
+    if (id && seen.has(id)) return;
+    if (id) seen.add(id);
+    observed = true;
+    if (valid(usage?.cost?.total) && Number.isFinite(cost + usage.cost.total)) cost += usage.cost.total;
+    else unknownCost = true;
+    if (valid(usage?.totalTokens) && Number.isFinite(tokens + usage.totalTokens)) tokens += usage.totalTokens;
+    else unknownTokens = true;
+  };
+  const addMessage = (message: PiMessage | undefined, id?: string) => {
+    if (message?.role === "assistant" || message?.usage) addUsage(message.usage, id);
+  };
+  async function registerUsage() {
+    if (registered) return;
+    registration ??= command(["usage"], ["--session", sessionId]).then(reply => {
+      if (reply.exitCode !== 0 || JSON.parse(reply.stdout).ok !== true) throw new Error("Supervisor usage registration failed");
+      registered = true;
+    }).finally(() => { registration = undefined; });
+    await registration;
+  }
+  const reportUsage = () => {
+    // Missing usage leaves the cumulative value unknown, even if later turns report it.
+    const args = ["--session", sessionId, "--cost", observed && !unknownCost ? String(cost) : "unknown",
+      "--tokens", observed && !unknownTokens ? String(tokens) : "unknown"];
+    reporting = reporting.catch(() => {}).then(async () => {
+      await registerUsage();
+      const reply = await command(["usage"], args);
+      if (reply.exitCode !== 0 || JSON.parse(reply.stdout).ok !== true) throw new Error("Supervisor usage reporting failed");
+    });
+    return reporting;
+  };
+  pi.on("turn_end", async event => {
+    addMessage(event.message, event.messageEntryId);
+    for (const [index, message] of (event.toolResults ?? []).entries()) addMessage(message, event.toolResultEntryIds?.[index]);
+    await reportUsage();
+  });
+  pi.on("session_compact", async event => {
+    if (event.compactionEntry?.usage) addUsage(event.compactionEntry.usage, event.compactionEntry.id);
+    await reportUsage();
+  });
+  async function startSession() {
+    await registerUsage();
+    if (controller) return;
+    controller = new AbortController();
+    loop = poll(controller.signal).catch(() => {});
+  }
+  // A failed startup registration must be retried before any provider request.
+  pi.on("before_provider_request", startSession);
   const delivered = (event: PiEvent) => {
     const message = event.message;
     const text = event.prompt ?? (message?.role === "user" ? typeof message.content === "string" ? message.content
@@ -127,14 +189,26 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
       } catch { if (!signal.aborted) await pause(signal); }
     }
   }
-  pi.on("session_start", () => {
+  pi.on("session_start", async (_event, context) => {
     if (controller) return;
-    controller = new AbortController();
-    loop = poll(controller.signal).catch(() => {});
+    sessionId = context?.sessionManager.getSessionId() ?? binding.sessionId;
+    registered = false;
+    seen.clear();
+    cost = tokens = 0;
+    observed = unknownCost = unknownTokens = false;
+    // Include compacted and off-branch messages when reloading this session.
+    for (const entry of context?.sessionManager.getEntries() ?? []) {
+      if (entry.type === "message") addMessage(entry.message, entry.id);
+      else if (entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") {
+        if (entry.usage) addUsage(entry.usage, entry.id);
+      }
+    }
+    await startSession();
   });
   pi.on("session_shutdown", async () => {
     controller?.abort();
     await loop;
+    await reporting.catch(() => {});
     controller = undefined;
     loop = undefined;
   });

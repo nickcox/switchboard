@@ -12,17 +12,19 @@ import { registerSupervisor, commandExecutor, eventText, type SupervisorPi, type
 import { prepareSupervisor } from "../../src/hosts/pi/start.ts";
 import { supervisorToolNames } from "../../src/hosts/pi/tools.ts";
 
-type Event = Parameters<Parameters<SupervisorPi["on"]>[1]>[0];
+type Handler = Parameters<SupervisorPi["on"]>[1];
+type Event = Parameters<Handler>[0];
+type Context = Parameters<Handler>[1];
 class FakePi implements SupervisorPi {
   tools = new Map<string, SupervisorTool>();
-  handlers = new Map<string, ((event: Event) => void | Promise<void>)[]>();
+  handlers = new Map<string, Handler[]>();
   messages: { text: string; options: { deliverAs: "followUp" } }[] = [];
   registerTool(tool: SupervisorTool) { this.tools.set(tool.name, tool); }
-  on(name: string, handler: (event: Event) => void | Promise<void>) {
+  on(name: string, handler: Handler) {
     this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]);
   }
   sendUserMessage(text: string, options: { deliverAs: "followUp" }): void | Promise<void> { this.messages.push({ text, options }); }
-  async emit(name: string, event: Event = {}) { for (const handler of this.handlers.get(name) ?? []) await handler(event); }
+  async emit(name: string, event: Event = {}, context?: Context) { for (const handler of this.handlers.get(name) ?? []) await handler(event, context); }
 }
 async function directory() {
   const root = resolve(".investigation/pi-host");
@@ -38,6 +40,22 @@ async function until(check: () => boolean) {
   for (let i = 0; i < 500; i++) { if (check()) return; await sleep(2); }
   assert.fail("Timed out waiting for extension");
 }
+test("the portable supervisor skill has valid frontmatter, stays short and names only registered tools", async () => {
+  const skill = await readFile("skills/switchboard-supervisor/SKILL.md", "utf8");
+  // This deliberately accepts only plain YAML scalars, so malformed YAML cannot pass.
+  const frontmatter = /^---\nname: ([a-z0-9]+(?:-[a-z0-9]+)*)\ndescription: ([A-Za-z][A-Za-z0-9 ,.'()-]*)\n---\n/.exec(skill);
+  assert.ok(frontmatter, "Expected name and description as valid YAML plain scalars");
+  assert.equal(frontmatter[1], "switchboard-supervisor");
+  assert.ok(frontmatter[1]!.length <= 64);
+  assert.ok(frontmatter[2]!.length <= 1024);
+  assert.ok(skill.trimEnd().split("\n").length < 150);
+  const pi = new FakePi();
+  registerSupervisor(pi, await binding());
+  const mentioned = [...skill.matchAll(/\bsb_[a-z0-9_]+\b/g)].map(match => match[0]);
+  assert.ok(mentioned.length > 0);
+  for (const name of mentioned) assert.ok(pi.tools.has(name), `Unregistered tool ${name}`);
+});
+
 const statements = [{ position: 1, statement: "Met", references: [{ kind: "accepted_commit", contextId: "context", taskId: "task", attempt: 1, commit: "a".repeat(40) }] }];
 const cases: [string, Record<string, unknown>, string[]][] = [
   ["briefing", {}, []], ["note", { text: "A note" }, ["A note"]],
@@ -144,6 +162,7 @@ for (const hook of ["before_agent_start", "message_start"]) {
     let acknowledged = false;
     registerSupervisor(pi, await binding(), async (args, signal) => {
       const operation = args[1]!;
+      if (operation === "usage") return reply({ ok: true });
       calls.push(operation);
       if (operation === "wait") {
         if (!failedWait) { failedWait = true; throw new Error("Wait unavailable"); }
@@ -178,7 +197,7 @@ for (const hook of ["before_agent_start", "message_start"]) {
 test("an event queued but lost before delivery is not acknowledged and is delivered again after restart", async () => {
   const b = await binding();
   let handled = 0;
-  const run: ExecuteCommand = async args => { if (args[1] === "handled") handled++; return reply({ ok: true, event }); };
+  const run: ExecuteCommand = async args => { if (args[1] === "usage") return reply({ ok: true }); if (args[1] === "handled") handled++; return reply({ ok: true, event }); };
   for (let i = 0; i < 2; i++) {
     const pi = new FakePi();
     registerSupervisor(pi, b, run, 5);
@@ -195,7 +214,7 @@ test("a failed send is retried, never acknowledged just because sendUserMessage 
   let sends = 0;
   pi.sendUserMessage = (text, options) => { if (++sends === 1) throw new Error("Queue unavailable"); pi.messages.push({ text, options }); };
   let waits = 0;
-  registerSupervisor(pi, await binding(), async args => { assert.equal(args[1], "wait"); waits++; return reply({ ok: true, event }); }, 5);
+  registerSupervisor(pi, await binding(), async args => { if (args[1] === "usage") return reply({ ok: true }); assert.equal(args[1], "wait"); waits++; return reply({ ok: true, event }); }, 5);
   await pi.emit("session_start");
   await until(() => pi.messages.length === 1);
   await pi.emit("session_shutdown");
@@ -215,6 +234,7 @@ test("idle and busy events are follow-ups, with no second event fetched before t
     if (pi.messages.length === 1) return new Promise<void>((_resolve, reject) => { rejectFirstSend = reject; });
   };
   registerSupervisor(pi, await binding(), async (args, signal) => {
+    if (args[1] === "usage") return reply({ ok: true });
     if (args[1] === "handled") { handled++; return reply({ ok: true }); }
     waits++;
     if (handled === 2) { await sleep(10000, undefined, { signal }); return reply({ ok: true, event: null }); }
@@ -245,6 +265,7 @@ test("shutdown during a wait response never queues an event or leaves delivery p
   const pi = new FakePi();
   let waiting = false;
   registerSupervisor(pi, await binding(), async (args, signal) => {
+    if (args[1] === "usage") return reply({ ok: true });
     assert.equal(args[1], "wait");
     waiting = true;
     return new Promise(resolve => signal!.addEventListener("abort", () => resolve(reply({ ok: true, event })), { once: true }));
@@ -261,6 +282,7 @@ test("failed wait responses and thrown acknowledgements retry without fetching p
   let waits = 0;
   let acknowledgements = 0;
   registerSupervisor(pi, await binding(), async (args, signal) => {
+    if (args[1] === "usage") return reply({ ok: true });
     calls.push(args[1]!);
     if (args[1] === "wait") {
       if (++waits === 1) return reply({ ok: false }, 1);
@@ -314,7 +336,10 @@ test("launcher fixes the tool allowlist, disables discovery and supplies a persi
     assert.equal(option("--model"), "worker-model");
     assert.equal(option("--thinking"), "high");
     assert.match(option("--system-prompt"), /Switchboard supervisor/);
-    assert.match(await readFile(option("--append-system-prompt"), "utf8"), /sb_briefing/);
+    assert.equal(option("--append-system-prompt"), resolve("skills/switchboard-supervisor/SKILL.md"));
+    assert.equal(await readFile(option("--append-system-prompt"), "utf8"), await readFile("skills/switchboard-supervisor/SKILL.md", "utf8"));
+    assert.equal(launch.args.includes("--skill"), false);
+    assert.equal(supervisorToolNames.includes("read"), false);
     assert.match(launch.args.at(-1)!, /sb_briefing/);
     assert.ok(launch.cwd.startsWith(f.config.runtimeRoot));
     assert.ok(option("--session-dir").startsWith(f.config.runtimeRoot));

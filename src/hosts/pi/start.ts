@@ -56,7 +56,7 @@ export async function prepareSupervisor(config: Config, configPath: string, obje
       "--tools", supervisorToolNames.join(","),
       // --no-context-files does not suppress a user-level SYSTEM.md; fix the role as well as the routine.
       "--system-prompt", "You are the Switchboard supervisor for one objective. Act only through the supplied supervisor tools and follow the supervisor routine.",
-      "--append-system-prompt", fileURLToPath(new URL("./routine.md", import.meta.url)),
+      "--append-system-prompt", fileURLToPath(new URL("../../../skills/switchboard-supervisor/SKILL.md", import.meta.url)),
       "--", "Read the current briefing with sb_briefing before doing anything else. Continue this objective from Switchboard's records.",
     ],
   };
