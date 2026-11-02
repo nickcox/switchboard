@@ -167,7 +167,8 @@ for (const operation of ["dispatch", "finish"] as const) {
       let checkPid: number | undefined;
       try {
         if (operation === "finish") {
-          await until(() => existsSync(ready));
+          // The check creates the file before writing to it, so wait for the whole record.
+          await until(() => existsSync(ready) && readFileSync(ready, "utf8").endsWith("}"));
           checkPid = JSON.parse(readFileSync(ready, "utf8")).pid;
         } else await until(() => existsSync(join(f.dir, "requests.jsonl")) && readFileSync(join(f.dir, "requests.jsonl"), "utf8").includes('"type":"prompt"'));
         await until(() => power.records().length > 0);

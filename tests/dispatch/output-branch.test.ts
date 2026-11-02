@@ -149,8 +149,8 @@ test("integrated output with no branch can be reviewed and continued from", asyn
   } finally { f.tasks.close(); }
 });
 
-test("one-time cleanup plans without changes, then deletes integrated branches and reports kept branches", async () => {
-  for (const policy of ["manual", "local-merge", "discard"] as const) {
+for (const policy of ["manual", "local-merge", "discard"] as const) {
+  test(`one-time cleanup plans without changes, then ${policy === "manual" ? "reports the kept branch" : "deletes the integrated branch"} after ${policy}`, async () => {
     const f = await output();
     const path = lock(f);
     try {
@@ -169,8 +169,8 @@ test("one-time cleanup plans without changes, then deletes integrated branches a
       assert.match(JSON.parse(run.stdout).detail, policy === "manual" ? /kept.*not in target branch main/ : /deleted/);
       assert.equal(exists(f), policy === "manual");
     } finally { rmSync(path, { force: true }); f.tasks.close(); }
-  }
-});
+  });
+}
 
 test("one-time cleanup preserves held leases and moved branches, then cleans up manually integrated output", async () => {
   const f = await output();
