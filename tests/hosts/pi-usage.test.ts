@@ -25,7 +25,7 @@ function fixture(fail?: (args: string[]) => void) {
     fail?.(args);
     return reply;
   };
-  registerSupervisor(pi, binding, execute);
+  registerSupervisor(pi, binding, execute, 5);
   return { pi, snapshots };
 }
 const message = (cost?: number, totalTokens?: number) => ({ role: "assistant", content: "", usage: { ...(cost === undefined ? {} : { cost: { total: cost } }), ...(totalTokens === undefined ? {} : { totalTokens }) } });
@@ -48,6 +48,19 @@ test("usage registers before the first request and reports cumulative totals aft
       ["--session", "session", "--cost", "0.75", "--tokens", "300"],
       ["--session", "session", "--cost", "0.75", "--tokens", "300"],
     ]);
+  } finally { await pi.emit("session_shutdown"); }
+});
+
+test("assistant usage is booked before tools can close the objective, without charging it twice at turn end", async () => {
+  const { pi, snapshots } = fixture();
+  const response = message(0.25, 100);
+  try {
+    await pi.emit("session_start");
+    await pi.emit("message_end", { message: response });
+    assert.deepEqual(snapshots.at(-1), ["--session", "session", "--cost", "0.25", "--tokens", "100"]);
+    await pi.emit("turn_end", { message: response, messageEntryId: "response" });
+    assert.equal(snapshots.length, 3);
+    assert.deepEqual(snapshots.at(-1), snapshots.at(-2));
   } finally { await pi.emit("session_shutdown"); }
 });
 
@@ -97,11 +110,12 @@ test("reload reconstructs total spending from all entries, including compacted m
 test("registration failure is retried before a provider request; failed reports retain accumulated usage", async () => {
   let calls = 0;
   const { pi, snapshots } = fixture(() => {
-    if (++calls === 1 || calls === 3) throw new Error("Unavailable");
+    if ([1, 2, 4].includes(++calls)) throw new Error("Unavailable");
   });
   try {
     await assert.rejects(pi.emit("session_start"), /Unavailable/);
     await pi.emit("before_provider_request");
+    assert.deepEqual(snapshots.slice(0, 3), Array.from({ length: 3 }, () => ["--session", "session"]));
     await assert.rejects(pi.emit("turn_end", { message: message(0.25, 100) }), /Unavailable/);
     await pi.emit("turn_end", { message: message(0.5, 200) });
     assert.deepEqual(snapshots.at(-1), ["--session", "session", "--cost", "0.75", "--tokens", "300"]);

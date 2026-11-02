@@ -49,9 +49,10 @@ Use only the supplied supervisor tools. Delegate implementation to workers.
 
 ## Check, review and repair
 
-- For a finished worker's retained output, call `sb_review` for that task and
-  attempt. This creates a review task, not a running reviewer. Dispatch the
-  returned task with `sb_dispatch` and wait for its review-recorded event.
+- For a finished implementation worker's retained output, call `sb_review`
+  for that task and attempt. This creates a review task, not a running reviewer.
+  Dispatch the returned task with `sb_dispatch` and wait for its review-recorded
+  event. Do not recursively review reviewers; act on their recorded findings.
 - Read the findings and current checks in `sb_briefing`. Accept with
   `sb_finish` only when all configured checks and the latest review passed
   for that exact output commit. A worker's claim alone is not acceptance.

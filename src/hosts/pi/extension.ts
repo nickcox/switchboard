@@ -22,7 +22,7 @@ export type SupervisorTool = {
 type PiUsage = { totalTokens?: number; cost?: { total?: number } };
 type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage };
 type PiEvent = { prompt?: string; message?: PiMessage; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
-type PiContext = { sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
+type PiContext = { signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
 /** The small part of Pi's extension API used here; Pi loads the extension, not Switchboard. */
 export interface SupervisorPi {
   registerTool(tool: SupervisorTool): void;
@@ -90,6 +90,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let registration: Promise<void> | undefined;
   let reporting = Promise.resolve();
   const seen = new Set<string>();
+  let seenMessages = new WeakSet<PiMessage>();
   let cost = 0;
   let tokens = 0;
   let observed = false;
@@ -106,7 +107,12 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     else unknownTokens = true;
   };
   const addMessage = (message: PiMessage | undefined, id?: string) => {
-    if (message?.role === "assistant" || message?.usage) addUsage(message.usage, id);
+    if (!message || message.role !== "assistant" && !message.usage) return;
+    if (id && seen.has(id)) return;
+    if (id) seen.add(id);
+    if (seenMessages.has(message)) return;
+    seenMessages.add(message);
+    addUsage(message.usage);
   };
   async function registerUsage() {
     if (registered) return;
@@ -127,6 +133,12 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     });
     return reporting;
   };
+  // Book the model response before its tools can close the objective or start more work.
+  pi.on("message_end", async event => {
+    if (event.message?.role !== "assistant") return;
+    addMessage(event.message);
+    await reportUsage();
+  });
   pi.on("turn_end", async event => {
     addMessage(event.message, event.messageEntryId);
     for (const [index, message] of (event.toolResults ?? []).entries()) addMessage(message, event.toolResultEntryIds?.[index]);
@@ -142,8 +154,13 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     controller = new AbortController();
     loop = poll(controller.signal).catch(() => {});
   }
-  // A failed startup registration must be retried before any provider request.
-  pi.on("before_provider_request", startSession);
+  // Pi reports hook errors and continues, so do not throw past this gate while registration is retryable.
+  pi.on("before_provider_request", async (_event, context) => {
+    while (!context?.signal?.aborted) {
+      try { await startSession(); return; }
+      catch { await delay(retryMs, undefined, context?.signal ? { signal: context.signal } : undefined); }
+    }
+  });
   const delivered = (event: PiEvent) => {
     const message = event.message;
     const text = event.prompt ?? (message?.role === "user" ? typeof message.content === "string" ? message.content
@@ -194,6 +211,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     sessionId = context?.sessionManager.getSessionId() ?? binding.sessionId;
     registered = false;
     seen.clear();
+    seenMessages = new WeakSet<PiMessage>();
     cost = tokens = 0;
     observed = unknownCost = unknownTokens = false;
     // Include compacted and off-branch messages when reloading this session.
