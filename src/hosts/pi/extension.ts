@@ -95,18 +95,26 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     while (!signal.aborted) {
       try {
         const reply = await command(["wait"], ["--timeout", "30"], signal);
+        if (signal.aborted) return;
         const value = JSON.parse(reply.stdout);
         if (reply.exitCode !== 0 || value.ok !== true) throw new Error("Supervisor wait failed");
         if (!value.event) continue;
         const event = value.event as SupervisorEvent;
         const text = eventText(event);
         await new Promise<void>((resolve, reject) => {
-          const abort = () => { pending = undefined; reject(signal.reason); };
+          let settled = false;
+          const settle = (error?: unknown) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", abort);
+            pending = undefined;
+            if (error !== undefined) reject(error);
+            else resolve();
+          };
+          const abort = () => settle(signal.reason);
           signal.addEventListener("abort", abort, { once: true });
-          pending = { text, delivered: () => { signal.removeEventListener("abort", abort); pending = undefined; resolve(); } };
-          Promise.resolve().then(() => pi.sendUserMessage(text, { deliverAs: "followUp" })).catch(error => {
-            signal.removeEventListener("abort", abort); pending = undefined; reject(error);
-          });
+          pending = { text, delivered: () => settle() };
+          Promise.resolve().then(() => pi.sendUserMessage(text, { deliverAs: "followUp" })).catch(settle);
         });
         // Delivery, not queueing or a turn ending, permits acknowledgement. Never fetch past a failed acknowledgement.
         while (!signal.aborted) {
@@ -144,6 +152,7 @@ export function eventText(event: SupervisorEvent): string {
     deadline_reached: "Do not dispatch more work; ask the person what to do next.",
     person_answered: "Read the person's answer and continue within the objective's authority.",
     person_intervention: "Read the briefing again before deciding what to do next.",
+    dispatcher_heartbeat_stale: "The worker may still be running; ask the person to inspect it and confirm it stopped before dispatching again.",
   };
   return `Switchboard event ${event.id}: kind=${event.kind}, task=${event.taskId ?? "none"}, attempt=${event.attempt ?? "none"}. ${next[event.kind] ?? "Read the briefing and decide the next action."}\n${JSON.stringify(event, null, 2)}`;
 }

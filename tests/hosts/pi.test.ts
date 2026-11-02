@@ -21,7 +21,7 @@ class FakePi implements SupervisorPi {
   on(name: string, handler: (event: Event) => void | Promise<void>) {
     this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]);
   }
-  sendUserMessage(text: string, options: { deliverAs: "followUp" }) { this.messages.push({ text, options }); }
+  sendUserMessage(text: string, options: { deliverAs: "followUp" }): void | Promise<void> { this.messages.push({ text, options }); }
   async emit(name: string, event: Event = {}) { for (const handler of this.handlers.get(name) ?? []) await handler(event); }
 }
 async function directory() {
@@ -203,6 +203,90 @@ test("a failed send is retried, never acknowledged just because sendUserMessage 
   assert.equal(sends, 2);
 });
 
+test("idle and busy events are follow-ups, with no second event fetched before the first acknowledgement", async () => {
+  const pi = new FakePi();
+  const second = { ...event, id: "event-2", kind: "question_asked", attempt: 3 };
+  let handled = 0;
+  let waits = 0;
+  let rejectFirstSend: (error: Error) => void = () => {};
+  // Pi can report delivery before the promise from sendUserMessage settles.
+  pi.sendUserMessage = (text, options) => {
+    pi.messages.push({ text, options });
+    if (pi.messages.length === 1) return new Promise<void>((_resolve, reject) => { rejectFirstSend = reject; });
+  };
+  registerSupervisor(pi, await binding(), async (args, signal) => {
+    if (args[1] === "handled") { handled++; return reply({ ok: true }); }
+    waits++;
+    if (handled === 2) { await sleep(10000, undefined, { signal }); return reply({ ok: true, event: null }); }
+    return reply({ ok: true, event: handled === 0 ? event : second });
+  }, 5);
+  try {
+    await pi.emit("session_start");
+    await until(() => pi.messages.length === 1);
+    assert.equal(waits, 1);
+    // Delivery while idle starts the first turn.
+    await pi.emit("before_agent_start", { prompt: eventText(event) });
+    await until(() => pi.messages.length === 2);
+    assert.equal(handled, 1);
+    assert.equal(waits, 2);
+    // A late failure of the first send must not clear the second event's pending delivery.
+    rejectFirstSend(new Error("First run ended with an error after delivery"));
+    await sleep(15);
+    assert.equal(waits, 2);
+    assert.equal(handled, 1);
+    // The second message was queued while the first turn was busy; it is now delivered.
+    await pi.emit("message_start", { message: { role: "user", content: eventText(second) } });
+    await until(() => handled === 2);
+    assert.deepEqual(pi.messages.map(message => message.options), [{ deliverAs: "followUp" }, { deliverAs: "followUp" }]);
+  } finally { await pi.emit("session_shutdown"); }
+});
+
+test("shutdown during a wait response never queues an event or leaves delivery pending", { timeout: 2000 }, async () => {
+  const pi = new FakePi();
+  let waiting = false;
+  registerSupervisor(pi, await binding(), async (args, signal) => {
+    assert.equal(args[1], "wait");
+    waiting = true;
+    return new Promise(resolve => signal!.addEventListener("abort", () => resolve(reply({ ok: true, event })), { once: true }));
+  }, 5);
+  await pi.emit("session_start");
+  await until(() => waiting);
+  await pi.emit("session_shutdown");
+  assert.deepEqual(pi.messages, []);
+});
+
+test("failed wait responses and thrown acknowledgements retry without fetching past the event", async () => {
+  const pi = new FakePi();
+  const calls: string[] = [];
+  let waits = 0;
+  let acknowledgements = 0;
+  registerSupervisor(pi, await binding(), async (args, signal) => {
+    calls.push(args[1]!);
+    if (args[1] === "wait") {
+      if (++waits === 1) return reply({ ok: false }, 1);
+      if (waits === 2) return { exitCode: 0, stdout: "invalid JSON" };
+      if (acknowledgements === 2) await sleep(10000, undefined, { signal });
+      return reply({ ok: true, event });
+    }
+    if (++acknowledgements === 1) throw new Error("Acknowledgement unavailable");
+    return reply({ ok: true });
+  }, 5);
+  try {
+    await pi.emit("session_start");
+    await until(() => pi.messages.length === 1);
+    assert.deepEqual(calls, ["wait", "wait", "wait"]);
+    await pi.emit("message_start", { message: { role: "user", content: eventText(event) } });
+    await until(() => acknowledgements === 2 && waits === 4);
+    assert.deepEqual(calls, ["wait", "wait", "wait", "handled", "handled", "wait"]);
+    assert.equal(pi.messages.length, 1);
+  } finally { await pi.emit("session_shutdown"); }
+});
+
+test("a stale dispatcher event tells the supervisor to ask the person, not assume worker exit", () => {
+  const text = eventText({ ...event, kind: "dispatcher_heartbeat_stale" });
+  assert.match(text.split("\n")[0]!, /worker may still be running; ask the person/);
+});
+
 async function objectiveFixture() {
   const dir = await directory();
   const config = configSchema.parse({ contextId: "context", runtimeRoot: join(dir, "runtime"), tasks: { repo: "repo" },
@@ -229,6 +313,7 @@ test("launcher fixes the tool allowlist, disables discovery and supplies a persi
     assert.equal(option("--provider"), "worker-provider");
     assert.equal(option("--model"), "worker-model");
     assert.equal(option("--thinking"), "high");
+    assert.match(option("--system-prompt"), /Switchboard supervisor/);
     assert.match(await readFile(option("--append-system-prompt"), "utf8"), /sb_briefing/);
     assert.match(launch.args.at(-1)!, /sb_briefing/);
     assert.ok(launch.cwd.startsWith(f.config.runtimeRoot));
@@ -246,6 +331,11 @@ test("launcher fixes the tool allowlist, disables discovery and supplies a persi
     assert.equal(overridden.args[overridden.args.indexOf("--model") + 1], "supervisor-model");
     assert.equal(overridden.args[overridden.args.indexOf("--thinking") + 1], "low");
     assert.notEqual(overridden.cwd, launch.cwd);
+    f.config.supervisor = { model: "supervisor-model" };
+    const partial = await prepareSupervisor(f.config, f.configPath, "goal");
+    assert.equal(partial.args[partial.args.indexOf("--provider") + 1], "worker-provider");
+    assert.equal(partial.args[partial.args.indexOf("--thinking") + 1], "high");
+    assert.throws(() => configSchema.parse({ ...f.config, supervisor: { thinking: "invalid" } }));
     await assert.rejects(prepareSupervisor(f.config, f.configPath, "missing"), /does not exist/);
     await f.objectives.abandon("goal");
     await assert.rejects(prepareSupervisor(f.config, f.configPath, "goal"), /abandoned/);
