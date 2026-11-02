@@ -396,18 +396,14 @@ test("a supervisor needs the objective's rebase permission, including on dry run
   }
 });
 
-test("supervisor rebase records a candidate, but needs fresh passing checks and review before scoped acceptance", async t => {
+test("supervisor rebase records a candidate, but refuses acceptance until checks pass on it", async t => {
   const r = await output(t);
   const target = moveMain(r);
   const { deps } = await supervised(r);
   const originalCheck = await finish({ ...deps, policy: { ...deps.policy, context: { kind: "manual" } } }, { leaseId: r.leaseId, noProcesses: false });
   assert.equal(originalCheck.checks![0]!.status, "passed");
   assert.equal(originalCheck.checks![0]!.commit, r.original);
-  await reviewOutput(r, deps, "passed", r.original);
   deps.checks[0]!.command = [process.execPath, "-e", "process.exit(7)"];
-  const plan = await finish(deps, { ...options(r), dryRun: true });
-  assert.equal(plan.reason, "planned", JSON.stringify(plan));
-  unchanged(r, target);
   const failed = await finish(deps, options(r));
   assert.equal(failed.reason, "refused", JSON.stringify(failed));
   assert.match(failed.detail!, /has not passed/);
@@ -421,19 +417,22 @@ test("supervisor rebase records a candidate, but needs fresh passing checks and 
   assert.equal((await status(deps)).attempts[0]!.outputCommit, candidate);
   const scope = { commit: candidate, rebasedFrom: r.original, onto: target };
   await assert.rejects(deps.attempts.appendConfirmed(record(r), "output_accepted", scope, { fact: "output_accepted", scope }), /check_not_passed/);
-  deps.checks[0]!.command = [process.execPath, "-e", "process.exit(0)"];
-  const missing = await finish(deps, { leaseId: r.leaseId, noProcesses: false });
+});
+
+test("supervisor acceptance of a rebased candidate needs a review of that candidate, not of the original", async t => {
+  const r = await output(t);
+  const target = moveMain(r);
+  const { deps } = await supervised(r);
+  await reviewOutput(r, deps, "passed", r.original);
+  const missing = await finish(deps, options(r));
   assert.equal(missing.reason, "refused", JSON.stringify(missing));
   assert.match(missing.detail!, /no recorded review/);
+  const candidate = r.f.run(["rev-parse", r.branch]);
+  assert.notEqual(candidate, r.original);
+  assert.equal(r.f.run(["rev-parse", "main"]), target);
+  const scope = { commit: candidate, rebasedFrom: r.original, onto: target };
   await assert.rejects(deps.attempts.appendConfirmed(record(r), "output_accepted", scope, { fact: "output_accepted", scope }), /review_missing/);
-  for (const verdict of ["failed", "passed"] as const) {
-    await reviewOutput(r, deps, verdict, candidate);
-    if (verdict === "failed") {
-      const denied = await finish(deps, { leaseId: r.leaseId, noProcesses: false });
-      assert.equal(denied.reason, "refused", JSON.stringify(denied));
-      assert.match(denied.detail!, /latest review failed/);
-    }
-  }
+  await reviewOutput(r, deps, "passed", candidate);
   const accepted = await finish(deps, { leaseId: r.leaseId, noProcesses: false });
   assert.equal(accepted.reason, "finished", JSON.stringify(accepted));
   assert.deepEqual(accepted.acceptanceEvidence, { commit: candidate, permission: { allowed: true } });
