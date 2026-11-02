@@ -31,8 +31,11 @@ Use only the supplied supervisor tools. Delegate implementation to workers.
 
 ## Run and respond
 
-- Dispatch one ready task at a time with `sb_dispatch`. Reservation does not
-  prove launch or completion. Do not repeat a dispatch because it is quiet.
+- Use `sb_dispatch` to dispatch ready tasks that do not depend on each other,
+  running several workers at once up to the context's `maxAttempts`.
+  A dispatch refused at capacity is not a failure; wait for an event before
+  dispatching again. Reservation does not prove launch or completion.
+  Do not repeat a dispatch because it is quiet.
 - Act on each event as it arrives. The host waits in the background and sends
   events as follow-ups; it handles delivery acknowledgement. There is no agent
   waiting tool. When nothing is actionable, end the turn and await an event.
