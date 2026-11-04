@@ -1,5 +1,4 @@
-import type { OutputBranchCleanup } from "../workspaces/output-branch.ts";
-import { describeOutputBranch } from "./output-branch.ts";
+import { describeOutputBranch, observeOutputBranch, type OutputBranchStatus } from "./output-branch.ts";
 import { readPersonQuestions, type PersonQuestion } from "../supervise/questions.ts";
 import { ObjectiveStore, type ObjectiveBrief } from "../objectives/store.ts";
 import { readQuestions, type Question, type InvalidQuestionFile } from "../runtime/questions-store.ts";
@@ -36,10 +35,14 @@ export type AttemptStatus = {
   checks?: CheckResult[];
   reviews?: ReviewRecord[];
   outputCommit?: string;
-  outputBranchCleanup?: OutputBranchCleanup;
+  outputBranchCleanup?: OutputBranchStatus;
   acceptanceEvidence: AcceptanceEvidence;
   specification?: StoredSpecification;
   specificationComplete: boolean;
+  /** Incomplete specifications on settled attempts are historical, not launch warnings. */
+  specificationStatus: "complete" | "incomplete" | "historical";
+  /** Includes actionable terminal outcomes and retained resources, not just the state label. */
+  attentionRequired: boolean;
   allocation?: AttemptAllocation;
   attempt: AttemptSummary;
   /** The attempt's state across every owner (Phase 2 PRD, attempt states). */
@@ -76,7 +79,7 @@ export type AttemptStatus = {
   nextAction: { code: NextAction; description: string };
 };
 
-export type StatusOptions = { activity?: boolean; transcript?: boolean };
+export type StatusOptions = { activity?: boolean; transcript?: boolean; attentionOnly?: boolean };
 const defaultStaleMs = 20 * 60 * 1000;
 
 /** Quotes a path for the operator's shell: POSIX shells on macOS and Linux, PowerShell on Windows. */
@@ -123,6 +126,8 @@ export type StatusResult = {
   /** Imported tasks can be in flight with no attempt, runtime record or lease accounting for them. */
   orphanedInFlight: string[];
   attempts: AttemptStatus[];
+  /** Present only in the opt-in attention-only view. All context totals remain unfiltered. */
+  omittedCount?: number;
   /** Active attempts count towards the context maximum; null means the count could not be read. */
   capacity: { maximum: number; active: number | null };
   /** Attempts whose possibly running worker has no fresh dispatcher heartbeat. */
@@ -159,16 +164,30 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     const latestReadFailure = [...(record?.entries ?? [])].reverse().find(e => e.kind === "owner_read_failed");
     const unsettled = record ? unsettledReads(record) : [];
     const reconcile = unsettled.length > 0;
-    const cleanup = [...(record?.entries ?? [])].reverse().find(e => e.kind === "output_branch_cleanup");
-    attempts.push({ ...assessment,
-      ...(assessment.attempt.outputBranch ? { outputBranchCleanup: cleanup ? cleanup.data as OutputBranchCleanup : { branch: assessment.attempt.outputBranch, status: "kept" as const } } : {}),
+    const specificationComplete = attemptSpecificationSchema.safeParse(record?.specification).success;
+    const outputBranchCleanup = assessment.attempt.outputBranch ? await observeOutputBranch(deps, assessment.attempt.outputBranch, record) : undefined;
+    // A finished label means no lease is listed, not that the task outcome has been resolved.
+    const terminalIssue = assessment.state === "finished" && typeof facts.task === "object" && (
+      facts.task.held || (facts.task.state !== "done" && !facts.discarded && !facts.acceptedOutput && (
+        facts.outcomeCategory !== undefined && facts.outcomeCategory !== "done" ||
+        record?.entries.some(e => e.kind === "worker_finished" && (e.data.outcome === "failed" || e.data.outcome === "hold" || e.data.status === "failed")) ||
+        record?.entries.some(e => e.kind === "halted")
+      )));
+    const nextAction = reconcile ? action("reconcile_owner") : terminalIssue ? action("inspect_attempt") : assessment.nextAction;
+    const attentionRequired = Boolean(assessment.resultDiscrepancy || assessment.taskDisagreement ||
+      nextAction.code !== "none" && nextAction.code !== "watch_attempt" || facts.leaseHeld && !facts.possiblyRunning ||
+      record?.questions?.some(q => !q.answer) || record?.invalidQuestionFiles?.length ||
+      outputBranchCleanup?.status === "unknown" || outputBranchCleanup?.detail?.startsWith("Could not"));
+    attempts.push({ ...assessment, nextAction, attentionRequired,
+      ...(outputBranchCleanup ? { outputBranchCleanup } : {}),
       ...(record?.questions ? { questions: record.questions } : {}),
       ...(record?.invalidQuestionFiles ? { invalidQuestionFiles: record.invalidQuestionFiles } : {}),
       acceptanceEvidence: { ...(assessment.outputCommit ? { commit: assessment.outputCommit } : {}),
         permission: checkAcceptanceEvidence(assessment.outputCommit, deps.checks ?? [], assessment.checks ?? [], assessment.reviews ?? []) },
       ...(latestReadFailure ? { latestReadFailure: { ...latestReadFailure.data as ReadFailure, sequence: latestReadFailure.sequence } } : {}),
       ...(reconcile ? { unsettledReadFailures: unsettled.map(e => ({ ...e.data as ReadFailure, sequence: e.sequence })) } : {}),
-      specificationComplete: attemptSpecificationSchema.safeParse(record?.specification).success,
+      specificationComplete,
+      specificationStatus: specificationComplete ? "complete" : assessment.state === "finished" ? "historical" : "incomplete",
       ...(worker?.validatedResult ? { validatedResult: worker.validatedResult } : {}),
       ...(record?.specification ? { specification: record.specification } : {}), ...(record?.allocation ? { allocation: record.allocation } : {}),
       changeable: facts.unknown.length === 0 && facts.hasRecord && typeof facts.task === "object" && !facts.possiblyRunning && !reconcile,
@@ -192,9 +211,12 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   // A policy that cannot be resolved needs fixing before any attempt can be finished.
   const openQuestions = readQuestions(deps.attempts.database, { contextId: deps.contextId }).questions.filter(question => !question.answer);
   const openPersonQuestions = readPersonQuestions(deps.attempts.database).filter(question => !question.answer);
-  const attention = openPersonQuestions.length > 0 || openQuestions.length > 0 || attempts.some(a => a.resultDiscrepancy || (a.nextAction.code !== "none" && a.nextAction.code !== "watch_attempt")) || unaccounted || (policy !== undefined && "error" in policy);
+  const attention = openPersonQuestions.length > 0 || openQuestions.length > 0 || attempts.some(a => a.attentionRequired) || unaccounted || (policy !== undefined && "error" in policy);
   return {
-    version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight, attempts, objectives, openPersonQuestions,
+    version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight,
+    attempts: options.attentionOnly ? attempts.filter(a => a.attentionRequired || a.possiblyRunning || a.state !== "finished") : attempts,
+    ...(options.attentionOnly ? { omittedCount: attempts.filter(a => !a.attentionRequired && !a.possiblyRunning && a.state === "finished").length } : {}),
+    objectives, openPersonQuestions,
     capacity: { maximum: deps.maxAttempts ?? 1, active }, blockingDispatch,
     ...(openQuestions.length ? { openQuestions } : {}),
     ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
@@ -222,6 +244,7 @@ function describePolicy(policy: NonNullable<StatusResult["policy"]>): string {
 export function describeStatus(value: StatusResult): string {
   const lines = [`${value.reason === "clear" ? "Clear" : value.reason === "attention" ? "Needs attention" : "Unknown: owner state could not be read"}`];
   if (value.detail) lines.push(`Detail: ${value.detail}`);
+  if (value.omittedCount !== undefined) lines.push(`Omitted attempts needing no attention: ${value.omittedCount}`);
   lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`,
     `Active attempts: ${value.capacity.active ?? "unknown"} of at most ${value.capacity.maximum}`);
   if (value.blockingDispatch.length) {
@@ -236,7 +259,9 @@ export function describeStatus(value: StatusResult): string {
       : a.leaseHeld ? `lease ${a.attempt.leaseId} held at ${where}`
       : `lease ${a.attempt.leaseId} not held`;
     lines.push(`- ${a.attempt.taskId} attempt ${a.attempt.attempt}: ${a.state.replaceAll("_", " ")}; last ${a.lastEntry}; task ${task}; ${lease}${a.possiblyRunning ? (a.nextAction.code === "watch_attempt" ? "; WORKER RUNNING" : "; WORKER MAY BE RUNNING") : ""}`);
-    if (!a.specificationComplete) lines.push("  Stored specification incomplete – this attempt cannot be launched; inspect and resolve it");
+    if (!a.specificationComplete) lines.push(a.specificationStatus === "historical"
+      ? "  Stored specification incomplete – historical attempt; no launch required"
+      : "  Stored specification incomplete – this attempt cannot be launched; inspect and resolve it");
     if (a.specification) lines.push(`  Specification: ${a.specification.title ?? "unknown title"}, revision ${a.specification.definitionRevision ?? "unknown"}; ${a.specification.runtime?.profile ?? "unknown profile"}`);
     if (a.specification?.handover) lines.push(a.specification.handover);
     if (a.unknownOwners) for (const reason of a.unknownOwners) lines.push(`  Unknown: ${reason}`);

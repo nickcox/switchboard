@@ -1,5 +1,6 @@
 import type { AttemptRecord } from "../attempts/log.ts";
 import { onPath } from "../infra/executables.ts";
+import { describeCommand, runCommand } from "../infra/command.ts";
 import { removeOutputBranch, type OutputBranchCleanup } from "../workspaces/output-branch.ts";
 import { requireOperationAuthority } from "./safety.ts";
 import type { Dependencies } from "./dependencies.ts";
@@ -39,6 +40,24 @@ export async function cleanupOutputBranch(deps: Dependencies, record: AttemptRec
   return cleanup;
 }
 
-export function describeOutputBranch(cleanup: OutputBranchCleanup | undefined): string {
+export type OutputBranchStatus = Omit<OutputBranchCleanup, "status"> & { status: OutputBranchCleanup["status"] | "unknown" };
+
+/** Observe the current local ref without changing it. A recorded cleanup is not evidence of current existence. */
+export async function observeOutputBranch(deps: Dependencies, branch: string, record?: AttemptRecord): Promise<OutputBranchStatus> {
+  const cleanup = [...(record?.entries ?? [])].reverse().find(e => e.kind === "output_branch_cleanup")?.data as OutputBranchCleanup | undefined;
+  try {
+    const ref = `refs/heads/${branch}`;
+    const result = await runCommand(deps.policy?.git ?? onPath("git"), ["for-each-ref", "--format=%(refname)", "--", ref], {
+      cwd: record?.allocation?.backingRepository ?? deps.repository, env: deps.policy?.environment ?? {}, timeoutMs: 15000,
+    });
+    if (result.timedOut || result.truncated || result.exitCode !== 0) throw new Error(describeCommand(result));
+    if (!result.stdout.trim().split("\n").includes(ref)) return cleanup?.status === "deleted" ? cleanup : { branch, status: "deleted", detail: "Output branch is absent" };
+    return cleanup && cleanup.status !== "deleted" ? cleanup : { branch, status: "kept", ...(cleanup ? { detail: "Output branch exists despite recorded deletion" } : {}) };
+  } catch (error) {
+    return { branch, status: "unknown", detail: `Could not read output branch: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+export function describeOutputBranch(cleanup: OutputBranchStatus | undefined): string {
   return cleanup ? `Output branch ${cleanup.branch}: ${cleanup.status}${cleanup.detail ? ` – ${cleanup.detail}` : ""}` : "";
 }

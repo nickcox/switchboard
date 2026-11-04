@@ -30,7 +30,7 @@ const usage = `Usage:
   switchboard dispatch --once [--dry-run] [--task <id> [--from-attempt <n> [--note <text> | --note-file <path>]]] [--request-id <id>] [--json] [--config <path>]
   switchboard review --task <id> [--attempt <n>] [--json] [--config <path>]
   switchboard answer --task <id> --question <question-id> [--wait <seconds>] [--json] [--config <path>] "<answer>"
-  switchboard status [--json] [--config <path>]
+  switchboard status [--attention-only] [--json] [--config <path>]
   switchboard cleanup-output-branches [--dry-run] [--json] [--config <path>]
   switchboard prune --older-than <days> [--dry-run] [--json] [--config <path>]
   switchboard resolve --lease <lease-id> [--worker-stopped | --lease-returned] [--note <text>] [--json] [--config <path>]
@@ -115,7 +115,7 @@ async function main(argv: string[]): Promise<number> {
     options: {
       once: { type: "boolean" }, "dry-run": { type: "boolean" }, task: { type: "string" }, "request-id": { type: "string" },
       "from-attempt": { type: "string" }, "note-file": { type: "string" }, question: { type: "string" },
-      json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
+      "attention-only": { type: "boolean" }, json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" }, version: { type: "boolean" },
       lease: { type: "string" }, "no-processes": { type: "boolean" }, "accept-output": { type: "boolean" }, rebase: { type: "boolean" }, confirm: { type: "boolean" }, "worker-stopped": { type: "boolean" }, "lease-returned": { type: "boolean" }, "read-failure": { type: "string" }, "effect-outcome": { type: "string" }, note: { type: "string" }, "no-follow": { type: "boolean" },
       after: { type: "boolean" }, as: { type: "string" }, wait: { type: "string" }, attempt: { type: "string" }, "older-than": { type: "string" },
     },
@@ -135,7 +135,7 @@ async function main(argv: string[]): Promise<number> {
   const selectors = ["lease", "task", "attempt"];
   const allowed: Record<string, string[]> = {
     review: ["task", "attempt"], answer: ["task", "question", "wait"],
-    dispatch: ["once", "dry-run", "task", "request-id", "from-attempt", "note", "note-file"], status: [], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
+    dispatch: ["once", "dry-run", "task", "request-id", "from-attempt", "note", "note-file"], status: ["attention-only"], resolve: ["lease", "task", "attempt", "worker-stopped", "lease-returned", "read-failure", "effect-outcome", "note"],
     watch: [...selectors, "no-follow"], stop: [...selectors, "as", "wait"], steer: [...selectors, "after", "as", "wait"],
     "cleanup-output-branches": ["dry-run"], prune: ["older-than", "dry-run"], finish: [...selectors, "no-processes", "accept-output", "rebase", "dry-run"], discard: [...selectors, "no-processes", "confirm", "note", "dry-run"],
   };
@@ -267,7 +267,7 @@ async function main(argv: string[]): Promise<number> {
       }
 
       if (command === "status") {
-        const value = await status(deps);
+        const value = await status(deps, { attentionOnly: values["attention-only"] === true });
         console.log(values.json ? JSON.stringify(value, null, 2) : describeStatus(value));
         return value.ok ? 0 : 1;
       }
