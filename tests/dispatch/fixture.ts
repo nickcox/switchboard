@@ -20,15 +20,17 @@ import { RuntimeRecords } from "../../src/runtime/records.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { checkRetention } from "../../src/workspaces/retention.ts";
 import { TreehouseProvider } from "../../src/workspaces/treehouse.ts";
+import { TreehouseStandIn } from "../workspaces/treehouse-stand-in.ts";
 
-// End to end with SQLite, Treehouse and Git, and the synthetic Pi peer as the worker.
+// End to end with SQLite, Git and the synthetic Pi peer as the worker. Workspaces come from the in-process Treehouse
+// stand-in unless a test asks for the real Treehouse, which it needs if Switchboard in another process must see its leases.
 const git = onPath("git");
 const treehouse = onPath("treehouse");
 const entrypoint = resolve(import.meta.dirname, "../../src/cli.ts");
 const evidence = resolve(import.meta.dirname, "../../.investigation/dispatch-unit");
 mkdirSync(evidence, { recursive: true });
 
-export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string; byTaskKind?: Record<string, ContractSpec>; worker?: Partial<PiWorkerOptions>; maxAttempts?: number; runMs?: number } = {}) {
+export async function fixture(options: { tasks?: string[][]; scenario?: string; acceptance?: DeliveryContract["acceptance"]; baseRef?: string; byTaskKind?: Record<string, ContractSpec>; worker?: Partial<PiWorkerOptions>; maxAttempts?: number; runMs?: number; workspaces?: "treehouse" } = {}) {
   const dir = realpathSync(mkdtempSync(join(evidence, "case-")));
   const home = join(dir, "home");
   mkdirSync(home);
@@ -61,7 +63,7 @@ export async function fixture(options: { tasks?: string[][]; scenario?: string; 
   });
   const deps: Dependencies & { attempts: FixtureAttemptStore } = {
     caller: testCaller, contextId: "fixture-context", tasks, keepAwake: false, runtimeSettings: structuredClone(runtimeSettings), configurationProvenance: { configuration: "fixture" },
-    workspaces: await TreehouseProvider.open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
+    workspaces: await (options.workspaces === "treehouse" ? TreehouseProvider : TreehouseStandIn).open({ treehouse, git, repository, poolRoot: join(dir, "pool"), environment }),
     attempts: new FixtureAttemptStore(tasks.database, "fixture-context", testCaller), runtime,
     ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
     launch: (input, signal, onRequest) => worker.execute(input, signal, onRequest ? { onRequest } : {}),

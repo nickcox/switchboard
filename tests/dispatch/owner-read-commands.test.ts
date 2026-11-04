@@ -15,7 +15,7 @@ import { fixture, task } from "./fixture.ts";
 // Executable shims exercise adapter diagnostics as well as the operation's read boundaries.
 const shimOptions = { skip: process.platform === "win32" };
 async function reviewed() {
-  const f = await fixture({ tasks: [task("commands-a1")], scenario: "commit-result" });
+  const f = await fixture({ tasks: [task("commands-a1")], scenario: "commit-result", workspaces: "treehouse" });
   const outcome = await dispatchOnce(f.deps);
   return { f, leaseId: outcome.attempt!.leaseId!, commit: outcome.attempt!.resultCommit! };
 }
@@ -122,7 +122,7 @@ for (const operation of ["finish", "discard"] as const) {
 
 for (const point of ["pool-preflight", "repository-intent", "workspace-effect", "treehouse-effect"] as const) {
   test(`dispatch: real adapter ${point} failure retains command output and never acquires twice`, shimOptions, async () => {
-    const f = await fixture({ tasks: [task("commands-a1")] });
+    const f = await fixture({ tasks: [task("commands-a1")], workspaces: "treehouse" });
     const git = join(f.dir, "git-dispatch-failure"), treehouse = join(f.dir, "treehouse-dispatch-failure");
     const acquisitions = join(f.dir, "acquisitions"), listing = join(f.dir, "listed");
     const condition = point === "pool-preflight" ? '[ "$1" = remote ]' : point === "repository-intent"

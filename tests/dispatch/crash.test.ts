@@ -14,7 +14,8 @@ import { fixture, task } from "./fixture.ts";
 const child = resolve(import.meta.dirname, "../fixtures/crash-dispatch.ts");
 
 async function crashAt(stage: string, scenario = "commit-result") {
-  const f = await fixture({ tasks: [task("crash-a1"), task("crash-b1")], scenario });
+  // The dispatch in another process uses Treehouse, so this one must see the same leases.
+  const f = await fixture({ tasks: [task("crash-a1"), task("crash-b1")], scenario, workspaces: "treehouse" });
   const run = spawnSync(process.execPath, [child, f.config, stage], { env: { ...process.env, ...f.environment }, encoding: "utf8" });
   // Windows has no signals: Node.js ends the process at once with exit code 1 and reports no signal. An empty stderr
   // tells that apart from an ordinary failure, which prints its error.

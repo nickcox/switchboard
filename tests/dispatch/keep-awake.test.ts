@@ -143,7 +143,7 @@ test("finish holds keep-awake during configured checks and task completion, and 
 for (const operation of ["dispatch", "finish"] as const) {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     test(`${operation} releases keep-awake on ${signal}`, { skip: process.platform === "win32" }, async () => {
-      const f = await fixture({ tasks: [task("awake-a1")], scenario: operation === "finish" ? "commit-result" : "await-steer" });
+      const f = await fixture({ tasks: [task("awake-a1")], scenario: operation === "finish" ? "commit-result" : "await-steer", workspaces: "treehouse" });
       let leaseId: string | undefined;
       if (operation === "finish") {
         f.deps.keepAwake = false;

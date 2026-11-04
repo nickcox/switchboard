@@ -81,7 +81,7 @@ test("the default maximum still allows only one active worker", async () => {
 
 for (const named of [false, true]) {
   test(`two dispatch processes racing for one ${named ? "named" : "automatically selected"} task start exactly one attempt`, async () => {
-    const f = await fixture({ tasks: [task("only-a1")], scenario: "commit-result", maxAttempts: 2 });
+    const f = await fixture({ tasks: [task("only-a1")], scenario: "commit-result", maxAttempts: 2, workspaces: "treehouse" });
     const outcomes = await Promise.all([dispatchProcess(f, named ? ["--task", "only-a1"] : []), dispatchProcess(f, named ? ["--task", "only-a1"] : [])]);
     assert.deepEqual(outcomes.map(o => o.reason).sort(), ["held", named ? "refused" : "no_ready_work"], JSON.stringify(outcomes));
     const attempts = f.deps.attempts.list();

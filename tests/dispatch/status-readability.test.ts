@@ -33,7 +33,7 @@ function cli(f: Fixture, json: boolean, filtered: boolean) {
 
 test("mixed context: active, finished and historical attempts agree in text and JSON attention-only output", async () => {
   const f = await fixture({ tasks: [task("active-a1"), task("finished-a1"), task("historical-a1"), task("failed-a1")],
-    scenario: "commit-result", acceptance: "independent_deliverable", maxAttempts: 4 });
+    scenario: "commit-result", acceptance: "independent_deliverable", maxAttempts: 4, workspaces: "treehouse" });
   const config = configSchema.parse(JSON.parse(readFileSync(f.config, "utf8")));
   const legacy = new LegacyAttempts(config.runtimeRoot, config.contextId);
   const historical = await legacy.create("historical-a1", {}, 0);
