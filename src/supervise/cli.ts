@@ -117,9 +117,9 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   try {
     const objectives = new ObjectiveStore(tasks.database, caller);
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
-    if (objective.state !== "open") rejected(`Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
     if (operation === "usage") return { code: 0, value: { ok: true, action, usage: await recordSupervisorUsage(tasks.database, caller, caller.objectiveId,
       { sessionId: values.session!, cost, tokens: tokensUsed }) } };
+    if (objective.state !== "open") rejected(`Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
     if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller, caller.objectiveId, timeout) };
     if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller, caller.objectiveId, args[0]!) } };
     if (operation === "ask") return { code: 0, value: { ok: true, action, question: await askPerson(tasks.database, caller, caller.objectiveId, args[0]!, values.choice, values["request-id"]) } };

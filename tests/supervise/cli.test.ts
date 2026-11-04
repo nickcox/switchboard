@@ -399,18 +399,30 @@ test("supervise passes through existing scope and permission refusals, including
   assert.deepEqual(await f.rows("SELECT * FROM tasks WHERE id IN ('foreign','unlinked') ORDER BY id"), foreign);
 });
 
-test("unknown and closed objectives refuse all operations with one JSON object", async () => {
+const closedOperations = [
+  ["briefing"], ["wait", "--timeout", "0"], ["handled", "unknown"], ["note", "Remember"], ["ask", "Which?"],
+  ["objective", "show"], ["objective", "complete", "--statements-file", "unused.json"],
+  ["task", "add", "no", "No"], ["task", "show", "work"], ["task", "list"], ["task", "update", "work", "--title", "Changed"],
+  ["task", "hold", "work", "--reason", "Wait"], ["task", "release", "work"], ["task", "block", "work", "--by", "other"],
+  ["task", "unblock", "work", "--by", "other"], ["task", "done", "work"], ["dispatch", "--task", "work"],
+  ["review", "--task", "work"], ["answer", "--task", "work", "--question", "q", "Yes"],
+  ["steer", "--task", "work", "Continue"], ["stop", "--task", "work"], ["finish", "--task", "work"],
+];
+test("unknown and closed objectives refuse all operations and new usage sessions with one JSON object", async () => {
   const f = fixture();
+  f.ok("usage", "--session", "registered", "--cost", "1");
   for (const state of ["missing", "abandoned"]) {
     if (state === "abandoned") f.person("objective", "abandon", "goal");
-    for (const args of [["briefing"], ["wait", "--timeout", "0"], ["handled", "unknown"], ["note", "Remember"], ["objective", "show"], ["task", "add", "no", "No"], ["task", "list"], ["dispatch", "--task", "foreign"], ["finish", "--task", "foreign"]]) {
+    for (const args of [...closedOperations, ["usage", "--session", "new"]]) {
       const result = await f.localRaw("supervise", ...args, "--objective", state === "missing" ? "missing" : "goal");
       assert.equal(result.status, 1, result.stdout + result.stderr);
       const value = JSON.parse(result.stdout);
       assert.equal(value.ok, false);
-      assert.match(value.detail, state === "missing" ? /does not exist/ : /abandoned/);
+      assert.match(value.detail, state === "missing" ? /does not exist/ : /abandoned|must be open/);
     }
   }
+  assert.equal(f.ok("usage", "--session", "registered", "--cost", "1.07").usage.cost, 1.07);
+  assert.equal(f.person("objective", "show", "goal").objective.spending.cost, 1.07);
 });
 
 test("dispatch, continuation, review, finish and completion record the fixed supervisor actor", async () => {
@@ -465,10 +477,17 @@ test("dispatch, continuation, review, finish and completion record the fixed sup
   assert.equal(objective.personInterventions.leaseReturns.count, 1);
   const statements = join(f.dir, "statements.json");
   writeFileSync(statements, JSON.stringify([{ position: 1, statement: "The accepted output meets the criterion", references: objective.availableReferences }]));
+  f.ok("usage", "--session", "registered", "--cost", "1");
   assert.equal(f.ok("objective", "complete", "--statements-file", statements).objective.state, "completed");
+  const beforeUsage = f.person("objective", "show", "goal").objective.spending.observedCost;
+  assert.equal(f.ok("usage", "--session", "registered", "--cost", "1.07").usage.cost, 1.07);
+  assert.equal(f.person("objective", "show", "goal").objective.spending.observedCost, beforeUsage + 0.07);
+  const registration = f.run("usage", "--session", "new");
+  assert.equal(registration.code, 1);
+  assert.match(registration.value.detail, /must be open/);
   const history = await f.rows("SELECT changed_by FROM objective_changes WHERE objective = 'goal' AND action = 'complete'");
   assert.deepEqual(history.map(row => row.changed_by), ["supervisor:goal"]);
-  for (const args of [["objective", "show"], ["task", "list"], ["dispatch", "--task", "work"], ["finish", "--lease", initial.value.attempt.leaseId]]) {
+  for (const args of closedOperations) {
     const refused = f.run(...args);
     assert.equal(refused.code, 1);
     assert.match(refused.value.detail, /completed/);

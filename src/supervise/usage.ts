@@ -27,9 +27,9 @@ export async function recordSupervisorUsage(database: Database, caller: Caller, 
   }
   return database.transaction(() => {
     requireScope(database, caller, { objectiveId });
-    if (database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") reject(`Objective ${objectiveId} must be open before recording supervisor usage`);
     const previous = database.get("SELECT * FROM supervisor_usage WHERE session_id = ? ORDER BY sequence DESC LIMIT 1", input.sessionId);
     if (previous && previous.objective !== objectiveId) reject("A supervisor session cannot be moved to another objective");
+    if (!previous && database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") reject(`Objective ${objectiveId} must be open before registering supervisor usage`);
     const highWater = (value: number | null | undefined, before: unknown): number | null =>
       value == null && before == null ? null : Math.max(value ?? 0, before == null ? 0 : Number(before));
     const snapshot: SupervisorUsage = { sessionId: input.sessionId, objectiveId, sequence: Number(previous?.sequence ?? 0) + 1,

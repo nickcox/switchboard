@@ -21,12 +21,12 @@ export type SupervisorTool = {
 };
 type PiUsage = { totalTokens?: number; cost?: { total?: number } };
 type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage };
-type PiEvent = { prompt?: string; message?: PiMessage; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
+type PiEvent = { prompt?: string; message?: PiMessage; messages?: PiMessage[]; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
 type PiContext = { signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
 /** The small part of Pi's extension API used here; Pi loads the extension, not Switchboard. */
 export interface SupervisorPi {
   registerTool(tool: SupervisorTool): void;
-  on(event: string, handler: (event: PiEvent, context?: PiContext) => void | Promise<void>): void;
+  on(event: string, handler: (event: PiEvent, context?: PiContext) => void | { messages: PiMessage[] } | Promise<void | { messages: PiMessage[] }>): void;
   sendUserMessage(text: string, options: { deliverAs: "followUp" }): void | Promise<void>;
 }
 
@@ -41,7 +41,20 @@ export function commandExecutor(binding: SupervisorBinding): ExecuteCommand {
 
 export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding, execute = commandExecutor(binding), retryMs = 1000) {
   const fixed = ["--objective", binding.objectiveId, "--config", binding.configPath];
-  const command = (operation: string[], args: string[], signal?: AbortSignal) => execute(["supervise", ...operation, ...fixed, ...args], signal);
+  let controller: AbortController | undefined;
+  let eventsStopped = false;
+  const queued = new Set<string>();
+  const stopEvents = () => { eventsStopped = true; controller?.abort(); };
+  const command = async (operation: string[], args: string[], signal?: AbortSignal) => {
+    const reply = await execute(["supervise", ...operation, ...fixed, ...args], signal);
+    const value = JSON.parse(reply.stdout);
+    // Completion gives an immediate signal; refusals also catch a person closing the objective.
+    // Keep this separate from usage reporting, which must continue until session shutdown.
+    if (value.ok === true && ["completed", "abandoned"].includes(value.objective?.state)
+      || value.ok === false && (value.detail === `Objective ${binding.objectiveId} must be open before supervising its events`
+        || ["completed", "abandoned"].some(state => value.detail === `Objective ${binding.objectiveId} is ${state}; reopen it explicitly before supervising it`))) stopEvents();
+    return reply;
+  };
   for (const [name, tool] of Object.entries(supervisorTools)) {
     pi.registerTool({
       name, label: tool.command, description: `Run Switchboard supervise ${tool.command} for this session's objective. Returns its JSON result.`,
@@ -82,7 +95,6 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     });
   }
 
-  let controller: AbortController | undefined;
   let loop: Promise<void> | undefined;
   let pending: { text: string; delivered(): void } | undefined;
   let sessionId = binding.sessionId;
@@ -150,7 +162,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   });
   async function startSession() {
     await registerUsage();
-    if (controller) return;
+    if (controller || eventsStopped) return;
     controller = new AbortController();
     loop = poll(controller.signal).catch(() => {});
   }
@@ -169,6 +181,19 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   };
   pi.on("before_agent_start", delivered);
   pi.on("message_start", delivered);
+  const queuedEvent = (message: PiMessage) => message.role === "user" && queued.has(typeof message.content === "string" ? message.content
+    : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join(""));
+  pi.on("context", async event => {
+    const messages = event.messages ?? [];
+    if (!messages.some(queuedEvent)) return;
+    // Pi cannot withdraw a queued follow-up. Check again at the model boundary and hide it if closed.
+    if (!eventsStopped) await command(["objective", "show"], []);
+    if (eventsStopped) return { messages: messages.filter(message => !queuedEvent(message)) };
+    for (const message of messages.filter(queuedEvent)) {
+      const text = typeof message.content === "string" ? message.content : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("");
+      queued.delete(text);
+    }
+  });
   const pause = (signal: AbortSignal) => delay(retryMs, undefined, { signal });
   async function poll(signal: AbortSignal) {
     while (!signal.aborted) {
@@ -193,7 +218,11 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
           const abort = () => settle(signal.reason);
           signal.addEventListener("abort", abort, { once: true });
           pending = { text, delivered: () => settle() };
-          Promise.resolve().then(() => pi.sendUserMessage(text, { deliverAs: "followUp" })).catch(settle);
+          Promise.resolve().then(() => {
+            if (signal.aborted) return;
+            queued.add(text);
+            return pi.sendUserMessage(text, { deliverAs: "followUp" });
+          }).catch(settle);
         });
         // Delivery, not queueing or a turn ending, permits acknowledgement. Never fetch past a failed acknowledgement.
         while (!signal.aborted) {

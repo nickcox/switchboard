@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { Database } from "../../src/database.ts";
+import { AttemptStore } from "../../src/attempts/store.ts";
+import { specificationFor } from "../helpers.ts";
 import { objectiveBudget, describeObjectiveBudget } from "../../src/objectives/budget.ts";
 import { ObjectiveStore, defaultPermissions } from "../../src/objectives/store.ts";
 import { recordSupervisorUsage, supervisorUsage } from "../../src/supervise/usage.ts";
@@ -83,7 +85,7 @@ test("missing supervisor cost and tokens stay unknown, independently, without in
   } finally { f.tasks.close(); }
 });
 
-test("usage checks objective scope and openness, not task permissions, and refuses invalid observations or session reassignment", async () => {
+test("usage checks objective scope and registration openness, not task permissions, and refuses invalid observations or session reassignment", async () => {
   const f = await fixture();
   try {
     await f.objectives.add({ id: "other", request: "Other work", acceptanceCriteria: ["Other output"] });
@@ -98,8 +100,44 @@ test("usage checks objective scope and openness, not task permissions, and refus
       await assert.rejects(recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "session", [key]: value }), /finite nonnegative/);
     }
     await f.objectives.abandon("goal");
-    await assert.rejects(recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "session" }), /must be open/);
+    await assert.rejects(recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "new-session" }), /must be open/);
     assert.equal(f.database.all("SELECT * FROM supervisor_usage").length, 1);
+  } finally { f.tasks.close(); }
+});
+
+for (const state of ["completed", "abandoned"] as const) test(`registered sessions keep append-only usage and budget accounting after ${state}`, async () => {
+  const f = await fixture();
+  try {
+    await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "known", cost: 1, tokens: 10 });
+    await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "unknown" });
+    if (state === "completed") {
+      await f.tasks.add({ id: "work", title: "Work", objectiveId: "goal" });
+      const attempts = new AttemptStore(f.database, "fixture", person);
+      const { ref } = await attempts.reserveAttempt({ taskId: "work", requested: {}, maximum: 1, specification: specificationFor });
+      const commit = "a".repeat(40);
+      await attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
+      await f.objectives.complete("goal", [{ position: 1, statement: "Working output", references: f.objectives.show("goal").availableReferences }]);
+    } else await f.objectives.abandon("goal");
+    const before = f.database.all("SELECT * FROM supervisor_usage ORDER BY session_id,sequence");
+    const later = await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "known", cost: 1.07, tokens: 20 });
+    assert.equal(later.sequence, 2);
+    assert.equal(later.cost, 1.07);
+    assert.equal(later.tokens, 20);
+    const lower = await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "known", cost: 0, tokens: 1 });
+    assert.equal(lower.sequence, 3);
+    assert.equal(lower.cost, 1.07);
+    assert.equal(lower.tokens, 20);
+    await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "unknown" });
+    assert.deepEqual(f.database.all("SELECT * FROM supervisor_usage WHERE sequence = 1 ORDER BY session_id,sequence"), before);
+    const spending = objectiveBudget(f.database, "goal").spending;
+    assert.equal(spending.supervisors.observedCost, 1.07);
+    assert.equal(spending.supervisors.cost, null);
+    assert.equal(spending.cost, null);
+    assert.equal(spending.observedCost, 1.07);
+    assert.equal(spending.supervisors.sessions.find(row => row.sessionId === "unknown")!.tokens, null);
+    assert.equal(f.objectives.read("goal")!.state, state);
+    await assert.rejects(recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "new", cost: 5 }), /must be open before registering/);
+    assert.equal(f.database.all("SELECT * FROM supervisor_usage").length, 5);
   } finally { f.tasks.close(); }
 });
 
