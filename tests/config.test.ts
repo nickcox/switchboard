@@ -16,7 +16,7 @@ const cli = resolve(import.meta.dirname, "../src/cli.ts");
 
 for (const broken of [false, true]) {
   test(`${broken ? "broken" : "missing"} Pi does not prevent task commands, status, finish or discard`, async () => {
-    const f = await fixture({ tasks: [task("runtime-a1"), task("runtime-b1")], scenario: "commit-result" });
+    const f = await fixture({ tasks: [task("runtime-a1"), task("runtime-b1")], scenario: "commit-result", workspaces: "treehouse" });
     const first = await dispatchOnce(f.deps, { taskId: "runtime-a1" });
     const second = await dispatchOnce(f.deps, { taskId: "runtime-b1" });
     assert.equal(first.reason, "held");
@@ -124,7 +124,7 @@ for (const owner of ["git", "treehouse"] as const) {
   test(`missing ${owner} makes only workspace observations needing it unknown`, async t => {
     const f = await fixture({ tasks: [task("partial-a1")] });
     const connect = TreehouseProvider.connect;
-    t.mock.method(TreehouseProvider, "connect", (options: Parameters<typeof connect>[0]) => connect({
+    t.mock.method(TreehouseProvider, "connect", (options: Parameters<typeof connect>[0]) => connect.call(TreehouseProvider, {
       ...options, [owner]: () => { throw new Error(`${owner} is unavailable`); },
     }));
     let deps: Awaited<ReturnType<typeof createDependencies>> | undefined;

@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { CommandError, describeCommand, runCommand } from "../infra/command.ts";
+import { CommandError, describeCommand, runCommand, type CommandResult } from "../infra/command.ts";
 import { inside, isMissing } from "../runtime/records.ts";
 import { WorkspaceError, type Allocation, type Lease, type LeaseIdentity, type WorkspaceProvider } from "./provider.ts";
 import { startingPointBranch } from "./starting-point.ts";
@@ -36,17 +36,17 @@ const statusSchema = z.array(z.object({
 }));
 
 export class TreehouseProvider implements WorkspaceProvider {
-  private readonly options: z.output<typeof optionsSchema>;
-  private constructor(options: z.output<typeof optionsSchema>) { this.options = options; }
+  protected readonly options: z.output<typeof optionsSchema>;
+  protected constructor(options: z.output<typeof optionsSchema>) { this.options = options; }
 
   /** Defers owner access until an operation needs it; mutations still validate the repository. */
   static connect(options: TreehouseOptions): TreehouseProvider {
-    return new TreehouseProvider(optionsSchema.parse(options));
+    return new this(optionsSchema.parse(options));
   }
 
   /** Validates that `repository` is the canonical top level of a Git work tree. */
   static async open(options: TreehouseOptions): Promise<TreehouseProvider> {
-    const provider = TreehouseProvider.connect(options);
+    const provider = this.connect(options);
     resolveExecutable(provider.options.treehouse);
     resolveExecutable(provider.options.git);
     await provider.validateRepository();
@@ -183,7 +183,8 @@ export class TreehouseProvider implements WorkspaceProvider {
     return { leaseId: acquired.lease_id, holder, path, branch, startingCommit: head.data, backingRepository: this.options.repository };
   }
 
-  private treehouse(args: string[], input?: string) {
+  /** Runs one Treehouse command. Tests replace it with an in-process stand-in. */
+  protected treehouse(args: string[], input?: string): Promise<CommandResult> {
     const { treehouse, poolRoot, repository, environment, timeoutMs } = this.options;
     return runCommand(resolveExecutable(treehouse), ["--root", poolRoot, ...args], { cwd: repository, env: environment, timeoutMs, ...(input === undefined ? {} : { input }) });
   }

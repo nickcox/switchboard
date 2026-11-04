@@ -13,8 +13,8 @@ import { attemptsWith, fixture, task } from "./fixture.ts";
 
 // Phase 2 PRD: finishing an attempt and returning a lease.
 
-async function failedOutput() {
-  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result" });
+async function failedOutput(workspaces?: "treehouse") {
+  const f = await fixture({ tasks: [task("finish-a1")], scenario: "commit-result", ...(workspaces ? { workspaces } : {}) });
   const launch = f.deps.launch;
   f.deps.launch = async (...args) => {
     await launch(...args);
@@ -59,7 +59,7 @@ for (const reason of ["interrupted", "over budget"]) {
 }
 
 test("finish CLI accepts committed output without a worker result", async () => {
-  const { f, leaseId } = await failedOutput();
+  const { f, leaseId } = await failedOutput("treehouse");
   const outcome = JSON.parse(execFileSync(process.execPath, [resolve("src/cli.ts"), "finish", "--lease", leaseId, "--accept-output", "--no-processes", "--json", "--config", f.config], { encoding: "utf8" }));
   assert.equal(outcome.reason, "finished");
   assert.equal(await listed(f, leaseId), false);

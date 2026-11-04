@@ -24,8 +24,8 @@ const localMerge = (f: Fixture) => ({
   globalFile: join(f.dir, "no-global-policy.json"), context: { kind: "local-merge" as const },
 });
 
-async function output(t: TestContext, failed = false) {
-  const f = await fixture({ tasks: [task("rebase-a1")], scenario: "commit-result", byTaskKind: { review: reviewContract } });
+async function output(t: TestContext, failed = false, workspaces?: "treehouse") {
+  const f = await fixture({ tasks: [task("rebase-a1")], scenario: "commit-result", byTaskKind: { review: reviewContract }, ...(workspaces ? { workspaces } : {}) });
   t.after(() => f.tasks.close());
   await f.tasks.update("rebase-a1", { acceptanceCriteria: ["Keep the output"] });
   if (failed) {
@@ -296,7 +296,7 @@ test("--rebase finishes normally when the target has not moved, and refuses unde
 });
 
 test("the CLI accepts --rebase and uses the person's existing approval", async t => {
-  const r = await output(t);
+  const r = await output(t, false, "treehouse");
   const target = moveMain(r);
   const config = JSON.parse(readFileSync(r.f.config, "utf8"));
   writeFileSync(r.f.config, JSON.stringify({ ...config, finalisation: { kind: "local-merge" } }));

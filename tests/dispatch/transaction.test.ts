@@ -11,7 +11,7 @@ import { fixture, task } from "./fixture.ts";
 const run = promisify(execFile);
 
 test("two dispatcher processes using one request ID launch only one attempt", async () => {
-  const f = await fixture({ tasks: [task("race-a1")], scenario: "commit-result" });
+  const f = await fixture({ tasks: [task("race-a1")], scenario: "commit-result", workspaces: "treehouse" });
   const invoke = async () => {
     try { return await run(process.execPath, [resolve("src/cli.ts"), "dispatch", "--once", "--request-id", "same", "--json", "--config", f.config]); }
     catch (error) {

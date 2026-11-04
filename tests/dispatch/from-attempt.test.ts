@@ -24,8 +24,8 @@ const options = { taskId, startingPoint: { taskId, attempt: 1 }, requestId: "new
 const cli = resolve(import.meta.dirname, "../../src/cli.ts");
 const crash = resolve(import.meta.dirname, "../fixtures/crash-dispatch.ts");
 
-async function completed() {
-  const f = await fixture({ tasks: [task(taskId)], scenario: "commit-result" });
+async function completed(workspaces?: "treehouse") {
+  const f = await fixture({ tasks: [task(taskId)], scenario: "commit-result", ...(workspaces ? { workspaces } : {}) });
   await f.tasks.update(taskId, { acceptanceCriteria: ["Keep the earlier work", "Add the remaining change"] });
   const first = await dispatchOnce(f.deps, { taskId, requestId: "original" });
   assert.equal(first.retention?.retained, true);
@@ -295,7 +295,7 @@ for (const kind of ["not retained", "unknown", "wrong task", "missing attempt", 
 });
 
 for (const stage of ["after-reservation", "after-lease", "after-launch"]) test(`a continuation crash ${stage} never repeats acquisition or launch`, async () => {
-  const f = await completed();
+  const f = await completed("treehouse");
   try {
     const source = f.deps.attempts.findForTask(taskId, 1)!;
     if (stage === "after-launch") {
