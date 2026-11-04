@@ -108,6 +108,7 @@ test("usage checks objective scope and registration openness, not task permissio
 for (const state of ["completed", "abandoned"] as const) test(`registered sessions keep append-only usage and budget accounting after ${state}`, async () => {
   const f = await fixture();
   try {
+    await f.objectives.update("goal", { budget: { maxCost: 1.05, maxWorkerTimeMs: null } });
     await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "known", cost: 1, tokens: 10 });
     await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "unknown" });
     if (state === "completed") {
@@ -134,6 +135,7 @@ for (const state of ["completed", "abandoned"] as const) test(`registered sessio
     assert.equal(spending.supervisors.cost, null);
     assert.equal(spending.cost, null);
     assert.equal(spending.observedCost, 1.07);
+    assert.equal(f.database.all("SELECT * FROM supervisor_events WHERE objective = 'goal' AND kind = 'budget_reached'").length, 1);
     assert.equal(spending.supervisors.sessions.find(row => row.sessionId === "unknown")!.tokens, null);
     assert.equal(f.objectives.read("goal")!.state, state);
     await assert.rejects(recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "new", cost: 5 }), /must be open before registering/);

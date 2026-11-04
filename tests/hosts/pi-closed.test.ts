@@ -97,6 +97,35 @@ for (const state of ["completed", "abandoned"] as const) test(`a queued event is
   } finally { await pi.emit("session_shutdown"); f.tasks.close(); }
 });
 
+test("completion cancels an in-flight wait even when its reply already contains an event", async () => {
+  const f = await fixture();
+  const pi = new FakePi();
+  let waiting = false;
+  let cancelled = false;
+  let waits = 0;
+  const real = commandExecutor(f.binding);
+  registerSupervisor(pi, f.binding, async (args, signal) => {
+    if (args[1] !== "wait") return real(args, signal);
+    waiting = true;
+    waits++;
+    return new Promise(resolve => signal!.addEventListener("abort", () => {
+      cancelled = true;
+      resolve(reply({ ok: true, event }));
+    }, { once: true }));
+  }, 5);
+  try {
+    await pi.emit("session_start");
+    await until(() => waiting);
+    await pi.tools.get("sb_objective_complete")!.execute("complete", { statements: f.statements });
+    await until(() => cancelled);
+    await pi.emit("before_provider_request");
+    await pi.emit("turn_end", { message: message(0.07, 10) });
+    assert.equal(waits, 1);
+    assert.deepEqual(pi.messages, []);
+    assert.equal(objectiveBudget(f.tasks.database, "goal").spending.supervisors.cost, 0.07);
+  } finally { await pi.emit("session_shutdown"); f.tasks.close(); }
+});
+
 for (const detail of ["Objective goal is abandoned; reopen it explicitly before supervising it", "Objective goal must be open before supervising its events"]) {
   test(`a closed-objective wait refusal ends polling: ${detail}`, async () => {
     const pi = new FakePi();
