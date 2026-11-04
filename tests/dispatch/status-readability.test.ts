@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { dispatchOnce, type Dependencies } from "../../src/dispatch/dispatch.ts";
@@ -161,6 +161,10 @@ test("status observes absent, existing and recreated output refs without changin
     assert.equal(recreated.attempts[0]!.outputBranchCleanup!.status, "kept");
     assert.match(recreated.attempts[0]!.outputBranchCleanup!.detail!, /exists despite recorded deletion/);
     assert.equal(f.run(["branch", "--list", branch]).trim(), branch);
+    writeFileSync(join(f.deps.repository, ".git", "refs", "heads", branch), "broken ref\n");
+    const broken = await status(f.deps, { attentionOnly: true });
+    assert.equal(broken.attempts[0]!.outputBranchCleanup!.status, "unknown", "Git warnings about a broken ref are not proof of deletion");
+    assert.equal(broken.attempts[0]!.nextAction.code, "inspect_attempt");
   } finally { f.tasks.close(); }
 });
 
@@ -171,7 +175,11 @@ test("unreadable Git is unknown, never deleted, and remains in attention-only ou
     await f.deps.attempts.append(ref, "leased", { leaseId: "old-lease", workspace: f.dir,
       baseRef: "main", outputBranch: "switchboard/unknown", startingCommit: f.run(["rev-parse", "HEAD"]) });
     await f.deps.attempts.append(ref, "output_branch_cleanup", { branch: "switchboard/unknown", status: "deleted" });
-    const view = await status({ ...f.deps, repository: join(f.dir, "missing-repository") }, { attentionOnly: true });
+    const unreadable = join(f.dir, "unreadable-repository");
+    mkdirSync(unreadable);
+    // An invalid .git stops discovery from falling back to the surrounding workspace's repository.
+    writeFileSync(join(unreadable, ".git"), "gitdir: missing\n");
+    const view = await status({ ...f.deps, repository: unreadable }, { attentionOnly: true });
     assert.equal(view.attempts[0]!.outputBranchCleanup!.status, "unknown");
     assert.match(describeStatus(view), /Output branch switchboard\/unknown: unknown – Could not read output branch/);
     assert.equal(view.omittedCount, 0);

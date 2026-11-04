@@ -137,13 +137,13 @@ test("stopped: an attempt that halted after leasing, with its lease preserved", 
   expect(await only(f.deps, "halt-a1"), "stopped", "inspect_attempt", true);
 });
 
-test("finished: a recorded outcome whose lease was returned, or that never acquired one", async () => {
+test("finished: returned or unacquired leases do not suppress unresolved holds and failures", async () => {
   const f = await fixture({ tasks: [task("returned-a1"), task("refused-b1")], scenario: "commit-result" });
   await dispatchOnce(f.deps, { taskId: "returned-a1" });
   const returned = { ...f.deps, workspaces: { ...f.deps.workspaces, leases: async () => [], acquire: f.deps.workspaces.acquire.bind(f.deps.workspaces), pool: () => f.deps.workspaces.pool(), recyclableRoots: () => f.deps.workspaces.recyclableRoots() } };
-  expect(await only(returned, "returned-a1"), "finished", "none", true);
+  expect(await only(returned, "returned-a1"), "finished", "inspect_attempt", true);
   await dispatchOnce({ ...f.deps, workspaces: { ...returned.workspaces, leases: () => f.deps.workspaces.leases(), acquire: async () => { throw new WorkspaceError("rejected", "refused"); } } }, { taskId: "refused-b1" });
-  expect(await only(f.deps, "refused-b1"), "finished", "none", true);
+  expect(await only(f.deps, "refused-b1"), "finished", "inspect_attempt", true);
 });
 
 test("unknown: the attempt's task cannot be read, so no command may change it", async () => {

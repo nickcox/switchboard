@@ -173,11 +173,13 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
         record?.entries.some(e => e.kind === "worker_finished" && (e.data.outcome === "failed" || e.data.outcome === "hold" || e.data.status === "failed")) ||
         record?.entries.some(e => e.kind === "halted")
       )));
-    const nextAction = reconcile ? action("reconcile_owner") : terminalIssue ? action("inspect_attempt") : assessment.nextAction;
+    const branchIssue = outputBranchCleanup?.status === "unknown" || outputBranchCleanup?.detail?.startsWith("Could not");
+    const nextAction = reconcile ? action("reconcile_owner")
+      : terminalIssue || branchIssue && assessment.nextAction.code === "none" ? action("inspect_attempt") : assessment.nextAction;
     const attentionRequired = Boolean(assessment.resultDiscrepancy || assessment.taskDisagreement ||
       nextAction.code !== "none" && nextAction.code !== "watch_attempt" || facts.leaseHeld && !facts.possiblyRunning ||
       record?.questions?.some(q => !q.answer) || record?.invalidQuestionFiles?.length ||
-      outputBranchCleanup?.status === "unknown" || outputBranchCleanup?.detail?.startsWith("Could not"));
+      branchIssue);
     attempts.push({ ...assessment, nextAction, attentionRequired,
       ...(outputBranchCleanup ? { outputBranchCleanup } : {}),
       ...(record?.questions ? { questions: record.questions } : {}),

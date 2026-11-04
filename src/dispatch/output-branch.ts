@@ -50,7 +50,7 @@ export async function observeOutputBranch(deps: Dependencies, branch: string, re
     const result = await runCommand(deps.policy?.git ?? onPath("git"), ["for-each-ref", "--format=%(refname)", "--", ref], {
       cwd: record?.allocation?.backingRepository ?? deps.repository, env: deps.policy?.environment ?? {}, timeoutMs: 15000,
     });
-    if (result.timedOut || result.truncated || result.exitCode !== 0) throw new Error(describeCommand(result));
+    if (result.timedOut || result.truncated || result.exitCode !== 0 || result.stderr.trim()) throw new Error(describeCommand(result));
     if (!result.stdout.trim().split("\n").includes(ref)) return cleanup?.status === "deleted" ? cleanup : { branch, status: "deleted", detail: "Output branch is absent" };
     return cleanup && cleanup.status !== "deleted" ? cleanup : { branch, status: "kept", ...(cleanup ? { detail: "Output branch exists despite recorded deletion" } : {}) };
   } catch (error) {
