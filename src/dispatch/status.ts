@@ -213,7 +213,8 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
   // A policy that cannot be resolved needs fixing before any attempt can be finished.
   const openQuestions = readQuestions(deps.attempts.database, { contextId: deps.contextId }).questions.filter(question => !question.answer);
   const openPersonQuestions = readPersonQuestions(deps.attempts.database).filter(question => !question.answer);
-  const attention = openPersonQuestions.length > 0 || openQuestions.length > 0 || attempts.some(a => a.attentionRequired) || unaccounted || (policy !== undefined && "error" in policy);
+  const supervisorStopped = objectives.some(objective => objective.attentionRequired);
+  const attention = supervisorStopped || openPersonQuestions.length > 0 || openQuestions.length > 0 || attempts.some(a => a.attentionRequired) || unaccounted || (policy !== undefined && "error" in policy);
   return {
     version: 1, ok: !attention && errors.length === 0, reason: errors.length ? "refused" : attention ? "attention" : "clear", ready, inFlight, unaccountedLeases, orphanedInFlight,
     attempts: options.attentionOnly ? attempts.filter(a => a.attentionRequired || a.possiblyRunning || a.state !== "finished") : attempts,
@@ -222,7 +223,7 @@ export async function status(deps: Dependencies, options: StatusOptions = {}): P
     capacity: { maximum: deps.maxAttempts ?? 1, active }, blockingDispatch,
     ...(openQuestions.length ? { openQuestions } : {}),
     ...(errors.length ? { detail: errors.join("; ") } : {}), ...(policy ? { policy } : {}),
-    nextAction: action(errors.length ? "fix_configuration" : overall(attempts, unaccounted)),
+    nextAction: action(errors.length ? "fix_configuration" : supervisorStopped ? "restart_supervisor" : overall(attempts, unaccounted)),
   };
 }
 
@@ -252,7 +253,14 @@ export function describeStatus(value: StatusResult): string {
   if (value.blockingDispatch.length) {
     lines.push(`Dispatch is blocked for the whole context by: ${value.blockingDispatch.map(a => `${a.taskId} attempt ${a.attempt}${a.leaseId ? ` (lease ${a.leaseId})` : ""}`).join(", ")}`);
   }
-  for (const objective of value.objectives) lines.push(`Objective ${objective.id}: ${objective.request.replace(/\s+/g, " ").slice(0, 120)}; ${objective.doneTaskCount}/${objective.taskCount} tasks done; ${describeObjectiveBudget(objective)}`);
+  for (const objective of value.objectives) {
+    lines.push(`Objective ${objective.id}: ${objective.request.replace(/\s+/g, " ").slice(0, 120)}; ${objective.doneTaskCount}/${objective.taskCount} tasks done; ${describeObjectiveBudget(objective)}${objective.attentionRequired ? "; NEEDS ATTENTION" : ""}`);
+    for (const session of objective.stoppedSessions) {
+      lines.push(`  Supervisor session ${session.sessionId} stopped at ${session.observedAt}: ${session.errorMessage}`);
+      lines.push(`  Delivered events without a successful response: ${session.eventIds.join(", ") || "none"}`);
+    }
+    if (objective.nextAction) lines.push(`  Next: ${objective.nextAction}`);
+  }
   for (const a of value.attempts) {
     const task = typeof a.task === "string" ? a.task : `${a.task.state}${a.task.held ? `, held: ${a.task.holdReason}` : ""}`;
     const where = a.attempt.workspace ?? "an unknown path";

@@ -20,12 +20,14 @@ import { askPerson } from "./questions.ts";
 import { handleEvent, waitForEvent } from "./events.ts";
 import { detachedDispatch } from "./dispatch.ts";
 import { recordSupervisorUsage } from "./usage.ts";
+import { recordSupervisorSessionState } from "./session-state.ts";
 
 const usage = "Usage: switchboard supervise <operation> --objective <id> [options] [--config <path>]";
 const selectors = ["lease", "task", "attempt"];
 const definition = ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"];
 const allowed: Record<string, string[]> = {
   usage: ["session", "cost", "tokens"],
+  "session-state": ["session", "state", "error", "event"],
   briefing: [], note: [], ask: ["choice", "request-id"], wait: ["timeout"], handled: [],
   "objective show": [], "objective complete": ["statements-file"],
   "task add": definition, "task show": [], "task list": ["state", "repo"], "task update": definition,
@@ -57,6 +59,7 @@ export async function superviseCommand(argv: string[]): Promise<number> {
 
 async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   const { values, positionals, tokens } = parseArgs({ args: argv, allowPositionals: true, tokens: true, options: {
+    error: { type: "string" }, event: { type: "string", multiple: true },
     session: { type: "string" }, cost: { type: "string" }, tokens: { type: "string" },
     objective: { type: "string" }, config: { type: "string" }, json: { type: "boolean" },
     title: { type: "string" }, body: { type: "string" }, "body-file": { type: "string" },
@@ -84,7 +87,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   if (operation === "objective complete" && !values["statements-file"]) invalid("objective complete requires --statements-file");
   if (values.body !== undefined && values["body-file"] !== undefined) invalid("Use only one of --body and --body-file");
   if (values.criterion !== undefined && values["criteria-file"] !== undefined) invalid("Use only one of --criterion and --criteria-file");
-  if (values.state !== undefined && !["queued", "in_flight", "done"].includes(values.state)) invalid("Invalid task state");
+  if (operation !== "session-state" && values.state !== undefined && !["queued", "in_flight", "done"].includes(values.state)) invalid("Invalid task state");
   const attempt = values.attempt === undefined ? undefined : Number(values.attempt);
   const fromAttempt = values["from-attempt"] === undefined ? undefined : Number(values["from-attempt"]);
   for (const number of [attempt, fromAttempt]) if (number !== undefined && (!Number.isSafeInteger(number) || number <= 0)) invalid("Attempt numbers must be positive integers");
@@ -121,6 +124,8 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
     if (operation === "usage") return { code: 0, value: { ok: true, action, usage: await recordSupervisorUsage(tasks.database, caller, caller.objectiveId,
       { sessionId: values.session!, cost, tokens: tokensUsed }) } };
+    if (operation === "session-state") return { code: 0, value: { ok: true, action, sessionState: await recordSupervisorSessionState(tasks.database, caller, caller.objectiveId,
+      { sessionId: values.session!, state: values.state as "stopped" | "resumed", ...(values.error === undefined ? {} : { errorMessage: values.error }), ...(values.event === undefined ? {} : { eventIds: values.event }) }) } };
     requireOpenObjective(objective.state, `Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
     if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller, caller.objectiveId, timeout) };
     if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller, caller.objectiveId, args[0]!) } };

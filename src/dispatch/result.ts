@@ -55,6 +55,7 @@ export const nextActions = {
   confirm_worker_stopped: "Check that no process from this worker is still running, for example with `lsof +D <workspace>` on macOS or Linux, or Resource Monitor on Windows, then run resolve again with --worker-stopped.",
   apply_task_outcome: "Read the task and the workspace, record the task outcome in the task store, and return the lease once the work is retained.",
   return_unused_lease: "Return the unused lease through Treehouse, check the task, then dispatch again.",
+  restart_supervisor: "Check the provider, then send a message in the supervisor's Pi session or restart it with switchboard supervisor start.",
   fix_configuration: "Check the configuration and that the task store, Treehouse and runtime are reachable.",
   choose_another_task: "Choose a ready task without an earlier lease, or resolve the earlier attempt first.",
   watch_attempt: "Follow the attempt with `switchboard watch --lease <lease-id>`.",

@@ -10,6 +10,14 @@ A finished label alone does not establish that an attempt needs no action. Indep
 
 The text view reports `Omitted attempts needing no attention: N`, including `0` for no omissions or an empty context. Only attempt rows are filtered. Context-wide information, questions and diagnostics remain visible, and totals, overall `reason`, `ok` and `nextAction` are calculated from the full context, not the shortened list. Filtering therefore does not turn an attention or unknown result into a clear result.
 
+## Stopped supervisors
+
+An objective needs attention when a supervisor session's latest recorded state is stopped after a Pi model provider error. This remains visible with `--attention-only`, even with no worker attempts or pending events. The overall result is `reason: "attention"`, `ok: false` and a recovery next action, rather than quietly waiting for workers.
+
+Text shows the objective's attention warning, Pi session ID, error message, observation time and IDs of events delivered since its last successful response. Those events may already be acknowledged – delivery is not proof that the supervisor acted on them. JSON objectives include `attentionRequired`, `stoppedSessions` (with `sessionId`, `observedAt`, `errorMessage` and `eventIds`) and `nextAction`. The briefing and `objective show` expose the same fields.
+
+Check the provider, then send a message in the supervisor's Pi session or restart it with `switchboard supervisor start --objective <id> --config <path>`. Switchboard does not retry model calls. A later successful response in the same session records that it resumed, clearing that session's attention warning without changing its earlier stop record. A fresh session does not erase an older stopped session's observation. See [stopped supervisor sessions](supervisor.md#stopped-supervisor-sessions).
+
 ## Historical specifications
 
 Older attempts may lack a complete stored specification. For a finished attempt, text says `Stored specification incomplete – historical attempt; no launch required`. Missing historical launch inputs alone do not require action and do not prevent omission when the finished attempt has no other issue. This does not fill in missing provenance or waive independent actionable issues.

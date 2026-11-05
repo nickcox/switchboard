@@ -58,6 +58,45 @@ test("supervisor asks the person; status, objective show and briefing expose it,
   assert.deepEqual(JSON.parse(f.raw("status", "--json").stdout).openPersonQuestions, []);
 });
 
+test("a stopped supervisor needs attention in status, attention-only status, briefing and objective show until it resumes", () => {
+  const f = fixture();
+  f.ok("usage", "--session", "pi-session");
+  const error = "Codex error: The usage limit has been reached";
+  const stopped = f.ok("session-state", "--session", "pi-session", "--state", "stopped", "--error", error,
+    "--event", "delivered-first", "--event", "delivered-second").sessionState;
+  assert.equal(stopped.sessionId, "pi-session");
+  assert.equal(stopped.errorMessage, error);
+  assert.deepEqual(stopped.eventIds, ["delivered-first", "delivered-second"]);
+  const show = f.person("objective", "show", "goal").objective;
+  assert.equal(show.attentionRequired, true);
+  assert.deepEqual(show.stoppedSessions, [stopped]);
+  assert.match(show.nextAction, /Check the provider.*send a message.*Pi session.*switchboard supervisor start/);
+  const briefing = f.ok("briefing");
+  assert.equal(briefing.objective.attentionRequired, true);
+  assert.deepEqual(briefing.objective.stoppedSessions, [stopped]);
+  assert.equal(briefing.objective.nextAction, show.nextAction);
+  assert.deepEqual(f.ok("objective", "show").objective.stoppedSessions, [stopped]);
+  for (const flags of [[], ["--attention-only"]]) {
+    const json = JSON.parse(f.raw("status", ...flags, "--json").stdout);
+    assert.equal(json.ok, false);
+    assert.equal(json.reason, "attention");
+    assert.equal(json.nextAction.code, "restart_supervisor");
+    const goal = json.objectives.find((objective: { id: string }) => objective.id === "goal");
+    assert.equal(goal.attentionRequired, true);
+    assert.deepEqual(goal.stoppedSessions, [stopped]);
+    const text = f.raw("status", ...flags).stdout;
+    for (const value of ["Needs attention", "NEEDS ATTENTION", "pi-session", error, stopped.observedAt,
+      "delivered-first", "delivered-second", "Check the provider", "switchboard supervisor start"]) assert.ok(text.includes(value), value);
+  }
+  for (const args of [[], ["--session", "pi-session"], ["--session", "unknown", "--state", "stopped", "--error", error],
+    ["--session", "pi-session", "--state", "stopped"], ["--session", "pi-session", "--state", "bogus"],
+    ["--session", "pi-session", "--state", "resumed", "--error", error]]) assert.notEqual(f.run("session-state", ...args).code, 0);
+  f.ok("session-state", "--session", "pi-session", "--state", "resumed");
+  assert.equal(f.person("objective", "show", "goal").objective.attentionRequired, false);
+  assert.deepEqual(f.ok("briefing").objective.stoppedSessions, []);
+  assert.equal(JSON.parse(f.raw("status", "--attention-only", "--json").stdout).reason, "clear");
+});
+
 test("host usage records simple cumulative Pi counts and appears separately in show and briefing", () => {
   const f = fixture();
   const unknown = f.ok("usage", "--session", "pi-session").usage;

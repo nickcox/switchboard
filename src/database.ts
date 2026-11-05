@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 19) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 20) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -454,6 +454,33 @@ export class Database {
           CREATE TRIGGER supervisor_usage_not_removed BEFORE DELETE ON supervisor_usage
             BEGIN SELECT RAISE(ABORT, 'Supervisor usage cannot be removed'); END;
           PRAGMA user_version = 19;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 20) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 20) return;
+        db.exec(`
+          CREATE TABLE supervisor_session_states (
+            session_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK(sequence > 0),
+            objective TEXT NOT NULL REFERENCES objectives(id), observed_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('stopped','resumed')), error_message TEXT,
+            event_ids TEXT NOT NULL CHECK(json_valid(event_ids) AND json_type(event_ids) = 'array'),
+            PRIMARY KEY(session_id,sequence),
+            CHECK((state = 'stopped' AND error_message IS NOT NULL) OR (state = 'resumed' AND error_message IS NULL))
+          );
+          CREATE INDEX supervisor_session_states_by_objective ON supervisor_session_states(objective,session_id,sequence);
+          CREATE TRIGGER supervisor_session_states_not_replaced BEFORE INSERT ON supervisor_session_states
+            WHEN EXISTS(SELECT 1 FROM supervisor_session_states WHERE session_id = NEW.session_id AND sequence = NEW.sequence)
+            BEGIN SELECT RAISE(ABORT, 'Supervisor session states cannot be replaced'); END;
+          CREATE TRIGGER supervisor_session_states_forward BEFORE INSERT ON supervisor_session_states
+            WHEN EXISTS(SELECT 1 FROM supervisor_session_states WHERE session_id = NEW.session_id AND
+              (objective != NEW.objective OR sequence >= NEW.sequence))
+            OR NOT EXISTS(SELECT 1 FROM supervisor_usage WHERE session_id = NEW.session_id AND objective = NEW.objective)
+            BEGIN SELECT RAISE(ABORT, 'Supervisor session states require a registered session and cannot be moved backwards'); END;
+          CREATE TRIGGER supervisor_session_states_immutable BEFORE UPDATE ON supervisor_session_states
+            BEGIN SELECT RAISE(ABORT, 'Supervisor session states cannot be changed'); END;
+          CREATE TRIGGER supervisor_session_states_not_removed BEFORE DELETE ON supervisor_session_states
+            BEGIN SELECT RAISE(ABORT, 'Supervisor session states cannot be removed'); END;
+          PRAGMA user_version = 20;
         `);
       });
       return result;

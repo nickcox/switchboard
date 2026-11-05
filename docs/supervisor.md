@@ -1,6 +1,6 @@
 # Supervisor command
 
-`switchboard supervise <operation> --objective <id> [options]` is the restricted command for a supervisor working on one objective. It always constructs the caller `{ kind: "supervisor", objectiveId: "<id>" }` itself. There is no caller option or environment override. Every operation requires exactly one `--objective`, naming an existing objective. The objective must be open, except when recording usage for a session already registered to it.
+`switchboard supervise <operation> --objective <id> [options]` is the restricted command for a supervisor working on one objective. It always constructs the caller `{ kind: "supervisor", objectiveId: "<id>" }` itself. There is no caller option or environment override. Every operation requires exactly one `--objective`, naming an existing objective. The objective must be open, except when recording usage or session state for a session already registered to it.
 
 This is the shared command interface. The [Pi host](#starting-a-pi-supervisor) binds it to an agent session; other hosts can use the same operations. `src/runtime/supervisor.ts` supervises workers and is unrelated to this interface.
 
@@ -35,6 +35,7 @@ All invocations accept `--config <path>` (default: `SWITCHBOARD_CONFIG`, then `.
 | `briefing` | Rebuilds the supervisor's briefing from current records. No other arguments or options. |
 | `note "<text>"` | Appends a supervisor note to the objective. Text must not be blank. |
 | `usage` | Host-only accounting, not an agent tool. Requires `--session <id>`; optional `--cost <cumulative-cost>` and `--tokens <cumulative-tokens>`. Omitted values or `unknown` mean unreported. |
+| `session-state` | Host-only observation, not an agent tool. Requires a registered `--session <id>` and `--state stopped\|resumed`. A stop requires `--error <message>` and accepts repeatable `--event <id>` for events delivered since the last successful response. |
 | `ask "<question>"` | Records a question for the person. Optional repeatable `--choice <text>` and `--request-id <id>`. |
 | `wait` | Returns the first unhandled event, polling if none is pending. Optional `--timeout <seconds>` is a nonnegative number; omission waits indefinitely. |
 | `handled <event-id>` | Records that the next unhandled event has been dealt with. Safe to repeat. |
@@ -137,6 +138,24 @@ Combined observed worker and supervisor cost counts towards the objective's cost
 
 Schema 19 adds append-only `supervisor_usage` snapshots without changing existing records. Database triggers refuse changing, deleting, replacing, lowering or moving them. Accounting uses the latest cumulative snapshot per session, never the sum of its snapshots. Recording needs the bound supervisor, but no task mutation permission. Only initial session registration needs an open objective. The Pi extension calls this operation at session startup with only the session ID, then after each turn with cumulative cost and total tokens from Pi's turn messages (including reported nested tool usage). Assistant-message usage is also reported before its tools run, so the last response is accounted for before a tool can complete the objective; the turn report does not count it twice. It also accounts for reported compaction usage. Reloading reconstructs totals from the session's entries, including compacted and off-branch messages, rather than only the current context. Missing or invalid usage leaves that cumulative value unknown, never a zero fallback or a later partial total; known numeric snapshots never decrease. A failed report does not reset the totals, so the next report still includes earlier turns. Usage is host-only and is not offered as an agent tool.
 
+### Stopped supervisor sessions
+
+When Pi settles with its last assistant response ending in `stopReason: "error"`, the extension records the session as stopped. It uses `agent_settled`, not `agent_end` or `agent_before_settle`: Pi has finished its own automatic retries, recovery and queued continuations at that boundary. Switchboard reports the failure; it does not retry the model call.
+
+The host-only operation records the Pi session ID, observation time, provider error message and IDs of events delivered since the last successful model response:
+
+```sh
+switchboard supervise session-state --objective release-notes --session <pi-session-id> \
+  --state stopped --error "Codex error: The usage limit has been reached" --event <event-id>
+switchboard supervise session-state --objective release-notes --session <pi-session-id> --state resumed
+```
+
+Schema 20 adds append-only `supervisor_session_states` observations. Database triggers prevent changing, deleting, replacing or moving them. The session must already be registered through `usage` for that objective; observations remain allowed after objective closure. A later successful response in the same Pi session appends a resumed record. An automatic retry that succeeds before settling does not record a stop. Aborted responses are neither provider errors nor successful resumptions.
+
+While any session's latest observation is stopped, `status` (including `--attention-only`), the briefing's `objective` and `objective show` report `attentionRequired: true`, `stoppedSessions` and a recovery `nextAction`. Each stopped session includes `observedAt`, `errorMessage` and `eventIds`. Status text marks the objective as needing attention. These IDs identify delivered work without a successful response, not events still waiting for delivery: the extension continues acknowledging delivery exactly as before. Acknowledgement is not proof that the model acted on an event, and this observation does not undo it or replay handled events.
+
+Check the provider first – for example, its usage limit or credentials. Then send a message in the supervisor's Pi session, or start a fresh session with `switchboard supervisor start --objective <id> --config <path>` and read the briefing. Workers continue independently. A new session does not rewrite the stopped session's history; only a successful response in that same session records its resumption.
+
 ### Notes
 
 ```sh
@@ -218,7 +237,7 @@ The command exposes only the operations above, whatever permissions an objective
 - task `ready`, `reopen` or `convert-criteria`, or task `--clear-objective`
 - `status`, `watch`, any other operation, a second `--objective`, or a positional objective ID
 
-An unknown objective is refused. A completed or abandoned objective is refused, including for inspection, except for usage observations from a session already registered to that objective. A person must reopen it through the ordinary objective command before supervision can resume.
+An unknown objective is refused. A completed or abandoned objective is refused, including for inspection, except for usage and session-state observations from a session already registered to that objective. A person must reopen it through the ordinary objective command before supervision can resume.
 
 Refusals caused by a completed or abandoned objective include `code: "objective_not_open"` and its current `state` (`"completed"` or `"abandoned"`), alongside the unchanged `reason: "rejected"` and `detail`. This includes an objective closing during `wait` and registration of a new usage session after closure. For example:
 

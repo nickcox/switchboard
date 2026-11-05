@@ -2,6 +2,7 @@ import { z } from "zod";
 import { personInterventions } from "./interventions.ts";
 import { recordBudgetEvents, recordPersonEvents } from "../supervise/events.ts";
 import { readPersonQuestions } from "../supervise/questions.ts";
+import { supervisorSessionHealth } from "../supervise/session-state.ts";
 import { objectiveBudget, unknownKey, type ObjectiveBudget } from "./budget.ts";
 import { callerName, callerSchema, type Caller } from "../caller.ts";
 import { requireAuthority } from "../dispatch/safety.ts";
@@ -47,7 +48,7 @@ export type Objective = z.infer<typeof fieldsSchema> & {
   createdBy: string; createdAt: string; updatedAt: string; closedAt: string | null;
   completionStatements: CompletionStatement[];
 };
-export type ObjectiveBrief = Pick<Objective, "id" | "request" | "state" | "updatedAt"> & ObjectiveBudget & { taskCount: number; doneTaskCount: number };
+export type ObjectiveBrief = Pick<Objective, "id" | "request" | "state" | "updatedAt"> & ObjectiveBudget & ReturnType<typeof supervisorSessionHealth> & { taskCount: number; doneTaskCount: number };
 const reject = (message: string): never => { throw new TaskStoreError("rejected", message); };
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
@@ -85,6 +86,7 @@ export class ObjectiveStore {
       GROUP BY o.id ORDER BY o.created_at, o.id`, state ?? null, state ?? null).map(row => ({
       id: String(row.id), request: String(row.request), state: row.state as Objective["state"], updatedAt: String(row.updated_at),
       taskCount: Number(row.task_count), doneTaskCount: Number(row.done_count), ...objectiveBudget(this.database, String(row.id)),
+      ...supervisorSessionHealth(this.database, String(row.id)),
     }));
   }
   show(id: string) {
@@ -104,7 +106,7 @@ export class ObjectiveStore {
         ...(attempt.summary ? { summary: JSON.parse(String(attempt.summary)).summary } : {}),
       })),
     }));
-    return { ...objective, ...objectiveBudget(this.database, id), criteria: objective.acceptanceCriteria.map((criterion, index) => ({
+    return { ...objective, ...objectiveBudget(this.database, id), ...supervisorSessionHealth(this.database, id), criteria: objective.acceptanceCriteria.map((criterion, index) => ({
       position: index + 1, criterion, completion: objective.completionStatements.find(statement => statement.position === index + 1) ?? null,
     })), tasks, openPersonQuestions: readPersonQuestions(this.database, id).filter(question => !question.answer), availableReferences: this.references(id), history: this.history(id), personInterventions: personInterventions(this.database, id) };
   }

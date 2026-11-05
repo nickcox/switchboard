@@ -20,7 +20,7 @@ export type SupervisorTool = {
   execute(toolCallId: string, params: unknown, signal?: AbortSignal): Promise<ToolResult>;
 };
 type PiUsage = { totalTokens?: number; cost?: { total?: number } };
-type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage };
+type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage; stopReason?: string; errorMessage?: string };
 type PiEvent = { prompt?: string; message?: PiMessage; messages?: PiMessage[]; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
 type PiContext = { signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
 /** The small part of Pi's extension API used here; Pi loads the extension, not Switchboard. */
@@ -100,6 +100,29 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let registered = false;
   let registration: Promise<void> | undefined;
   let reporting = Promise.resolve();
+  let stateReporting = Promise.resolve();
+  let lastAssistant: PiMessage | undefined;
+  let hadError = false;
+  const deliveredSinceSuccess = new Set<string>();
+  const successful = (message: PiMessage) => ["stop", "toolUse", "lengthLimit"].includes(message.stopReason ?? "");
+  const observeResponse = (message: PiMessage) => {
+    lastAssistant = message;
+    if (message.stopReason === "error") hadError = true;
+    if (successful(message)) deliveredSinceSuccess.clear();
+  };
+  const reportState = (state: "stopped" | "resumed", message?: PiMessage) => {
+    const args = ["--session", sessionId, "--state", state];
+    if (state === "stopped") {
+      args.push("--error", message?.errorMessage?.trim() ? message.errorMessage : "Pi model provider error (no error message reported)");
+      for (const id of deliveredSinceSuccess) args.push("--event", id);
+    }
+    stateReporting = stateReporting.catch(() => {}).then(async () => {
+      await registerUsage();
+      const reply = await command(["session-state"], args);
+      if (reply.exitCode !== 0 || JSON.parse(reply.stdout).ok !== true) throw new Error("Supervisor session state reporting failed");
+    });
+    return stateReporting;
+  };
   const seen = new Set<string>();
   let seenMessages = new WeakSet<PiMessage>();
   let cost = 0;
@@ -147,6 +170,11 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   // Book the model response before its tools can close the objective or start more work.
   pi.on("message_end", async event => {
     if (event.message?.role !== "assistant") return;
+    observeResponse(event.message);
+    if (successful(event.message) && hadError) {
+      await reportState("resumed");
+      hadError = false;
+    }
     addMessage(event.message);
     await reportUsage();
   });
@@ -154,6 +182,10 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     addMessage(event.message, event.messageEntryId);
     for (const [index, message] of (event.toolResults ?? []).entries()) addMessage(message, event.toolResultEntryIds?.[index]);
     await reportUsage();
+  });
+  // agent_end and agent_before_settle can still lead to retries or continuations. Only settled is final.
+  pi.on("agent_settled", async () => {
+    if (lastAssistant?.stopReason === "error") await reportState("stopped", lastAssistant);
   });
   pi.on("session_compact", async event => {
     if (event.compactionEntry?.usage) addUsage(event.compactionEntry.usage, event.compactionEntry.id);
@@ -216,7 +248,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
           };
           const abort = () => settle(signal.reason);
           signal.addEventListener("abort", abort, { once: true });
-          pending = { text, delivered: () => settle() };
+          pending = { text, delivered: () => { deliveredSinceSuccess.add(event.id); settle(); } };
           Promise.resolve().then(() => {
             if (signal.aborted) return;
             queued.add(text);
@@ -242,9 +274,25 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     seenMessages = new WeakSet<PiMessage>();
     cost = tokens = 0;
     observed = unknownCost = unknownTokens = false;
+    lastAssistant = undefined;
+    hadError = false;
+    deliveredSinceSuccess.clear();
     // Include compacted and off-branch messages when reloading this session.
     for (const entry of context?.sessionManager.getEntries() ?? []) {
-      if (entry.type === "message") addMessage(entry.message, entry.id);
+      if (entry.type === "message") {
+        addMessage(entry.message, entry.id);
+        if (entry.message?.role === "assistant") observeResponse(entry.message);
+        if (entry.message?.role === "user") {
+          const text = typeof entry.message.content === "string" ? entry.message.content
+            : entry.message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("");
+          if (text.startsWith("Switchboard event ")) {
+            try {
+              const event = JSON.parse(text.slice(text.indexOf("\n") + 1)) as SupervisorEvent;
+              if (typeof event.id === "string" && text === eventText(event)) deliveredSinceSuccess.add(event.id);
+            } catch { /* Not an event delivered by this host. */ }
+          }
+        }
+      }
       else if (entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") {
         if (entry.usage) addUsage(entry.usage, entry.id);
       }
@@ -255,6 +303,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     controller?.abort();
     await loop;
     await reporting.catch(() => {});
+    await stateReporting.catch(() => {});
     controller = undefined;
     loop = undefined;
   });
