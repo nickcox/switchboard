@@ -24,7 +24,7 @@ export type SupervisorTool = {
 type PiUsage = { totalTokens?: number; cost?: { total?: number } };
 type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage; stopReason?: string; errorMessage?: string };
 type PiEvent = { aborted?: boolean; prompt?: string; message?: PiMessage; messages?: PiMessage[]; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
-type PiContext = { signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
+type PiContext = { hasUI?: boolean; ui?: { setStatus(key: string, text: string | undefined): void }; signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
 /** The small part of Pi's extension API used here; Pi loads the extension, not Switchboard. */
 export interface SupervisorPi {
   registerTool(tool: SupervisorTool): void;
@@ -53,7 +53,29 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let retryGeneration = 0;
   let retryCount = 0;
   let shuttingDown = false;
+  let context: PiContext | undefined;
+  let objectiveState: string | undefined;
+  let running = false;
+  let runEvent: SupervisorEvent | undefined;
+  let waitingSince: Date | undefined;
+  let providerRetry: { number: number; total: number; at: string } | undefined;
+  let stopped = false;
+  const localTime = (date: Date) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const setStatus = (text: string | undefined, ctx = context) => {
+    if (!ctx?.hasUI) return;
+    try { ctx.ui?.setStatus("switchboard", text); }
+    catch { /* Footer failures must not interrupt supervision. */ }
+  };
+  const updateStatus = () => {
+    if (shuttingDown) return;
+    if (objectiveState) setStatus(`Switchboard: objective ${objectiveState}`);
+    else if (running) setStatus(runEvent ? `Switchboard: handling ${runEvent.kind} event${runEvent.taskId === null ? "" : ` for ${runEvent.taskId}`}${runEvent.attempt === null ? "" : ` attempt ${runEvent.attempt}`}` : "Switchboard: working");
+    else if (providerRetry) setStatus(`Switchboard: provider error, retry ${providerRetry.number}/${providerRetry.total} at ${localTime(new Date(providerRetry.at))}`);
+    else if (stopped) setStatus("Switchboard: stopped after a provider error – see switchboard status");
+    else if (waitingSince) setStatus(`Switchboard: waiting for events since ${localTime(waitingSince)}`);
+  };
   const cancelRetry = () => {
+    providerRetry = undefined;
     retryGeneration++;
     clearTimeout(retryTimer);
     retryTimer = undefined;
@@ -67,7 +89,11 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     // Completion gives an immediate signal; refusals also catch a person closing the objective.
     // Keep this separate from usage reporting, which must continue until session shutdown.
     if (value.ok === true && ["completed", "abandoned"].includes(value.objective?.state)
-      || value.ok === false && value.code === "objective_not_open" && ["completed", "abandoned"].includes(value.state)) stopEvents();
+      || value.ok === false && value.code === "objective_not_open" && ["completed", "abandoned"].includes(value.state)) {
+      objectiveState = value.ok ? value.objective.state : value.state;
+      stopEvents();
+      updateStatus();
+    }
     return reply;
   };
   for (const [name, tool] of Object.entries(supervisorTools)) {
@@ -111,7 +137,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   }
 
   let loop: Promise<void> | undefined;
-  let pending: { text: string; delivered(): void } | undefined;
+  let pending: { text: string; event: SupervisorEvent; delivered(): void } | undefined;
   let sessionId = binding.sessionId;
   let registered = false;
   let registration: Promise<void> | undefined;
@@ -125,6 +151,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     lastAssistant = message;
     if (message.stopReason === "error") resumeNeeded = true;
     if (successful(message)) {
+      stopped = false;
       cancelRetry();
       retryCount = 0;
       deliveredSinceSuccess.clear();
@@ -142,6 +169,9 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
       await registerUsage();
       const reply = await command(["session-state"], args);
       if (reply.exitCode !== 0 || JSON.parse(reply.stdout).ok !== true) throw new Error("Supervisor session state reporting failed");
+      stopped = state === "stopped";
+      providerRetry = state === "retrying" ? retry : undefined;
+      updateStatus();
     });
     return stateReporting;
   };
@@ -206,10 +236,24 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     for (const [index, message] of (event.toolResults ?? []).entries()) addMessage(message, event.toolResultEntryIds?.[index]);
     await reportUsage();
   });
+  pi.on("agent_start", (_event, ctx) => {
+    context = ctx;
+    running = true;
+    waitingSince = undefined;
+    updateStatus();
+  });
   // agent_end and agent_before_settle can still lead to retries or continuations. Only settled is final.
-  pi.on("agent_settled", async event => {
-    if (event.aborted) { cancelRetry(); return; }
-    if (lastAssistant?.stopReason !== "error" || shuttingDown) return;
+  pi.on("agent_settled", async (event, ctx) => {
+    context = ctx;
+    running = false;
+    runEvent = undefined;
+    if (shuttingDown) return;
+    if (event.aborted) cancelRetry();
+    if (event.aborted || lastAssistant?.stopReason !== "error") {
+      waitingSince ??= new Date();
+      updateStatus();
+      return;
+    }
     const message = lastAssistant;
     const delays = binding.providerRetries?.delaysMs ?? [];
     if (retryTimer || retryDelivery) return;
@@ -255,10 +299,21 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     const message = event.message;
     const text = event.prompt ?? (message?.role === "user" ? typeof message.content === "string" ? message.content
       : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("") : undefined);
-    if (pending && text === pending.text) pending.delivered();
+    if (pending && text === pending.text) {
+      runEvent = pending.event;
+      pending.delivered();
+      updateStatus();
+    }
   };
-  pi.on("before_agent_start", delivered);
-  pi.on("message_start", delivered);
+  pi.on("before_agent_start", (event, ctx) => {
+    context = ctx;
+    runEvent = undefined;
+    delivered(event);
+  });
+  pi.on("message_start", (event, ctx) => {
+    context = ctx;
+    delivered(event);
+  });
   const queuedEvent = (message: PiMessage) => message.role === "user" && queued.has(typeof message.content === "string" ? message.content
     : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join(""));
   pi.on("context", async event => {
@@ -299,7 +354,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
           };
           const abort = () => settle(signal.reason);
           signal.addEventListener("abort", abort, { once: true });
-          pending = { text, delivered: () => { deliveredSinceSuccess.add(event.id); settle(); } };
+          pending = { text, event, delivered: () => { deliveredSinceSuccess.add(event.id); settle(); } };
           Promise.resolve().then(() => {
             if (signal.aborted) return;
             queued.add(text);
@@ -317,9 +372,13 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
       } catch { if (!signal.aborted) await pause(signal); }
     }
   }
-  pi.on("session_start", async (_event, context) => {
+  pi.on("session_start", async (_event, ctx) => {
+    context = ctx;
     if (controller) return;
     shuttingDown = false;
+    running = stopped = false;
+    runEvent = undefined;
+    waitingSince = undefined;
     cancelRetry();
     retryCount = 0;
     sessionId = context?.sessionManager.getSessionId() ?? binding.sessionId;
@@ -353,8 +412,10 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     }
     await startSession();
   });
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, ctx) => {
     shuttingDown = true;
+    setStatus(undefined, ctx);
+    context = undefined;
     cancelRetry();
     controller?.abort();
     await retryDelivery;

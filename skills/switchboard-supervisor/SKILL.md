@@ -38,7 +38,9 @@ Use only the supplied supervisor tools. Delegate implementation to workers.
   Do not repeat a dispatch because it is quiet.
 - Act on each event as it arrives. The host waits in the background and sends
   events as follow-ups; it handles delivery acknowledgement. There is no agent
-  waiting tool. When nothing is actionable, end the turn and await an event.
+  waiting tool. When nothing is actionable, end the turn with one short sentence
+  saying what you are waiting for, such as which attempts are running or which
+  question is open, then await an event.
 - On a worker finish or hold, call `sb_briefing` and inspect the recorded
   outcome, retained commit, checks, questions and next action. Review completed
   work; repair failed work. A held lease alone is not a reason to stop progress.

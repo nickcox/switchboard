@@ -24,6 +24,18 @@ Only these supervisor tools are offered to the model. There is no shell, file re
 
 `wait` and `handled` are not agent tools. The extension waits in background code and sends one event at a time as a user follow-up, including while Pi is busy. It acknowledges only after Pi reports delivery of that exact message to the agent, not when it was queued or a turn ended. Failed waits and acknowledgements are retried with a delay. No later event is fetched until acknowledgement succeeds. A session ending before delivery leaves the event unhandled for the next session. Once the objective closes, the extension stops waiting and delivering events, including follow-ups already queued in Pi. It learns closure from a successful completion result or a closed-objective refusal; before sending a queued event to the model, it also checks the objective through `objective show`. Usage reporting continues until session shutdown. Acknowledgement records delivery, not proof that the model made the right decision; the briefing remains the source of current facts.
 
+When nothing is actionable, the routine tells the supervisor to end its turn with one short sentence saying what it is waiting for, such as which attempts are running or which question is open, then await an event. It does not call a waiting tool or keep a model request running.
+
+In Pi sessions with a UI, the extension shows a `switchboard` footer status:
+
+- `Switchboard: working` while a run is in progress. A run started by a delivered event shows `Switchboard: handling <kind> event for <task> attempt <n>` instead, omitting task and attempt when absent.
+- `Switchboard: waiting for events since HH:MM` once Pi settles without a provider error or pending retry. The time marks the start of that waiting period.
+- `Switchboard: provider error, retry <n>/<total> at HH:MM` while a configured provider retry is pending.
+- `Switchboard: stopped after a provider error – see switchboard status` after the stopped session has been recorded.
+- `Switchboard: objective <state>` once the extension learns that the objective is completed or abandoned.
+
+Times use local, 24-hour `HH:MM`. The footer is cleared on session shutdown. It is a best-effort display, not an acknowledgement or a durable session record; a display failure does not interrupt event delivery, usage reporting or session-state reporting.
+
 The supervisor cannot change its objective's authority, budget or criteria, act on unrelated tasks, bypass safety refusals, or confirm that all worker processes have stopped. In particular, it cannot return leases. A person must inspect and confirm lease return separately. The extension registers the session before its first model request and reports cumulative model usage after each turn through the host-only usage operation. Supervisor and worker cost both count towards the objective budget.
 
 ## Operations
