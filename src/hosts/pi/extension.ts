@@ -256,7 +256,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     }
     const message = lastAssistant;
     const delays = binding.providerRetries?.delaysMs ?? [];
-    if (retryTimer || retryDelivery) return;
+    if (retryTimer || retryDelivery) { updateStatus(); return; }
     if (retryCount >= delays.length || eventsStopped) { await reportState("stopped", message); return; }
     const generation = retryGeneration;
     const delayMs = delays[retryCount++]!;

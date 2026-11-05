@@ -24,7 +24,7 @@ async function until(check: () => boolean) {
   for (let i = 0; i < 500; i++) { if (check()) return; await sleep(2); }
   assert.fail("Timed out waiting for extension");
 }
-function fixture(events: SupervisorEvent[] = [], delaysMs?: number[]) {
+function fixture(events: SupervisorEvent[] = [], delaysMs?: number[], successfulClosure = false) {
   const pi = new FakePi();
   const statuses: (string | undefined)[] = [];
   const calls: string[][] = [];
@@ -38,6 +38,7 @@ function fixture(events: SupervisorEvent[] = [], delaysMs?: number[]) {
   registerSupervisor(pi, { objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private",
     ...(delaysMs === undefined ? {} : { providerRetries: { delaysMs } }) }, async (args, signal) => {
     calls.push(args);
+    if (closed && args[1] === "objective" && successfulClosure) return reply({ ok: true, objective: { state: closed } });
     if (closed && (args[1] === "wait" || args[1] === "objective")) return reply({ ok: false, code: "objective_not_open", state: closed }, 1);
     if (args[1] === "wait") {
       if (events.length) return reply({ ok: true, event: events.shift() });
@@ -132,6 +133,40 @@ test("pending provider retries show their number, total and local time, then exh
   } finally { await pi.emit("session_shutdown", {}, context); }
 });
 
+test("a new failed run restores the pending retry footer, and success cancels it before waiting", async () => {
+  const { pi, context, statuses, calls } = fixture([], [60000]);
+  try {
+    await pi.emit("session_start", {}, context);
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_end", { message: error }, context);
+    await pi.emit("agent_settled", {}, context);
+    const retryStatus = statuses.at(-1);
+    assert.match(retryStatus!, /^Switchboard: provider error, retry 1\/1 at \d\d:\d\d$/);
+    await pi.emit("before_agent_start", { prompt: "Try again now" }, context);
+    await pi.emit("agent_start", {}, context);
+    assert.equal(statuses.at(-1), "Switchboard: working");
+    await pi.emit("message_end", { message: { ...error } }, context);
+    await pi.emit("agent_settled", {}, context);
+    assert.equal(statuses.at(-1), retryStatus);
+    assert.equal(calls.filter(args => args[1] === "session-state").length, 1, "displaying the pending retry must not reschedule it");
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_end", { message: success }, context);
+    await pi.emit("agent_settled", {}, context);
+    assert.match(statuses.at(-1)!, /^Switchboard: waiting for events since \d\d:\d\d$/);
+  } finally { await pi.emit("session_shutdown", {}, context); }
+});
+
+test("a default provider failure shows stopped rather than waiting", async () => {
+  const { pi, context, statuses } = fixture();
+  try {
+    await pi.emit("session_start", {}, context);
+    await pi.emit("agent_start", {}, context);
+    await pi.emit("message_end", { message: error }, context);
+    await pi.emit("agent_settled", {}, context);
+    assert.equal(statuses.at(-1), "Switchboard: stopped after a provider error – see switchboard status");
+  } finally { await pi.emit("session_shutdown", {}, context); }
+});
+
 test("a stopped footer requires a successfully recorded stop", async () => {
   const f = fixture();
   try {
@@ -144,8 +179,8 @@ test("a stopped footer requires a successfully recorded stop", async () => {
   } finally { await f.pi.emit("session_shutdown", {}, f.context); }
 });
 
-for (const state of ["completed", "abandoned"] as const) test(`a closed objective overrides working, waiting and error footers: ${state}`, async () => {
-  const f = fixture([event], [10]);
+for (const successfulClosure of [true, false]) for (const state of ["completed", "abandoned"] as const) test(`a closed objective overrides working, waiting and error footers: ${state}, successful result=${successfulClosure}`, async () => {
+  const f = fixture([event], [10], successfulClosure);
   try {
     await f.pi.emit("session_start", {}, f.context);
     await until(() => f.pi.messages.length === 1);
