@@ -44,9 +44,6 @@ test("stopped and resumed observations are append-only, scoped per session and r
       "INSERT INTO supervisor_session_states SELECT session_id,sequence-1,objective,observed_at,state,error_message,event_ids FROM supervisor_session_states"]) {
       await assert.rejects(f.database.transaction(() => f.database.run(sql)));
     }
-    await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "other-session" });
-    assert.equal(await recordSupervisorSessionState(second, supervisor, "goal", { sessionId: "other-session", state: "resumed" }), null);
-    assert.equal(supervisorSessionHealth(f.database, "goal").attentionRequired, true, "another session cannot clear this one");
     const resumed = await recordSupervisorSessionState(second, supervisor, "goal", { sessionId: "session", state: "resumed" });
     assert.equal(resumed!.sequence, 2);
     assert.equal(resumed!.errorMessage, null);
@@ -60,6 +57,34 @@ test("stopped and resumed observations are append-only, scoped per session and r
     assert.equal(reopened.all("SELECT * FROM supervisor_session_states").length, 2);
     assert.equal(reopened.get("SELECT error_message FROM supervisor_session_states WHERE sequence = 1")!.error_message, first!.errorMessage);
   } finally { reopened.close(); }
+});
+
+test("a successful replacement session clears earlier stops only for its objective, preserving history and later stops", async () => {
+  const f = await fixture();
+  try {
+    const first = await recordSupervisorSessionState(f.database, supervisor, "goal", stopInput());
+    await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "replacement" });
+    assert.deepEqual(supervisorSessionHealth(f.database, "goal").stoppedSessions, [first], "registration is not recovery");
+    await f.objectives.add({ id: "other", request: "Other", acceptanceCriteria: ["Other output"] });
+    const other = { kind: "supervisor", objectiveId: "other" } as const;
+    await recordSupervisorUsage(f.database, other, "other", { sessionId: "unrelated" });
+    assert.equal(await recordSupervisorSessionState(f.database, other, "other", { sessionId: "unrelated", state: "resumed" }), null);
+    assert.deepEqual(supervisorSessionHealth(f.database, "goal").stoppedSessions, [first]);
+    const resumed = await recordSupervisorSessionState(f.database, supervisor, "goal", { sessionId: "replacement", state: "resumed" });
+    assert.equal(resumed!.sessionId, "replacement");
+    assert.equal(resumed!.sequence, 1);
+    assert.equal(supervisorSessionHealth(f.database, "goal").attentionRequired, false);
+    assert.equal(await recordSupervisorSessionState(f.database, supervisor, "goal", { sessionId: "replacement", state: "resumed" }), null);
+    assert.deepEqual(f.database.all("SELECT state FROM supervisor_session_states ORDER BY rowid").map(row => row.state), ["stopped", "resumed"]);
+    assert.equal(f.database.get("SELECT error_message FROM supervisor_session_states WHERE session_id = 'session'")!.error_message, first!.errorMessage);
+    const later = await recordSupervisorSessionState(f.database, supervisor, "goal", stopInput());
+    assert.deepEqual(supervisorSessionHealth(f.database, "goal").stoppedSessions, [later], "an earlier success cannot clear a later stop");
+    await recordSupervisorSessionState(f.database, other, "other", { sessionId: "unrelated", state: "stopped", errorMessage: "Other provider failed" });
+    await recordSupervisorSessionState(f.database, other, "other", { sessionId: "unrelated", state: "resumed" });
+    assert.deepEqual(supervisorSessionHealth(f.database, "goal").stoppedSessions, [later], "even a recorded recovery for another objective clears nothing here");
+    await recordSupervisorSessionState(f.database, supervisor, "goal", { sessionId: "replacement", state: "resumed" });
+    assert.equal(supervisorSessionHealth(f.database, "goal").attentionRequired, false);
+  } finally { f.tasks.close(); }
 });
 
 test("observations require the bound registered session, validate inputs and remain recordable after objective closure", async () => {

@@ -97,6 +97,43 @@ test("a stopped supervisor needs attention in status, attention-only status, bri
   assert.equal(JSON.parse(f.raw("status", "--attention-only", "--json").stdout).reason, "clear");
 });
 
+test("successful supervision in a replacement session clears attention in every view, but registration and another objective do not", () => {
+  const f = fixture();
+  f.ok("usage", "--session", "stopped-session");
+  f.ok("session-state", "--session", "stopped-session", "--state", "stopped", "--error", "Provider usage limit reached", "--event", "delivered-work");
+  const attention = (expected: boolean) => {
+    for (const objective of [f.person("objective", "show", "goal").objective, f.ok("objective", "show").objective, f.ok("briefing").objective]) {
+      assert.equal(objective.attentionRequired, expected);
+      assert.equal(objective.stoppedSessions.length, expected ? 1 : 0);
+      if (!expected) assert.equal(objective.nextAction, null);
+    }
+    for (const flags of [[], ["--attention-only"]]) {
+      const json = JSON.parse(f.raw("status", ...flags, "--json").stdout);
+      assert.equal(json.ok, !expected);
+      assert.equal(json.reason, expected ? "attention" : "clear");
+      assert.equal(json.objectives.find((objective: { id: string }) => objective.id === "goal").attentionRequired, expected);
+      const text = f.raw("status", ...flags).stdout;
+      assert.equal(text.includes("NEEDS ATTENTION"), expected);
+      assert.equal(text.includes("Provider usage limit reached"), expected);
+      assert.equal(text.includes("switchboard supervisor start"), expected);
+    }
+  };
+  f.ok("usage", "--session", "replacement-session");
+  attention(true);
+  const other = (...args: string[]) => {
+    const result = f.raw("supervise", ...args, "--objective", "other");
+    assert.equal(result.status, 0, result.stdout);
+    return JSON.parse(result.stdout);
+  };
+  other("usage", "--session", "unrelated-session");
+  other("session-state", "--session", "unrelated-session", "--state", "stopped", "--error", "Other failure");
+  other("session-state", "--session", "unrelated-session", "--state", "resumed");
+  attention(true);
+  const resumed = f.ok("session-state", "--session", "replacement-session", "--state", "resumed").sessionState;
+  assert.equal(resumed.sessionId, "replacement-session");
+  attention(false);
+});
+
 test("host usage records simple cumulative Pi counts and appears separately in show and briefing", () => {
   const f = fixture();
   const unknown = f.ok("usage", "--session", "pi-session").usage;

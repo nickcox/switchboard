@@ -344,6 +344,31 @@ test("the Pi extension persists a settled provider error and a later successful 
   } finally { await pi.emit("session_shutdown"); f.tasks.close(); }
 });
 
+test("the first successful response in a fresh Pi session recovers an older stopped session through the host-only CLI", async () => {
+  const f = await objectiveFixture();
+  const pi = new FakePi();
+  const replacement = new FakePi();
+  const bound = { ...await binding(), objectiveId: "goal", configPath: f.configPath };
+  registerSupervisor(pi, bound, undefined, 5);
+  registerSupervisor(replacement, bound, undefined, 5);
+  try {
+    await pi.emit("session_start", {}, { sessionManager: { getSessionId: () => "old-session", getEntries: () => [] } });
+    await pi.emit("message_end", { message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Provider usage limit reached" } });
+    await pi.emit("agent_settled");
+    await pi.emit("session_shutdown");
+    await replacement.emit("session_start", {}, { sessionManager: { getSessionId: () => "new-session", getEntries: () => [] } });
+    assert.equal(supervisorSessionHealth(f.tasks.database, "goal").attentionRequired, true, "starting a replacement is not a successful response");
+    await replacement.emit("message_end", { message: { role: "assistant", content: [], stopReason: "aborted" } });
+    assert.equal(supervisorSessionHealth(f.tasks.database, "goal").attentionRequired, true);
+    await replacement.emit("message_end", { message: { role: "assistant", content: "Read the briefing", stopReason: "toolUse" } });
+    assert.equal(supervisorSessionHealth(f.tasks.database, "goal").attentionRequired, false);
+    await replacement.emit("message_end", { message: { role: "assistant", content: "Working normally", stopReason: "stop" } });
+    assert.deepEqual(f.tasks.database.all("SELECT session_id,state FROM supervisor_session_states ORDER BY rowid").map(row => ({ ...row })), [
+      { session_id: "old-session", state: "stopped" }, { session_id: "new-session", state: "resumed" },
+    ]);
+  } finally { await pi.emit("session_shutdown"); await replacement.emit("session_shutdown"); f.tasks.close(); }
+});
+
 test("launcher fixes the tool allowlist, disables discovery and supplies a persistent routine and private directories", async () => {
   const f = await objectiveFixture();
   try {
