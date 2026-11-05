@@ -7,7 +7,20 @@ import { requireRetainedStorage } from "../infra/storage.ts";
 import { TaskStoreError, type TaskState } from "./store.ts";
 import { SqliteTaskStore, type TaskChanges } from "./sqlite.ts";
 
-const usage = "Usage: switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen|convert-criteria> [id] [title] [--json] [--config <path>]";
+const usage = `Usage: switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen|convert-criteria> [id] [title] [--json] [--config <path>] [--help]
+add: <id> <title> (or --title <text>)
+add/update: --title <text>, --body <text> or --body-file <path>, --repo <repo>, --kind <kind>, --criterion <text> (repeatable) or --criteria-file <path>, --objective <id> or --clear-objective
+show: <id>
+list: [--state queued|in_flight|done] [--repo <repo>]
+ready: [--repo <repo>]
+update: <id>
+hold: <id> --reason <text>
+release: <id>
+block: <id> --by <task-id>
+unblock: <id> --by <task-id>
+done: <id> [--note <text>]
+reopen: <id>
+convert-criteria: convert legacy body criteria in the configured repo and report converted or unconverted tasks`;
 export async function taskCommand(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     json: { type: "boolean" }, config: { type: "string" }, help: { type: "boolean" },
