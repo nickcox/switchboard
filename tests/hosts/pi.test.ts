@@ -11,6 +11,7 @@ import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { registerSupervisor, commandExecutor, eventText, type SupervisorPi, type SupervisorTool, type SupervisorBinding, type ExecuteCommand, type SupervisorEvent } from "../../src/hosts/pi/extension.ts";
 import { prepareSupervisor } from "../../src/hosts/pi/start.ts";
 import { supervisorToolNames } from "../../src/hosts/pi/tools.ts";
+import { supervisorSessionHealth } from "../../src/supervise/session-state.ts";
 
 type Handler = Parameters<SupervisorPi["on"]>[1];
 type Event = Parameters<Handler>[0];
@@ -321,6 +322,27 @@ async function objectiveFixture() {
   await objectives.add({ id: "goal", request: "Complete the objective", acceptanceCriteria: ["Met"] });
   return { dir, config, configPath, tasks, objectives };
 }
+
+test("the Pi extension persists a settled provider error and a later successful resumption through the real host-only CLI", async () => {
+  const f = await objectiveFixture();
+  const pi = new FakePi();
+  const error = { role: "assistant", content: [], stopReason: "error", errorMessage: "Codex error: The usage limit has been reached" };
+  registerSupervisor(pi, { ...await binding(), objectiveId: "goal", configPath: f.configPath }, undefined, 5);
+  try {
+    await pi.emit("session_start", {}, { sessionManager: { getSessionId: () => "actual-session", getEntries: () => [] } });
+    await pi.emit("message_end", { message: error });
+    assert.equal(supervisorSessionHealth(f.tasks.database, "goal").attentionRequired, false);
+    await pi.emit("agent_settled");
+    const health = supervisorSessionHealth(f.tasks.database, "goal");
+    assert.equal(health.attentionRequired, true);
+    assert.equal(health.stoppedSessions[0]!.sessionId, "actual-session");
+    assert.equal(health.stoppedSessions[0]!.errorMessage, error.errorMessage);
+    await pi.emit("message_end", { message: { role: "assistant", content: "Recovered", stopReason: "stop" } });
+    assert.equal(supervisorSessionHealth(f.tasks.database, "goal").attentionRequired, false);
+    assert.deepEqual(f.tasks.database.all("SELECT state FROM supervisor_session_states ORDER BY sequence").map(row => row.state), ["stopped", "resumed"]);
+    assert.equal(pi.tools.has("sb_session_state"), false);
+  } finally { await pi.emit("session_shutdown"); f.tasks.close(); }
+});
 
 test("launcher fixes the tool allowlist, disables discovery and supplies a persistent routine and private directories", async () => {
   const f = await objectiveFixture();
