@@ -13,7 +13,9 @@ class FakePi implements SupervisorPi {
   on(name: string, handler: Handler) { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
   sendUserMessage(text: string, options: { deliverAs: "followUp" }) { this.messages.push(text); this.deliveryOptions.push(options); }
   async emit(name: string, event: Parameters<Handler>[0] = {}, context?: Parameters<Handler>[1]) {
-    for (const handler of this.handlers.get(name) ?? []) await handler(event, context);
+    let result: Awaited<ReturnType<Handler>> = undefined;
+    for (const handler of this.handlers.get(name) ?? []) result = await handler(event, context) ?? result;
+    return result;
   }
 }
 const error = { role: "assistant", content: [], stopReason: "error", errorMessage: "Codex error: The usage limit has been reached" };
@@ -249,12 +251,35 @@ test("success during the objective check cancels the retry before sending", asyn
   } finally { release?.(); await f.pi.emit("session_shutdown"); }
 });
 
-test("an aborted assistant response is not reported as a provider error or a successful resumption", async () => {
-  const { pi, states } = fixture();
+for (const reason of ["success", "closed", "aborted response", "aborted run"] as const) test(`${reason} hides an already queued provider retry at the model boundary`, async () => {
+  const f = fixture([], undefined, [5]);
+  try {
+    await f.pi.emit("session_start");
+    await f.pi.emit("message_end", { message: { ...error } });
+    await f.pi.emit("agent_settled");
+    await until(() => f.pi.messages.length === 1);
+    const retry = { role: "user", content: f.pi.messages[0]! };
+    const person = { role: "user", content: "Please continue" };
+    if (reason === "success") await f.pi.emit("message_end", { message: { ...success } });
+    if (reason === "closed") f.close();
+    if (reason === "aborted response") await f.pi.emit("message_end", { message: { ...error, stopReason: "aborted" } });
+    if (reason === "aborted run") await f.pi.emit("agent_settled", { aborted: true });
+    for (let i = 0; i < 2; i++) {
+      assert.deepEqual(await f.pi.emit("context", { messages: [person, retry] }), { messages: [person] });
+    }
+    await sleep(20);
+    assert.equal(f.pi.messages.length, 1, "cancellation never sends another follow-up");
+  } finally { await f.pi.emit("session_shutdown"); }
+});
+
+for (const delaysMs of [undefined, [5]]) test(`an aborted assistant response does not start a retry (${delaysMs ? "configured" : "default"})`, async () => {
+  const { pi, states } = fixture([], undefined, delaysMs);
   try {
     await pi.emit("session_start");
     await pi.emit("message_end", { message: { ...error, stopReason: "aborted" } });
     await pi.emit("agent_settled");
     assert.deepEqual(states, []);
+    await sleep(20);
+    assert.deepEqual(pi.messages, []);
   } finally { await pi.emit("session_shutdown"); }
 });
