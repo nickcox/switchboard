@@ -60,6 +60,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let waitingSince: Date | undefined;
   let providerRetry: { number: number; total: number; at: string } | undefined;
   let stopped = false;
+  let stopRecordingFailed = false;
   const localTime = (date: Date) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   const setStatus = (text: string | undefined, ctx = context) => {
     if (!ctx?.hasUI) return;
@@ -69,6 +70,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   const updateStatus = () => {
     if (shuttingDown) return;
     if (objectiveState) setStatus(`Switchboard: objective ${objectiveState}`);
+    else if (stopRecordingFailed) setStatus("Switchboard: provider error – failed to record stopped session");
     else if (running) setStatus(runEvent ? `Switchboard: handling ${runEvent.kind} event${runEvent.taskId === null ? "" : ` for ${runEvent.taskId}`}${runEvent.attempt === null ? "" : ` attempt ${runEvent.attempt}`}` : "Switchboard: working");
     else if (providerRetry) setStatus(`Switchboard: provider error, retry ${providerRetry.number}/${providerRetry.total} at ${localTime(new Date(providerRetry.at))}`);
     else if (stopped) setStatus("Switchboard: stopped after a provider error – see switchboard status");
@@ -151,10 +153,16 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     lastAssistant = message;
     if (message.stopReason === "error") resumeNeeded = true;
     if (successful(message)) {
+      const failed = stopRecordingFailed;
+      stopRecordingFailed = false;
       stopped = false;
       cancelRetry();
       retryCount = 0;
       deliveredSinceSuccess.clear();
+      if (failed) {
+        if (!running) waitingSince ??= new Date();
+        updateStatus();
+      }
     } else if (message.stopReason === "aborted") cancelRetry();
   };
   const errorText = (message?: PiMessage) => message?.errorMessage?.trim() ? message.errorMessage : "Pi model provider error (no error message reported)";
@@ -169,9 +177,17 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
       await registerUsage();
       const reply = await command(["session-state"], args);
       if (reply.exitCode !== 0 || JSON.parse(reply.stdout).ok !== true) throw new Error("Supervisor session state reporting failed");
+      stopRecordingFailed = false;
       stopped = state === "stopped";
       providerRetry = state === "retrying" ? retry : undefined;
       updateStatus();
+    }).catch(error => {
+      if (state === "stopped") {
+        // Pi reports hook errors and continues; do not leave a stale working footer.
+        stopRecordingFailed = true;
+        updateStatus();
+      }
+      throw error;
     });
     return stateReporting;
   };
@@ -376,7 +392,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     context = ctx;
     if (controller) return;
     shuttingDown = false;
-    running = stopped = false;
+    running = stopped = stopRecordingFailed = false;
     runEvent = undefined;
     waitingSince = undefined;
     cancelRetry();

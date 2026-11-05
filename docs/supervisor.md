@@ -32,6 +32,7 @@ In Pi sessions with a UI, the extension shows a `switchboard` footer status:
 - `Switchboard: waiting for events since HH:MM` once Pi settles without a provider error or pending retry. The time marks the start of that waiting period.
 - `Switchboard: provider error, retry <n>/<total> at HH:MM` while a configured provider retry is pending.
 - `Switchboard: stopped after a provider error – see switchboard status` after the stopped session has been recorded.
+- `Switchboard: provider error – failed to record stopped session` if recording that stop fails. This local failure remains visible until a successful model reply or a successful session-state recording clears it; it does not claim that a durable stop was recorded.
 - `Switchboard: objective <state>` once the extension learns that the objective is completed or abandoned.
 
 Times use local, 24-hour `HH:MM`. The footer is cleared on session shutdown. It is a best-effort display, not an acknowledgement or a durable session record; a display failure does not interrupt event delivery, usage reporting or session-state reporting.

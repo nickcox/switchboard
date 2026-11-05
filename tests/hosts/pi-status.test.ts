@@ -29,7 +29,7 @@ function fixture(events: SupervisorEvent[] = [], delaysMs?: number[], successful
   const statuses: (string | undefined)[] = [];
   const calls: string[][] = [];
   let closed: "completed" | "abandoned" | undefined;
-  let failState = false;
+  let failState: false | "throw" | "exit" | "refusal" | "invalid-json" = false;
   const context: Context = {
     hasUI: true,
     ui: { setStatus(key, text) { assert.equal(key, "switchboard"); statuses.push(text); } },
@@ -44,10 +44,15 @@ function fixture(events: SupervisorEvent[] = [], delaysMs?: number[], successful
       if (events.length) return reply({ ok: true, event: events.shift() });
       await sleep(10000, undefined, { signal });
     }
-    if (args[1] === "session-state" && failState) throw new Error("State unavailable");
+    if (args[1] === "session-state") {
+      if (failState === "throw") throw new Error("State unavailable");
+      if (failState === "exit") return reply({ ok: true }, 1);
+      if (failState === "refusal") return reply({ ok: false });
+      if (failState === "invalid-json") return { exitCode: 0, stdout: "invalid JSON" };
+    }
     return reply({ ok: true });
   }, 5);
-  return { pi, context, statuses, calls, close: (state: typeof closed) => { closed = state; }, failState: () => { failState = true; } };
+  return { pi, context, statuses, calls, close: (state: typeof closed) => { closed = state; }, failState: (failure: typeof failState = "throw") => { failState = failure; } };
 }
 
 test("Pi's event contexts show working until settled, then a stable local waiting start time", async t => {
@@ -167,17 +172,39 @@ test("a default provider failure shows stopped rather than waiting", async () =>
   } finally { await pi.emit("session_shutdown", {}, context); }
 });
 
-test("a stopped footer requires a successfully recorded stop", async () => {
-  const f = fixture();
-  try {
-    await f.pi.emit("session_start", {}, f.context);
-    await f.pi.emit("agent_start", {}, f.context);
-    await f.pi.emit("message_end", { message: error }, f.context);
-    f.failState();
-    await assert.rejects(f.pi.emit("agent_settled", {}, f.context));
-    assert.equal(f.statuses.some(text => text?.includes("stopped after")), false);
-  } finally { await f.pi.emit("session_shutdown", {}, f.context); }
-});
+for (const failure of ["throw", "exit", "refusal", "invalid-json"] as const) {
+  for (const recovery of ["reply", "recording"] as const) test(`failed stopped-session recording shows failure and recovers through ${recovery} (${failure})`, async () => {
+    const f = fixture();
+    const failedStatus = "Switchboard: provider error – failed to record stopped session";
+    try {
+      await f.pi.emit("session_start", {}, f.context);
+      await f.pi.emit("agent_start", {}, f.context);
+      assert.equal(f.statuses.at(-1), "Switchboard: working");
+      await f.pi.emit("message_end", { message: error }, f.context);
+      f.failState(failure);
+      await assert.rejects(f.pi.emit("agent_settled", {}, f.context));
+      assert.equal(f.statuses.at(-1), failedStatus);
+      assert.equal(f.statuses.some(text => text?.includes("stopped after")), false, "do not claim that the stop was recorded");
+      if (recovery === "reply") {
+        await f.pi.emit("agent_start", {}, f.context);
+        assert.equal(f.statuses.at(-1), failedStatus, "starting another run alone does not clear the failure");
+        // A successful model reply clears the display even if resumed recording still fails.
+        await assert.rejects(f.pi.emit("message_end", { message: success }, f.context));
+        assert.equal(f.statuses.at(-1), "Switchboard: working");
+        await f.pi.emit("agent_settled", {}, f.context);
+        assert.match(f.statuses.at(-1)!, /^Switchboard: waiting for events since \d\d:\d\d$/);
+        f.failState(false);
+        await f.pi.emit("message_end", { message: success }, f.context);
+        assert.ok(f.calls.some(args => args[1] === "session-state" && args.includes("resumed")));
+      } else {
+        f.failState(false);
+        await f.pi.emit("agent_settled", {}, f.context);
+        assert.equal(f.statuses.at(-1), "Switchboard: stopped after a provider error – see switchboard status");
+      }
+    } finally { await f.pi.emit("session_shutdown", {}, f.context); }
+    assert.equal(f.statuses.at(-1), undefined);
+  });
+}
 
 for (const successfulClosure of [true, false]) for (const state of ["completed", "abandoned"] as const) test(`a closed objective overrides working, waiting and error footers: ${state}, successful result=${successfulClosure}`, async () => {
   const f = fixture([event], [10], successfulClosure);
