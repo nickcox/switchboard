@@ -23,7 +23,7 @@ async function until(check: () => boolean) {
   for (let i = 0; i < 500; i++) { if (check()) return; await sleep(2); }
   assert.fail("Timed out waiting for extension");
 }
-function fixture(events: SupervisorEvent[] = []) {
+function fixture(events: SupervisorEvent[] = [], resumeFailure?: "refusal" | "throw") {
   const pi = new FakePi();
   const states: string[][] = [];
   const handled: string[] = [];
@@ -33,7 +33,15 @@ function fixture(events: SupervisorEvent[] = []) {
       await sleep(10000, undefined, { signal });
     }
     if (args[1] === "handled") handled.push(args.at(-1)!);
-    if (args[1] === "session-state") states.push(args.slice(6));
+    if (args[1] === "session-state") {
+      states.push(args.slice(6));
+      if (args.includes("resumed") && resumeFailure) {
+        const failure = resumeFailure;
+        resumeFailure = undefined;
+        if (failure === "throw") throw new Error("Command failed");
+        return { exitCode: 1, stdout: JSON.stringify({ ok: false }) };
+      }
+    }
     return reply({ ok: true });
   }, 5);
   return { pi, states, handled };
@@ -59,6 +67,7 @@ test("provider errors are recorded only after Pi settles, retaining all delivere
       "--event", "first", "--event", "second", "--event", "third"]]);
     await pi.emit("message_end", { message: success });
     assert.deepEqual(states.at(-1), ["--session", "session", "--state", "resumed"]);
+    await pi.emit("message_end", { message: { ...success } });
     await pi.emit("agent_settled");
     assert.equal(states.length, 2);
   } finally { await pi.emit("session_shutdown"); }
@@ -97,9 +106,48 @@ test("reload reconstructs delivered work since the last successful response and 
     assert.deepEqual(states[0], ["--session", "actual-session", "--state", "stopped", "--error", error.errorMessage, "--event", "unanswered"]);
     await pi.emit("message_end", { message: { ...success, stopReason: "toolUse" } });
     assert.deepEqual(states.at(-1), ["--session", "actual-session", "--state", "resumed"]);
+    await pi.emit("message_end", { message: { ...success } });
+    assert.equal(states.length, 2);
     await pi.emit("message_end", { message: error });
     await pi.emit("agent_settled");
     assert.equal(states.at(-1)!.includes("--event"), false, "success clears the delivered-work window");
+  } finally { await pi.emit("session_shutdown"); }
+});
+
+test("healthy responses report resumed once per session, then once after each new error", async () => {
+  const { pi, states } = fixture();
+  try {
+    await pi.emit("session_start");
+    for (const stopReason of ["stop", "toolUse", "lengthLimit"]) {
+      await pi.emit("message_end", { message: { ...success, stopReason } });
+    }
+    assert.deepEqual(states, [["--session", "session", "--state", "resumed"]]);
+    for (let i = 0; i < 2; i++) {
+      await pi.emit("message_end", { message: { ...error } });
+      await pi.emit("agent_settled");
+      await pi.emit("message_end", { message: { ...success } });
+      await pi.emit("message_end", { message: { ...success } });
+      assert.equal(states.length, 3 + i * 2);
+      assert.deepEqual(states.at(-1), ["--session", "session", "--state", "resumed"]);
+    }
+    await pi.emit("session_shutdown");
+    await pi.emit("session_start", {}, { sessionManager: { getSessionId: () => "next-session", getEntries: () => [] } });
+    await pi.emit("message_end", { message: { ...success } });
+    await pi.emit("message_end", { message: { ...success } });
+    assert.equal(states.length, 6);
+    assert.deepEqual(states.at(-1), ["--session", "next-session", "--state", "resumed"]);
+  } finally { await pi.emit("session_shutdown"); }
+});
+
+for (const failure of ["refusal", "throw"] as const) test(`a resumed report retries after a ${failure}, then stops reporting`, async () => {
+  const { pi, states } = fixture([], failure);
+  try {
+    await pi.emit("session_start");
+    await assert.rejects(pi.emit("message_end", { message: { ...success } }));
+    assert.equal(states.length, 1);
+    await pi.emit("message_end", { message: { ...success } });
+    await pi.emit("message_end", { message: { ...success } });
+    assert.deepEqual(states, Array.from({ length: 2 }, () => ["--session", "session", "--state", "resumed"]));
   } finally { await pi.emit("session_shutdown"); }
 });
 

@@ -102,10 +102,12 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let reporting = Promise.resolve();
   let stateReporting = Promise.resolve();
   let lastAssistant: PiMessage | undefined;
+  let resumeNeeded = true;
   const deliveredSinceSuccess = new Set<string>();
   const successful = (message: PiMessage) => ["stop", "toolUse", "lengthLimit"].includes(message.stopReason ?? "");
   const observeResponse = (message: PiMessage) => {
     lastAssistant = message;
+    if (message.stopReason === "error") resumeNeeded = true;
     if (successful(message)) deliveredSinceSuccess.clear();
   };
   const reportState = (state: "stopped" | "resumed", message?: PiMessage) => {
@@ -169,8 +171,11 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   pi.on("message_end", async event => {
     if (event.message?.role !== "assistant") return;
     observeResponse(event.message);
-    // A fresh session can recover an earlier session's stop; the host operation skips healthy observations.
-    if (successful(event.message)) await reportState("resumed");
+    // The first success can recover an earlier session's stop; later reports need a new error.
+    if (successful(event.message) && resumeNeeded) {
+      await reportState("resumed");
+      resumeNeeded = false;
+    }
     addMessage(event.message);
     await reportUsage();
   });
@@ -271,6 +276,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     cost = tokens = 0;
     observed = unknownCost = unknownTokens = false;
     lastAssistant = undefined;
+    resumeNeeded = true;
     deliveredSinceSuccess.clear();
     // Include compacted and off-branch messages when reloading this session.
     for (const entry of context?.sessionManager.getEntries() ?? []) {
