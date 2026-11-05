@@ -8,9 +8,10 @@ class FakePi implements SupervisorPi {
   handlers = new Map<string, Handler[]>();
   tools: string[] = [];
   messages: string[] = [];
+  deliveryOptions: { deliverAs: "followUp" }[] = [];
   registerTool(tool: SupervisorTool) { this.tools.push(tool.name); }
   on(name: string, handler: Handler) { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
-  sendUserMessage(text: string) { this.messages.push(text); }
+  sendUserMessage(text: string, options: { deliverAs: "followUp" }) { this.messages.push(text); this.deliveryOptions.push(options); }
   async emit(name: string, event: Parameters<Handler>[0] = {}, context?: Parameters<Handler>[1]) {
     for (const handler of this.handlers.get(name) ?? []) await handler(event, context);
   }
@@ -23,14 +24,22 @@ async function until(check: () => boolean) {
   for (let i = 0; i < 500; i++) { if (check()) return; await sleep(2); }
   assert.fail("Timed out waiting for extension");
 }
-function fixture(events: SupervisorEvent[] = [], resumeFailure?: "refusal" | "throw") {
+function fixture(events: SupervisorEvent[] = [], resumeFailure?: "refusal" | "throw", delaysMs?: number[]) {
   const pi = new FakePi();
   const states: string[][] = [];
   const handled: string[] = [];
-  registerSupervisor(pi, { objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private" }, async (args, signal) => {
+  let closed = false;
+  let checkObjective: (() => Promise<void>) | undefined;
+  registerSupervisor(pi, { objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private",
+    ...(delaysMs === undefined ? {} : { providerRetries: { delaysMs } }) }, async (args, signal) => {
     if (args[1] === "wait") {
       if (events.length) return reply({ ok: true, event: events.shift() });
       await sleep(10000, undefined, { signal });
+    }
+    if (args[1] === "objective") {
+      await checkObjective?.();
+      return closed ? { exitCode: 1, stdout: JSON.stringify({ ok: false, code: "objective_not_open", state: "abandoned" }) }
+        : reply({ ok: true, objective: { state: "open" } });
     }
     if (args[1] === "handled") handled.push(args.at(-1)!);
     if (args[1] === "session-state") {
@@ -44,7 +53,7 @@ function fixture(events: SupervisorEvent[] = [], resumeFailure?: "refusal" | "th
     }
     return reply({ ok: true });
   }, 5);
-  return { pi, states, handled };
+  return { pi, states, handled, close: () => { closed = true; }, beforeObjectiveCheck: (check: () => Promise<void>) => { checkObjective = check; } };
 }
 
 test("provider errors are recorded only after Pi settles, retaining all delivered events despite acknowledgement", async () => {
@@ -149,6 +158,95 @@ for (const failure of ["refusal", "throw"] as const) test(`a resumed report retr
     await pi.emit("message_end", { message: { ...success } });
     assert.deepEqual(states, Array.from({ length: 2 }, () => ["--session", "session", "--state", "resumed"]));
   } finally { await pi.emit("session_shutdown"); }
+});
+
+test("configured retries retain delivered events, send one follow-up per delay and stop on exhaustion", async () => {
+  const { pi, states, handled } = fixture([event("delivered")], undefined, [10, 20]);
+  try {
+    await pi.emit("session_start");
+    await until(() => pi.messages.length === 1);
+    await pi.emit("message_start", { message: { role: "user", content: pi.messages[0]! } });
+    await until(() => handled.length === 1);
+    for (let number = 1; number <= 2; number++) {
+      await pi.emit("message_end", { message: { ...error } });
+      const before = Date.now();
+      await pi.emit("agent_end");
+      assert.equal(states.length, number - 1);
+      await pi.emit("agent_settled");
+      const args = states.at(-1)!;
+      assert.deepEqual(args.slice(0, 8), ["--session", "session", "--state", "retrying", "--error", error.errorMessage, "--event", "delivered"]);
+      assert.deepEqual(args.slice(8, 12), ["--retry-number", String(number), "--retry-total", "2"]);
+      assert.equal(args[12], "--next-retry-at");
+      assert.ok(Date.parse(args[13]!) >= before + (number === 1 ? 10 : 20));
+      assert.equal(pi.messages.length, number);
+      await until(() => pi.messages.length === number + 1);
+      assert.ok(Date.now() >= Date.parse(args[13]!));
+      assert.ok(pi.messages[number]!.includes(error.errorMessage));
+      assert.match(pi.messages[number]!, /sb_briefing and continue/);
+      assert.deepEqual(pi.deliveryOptions[number], { deliverAs: "followUp" });
+      await sleep(25);
+      assert.equal(pi.messages.length, number + 1, "one message per configured retry");
+    }
+    await pi.emit("message_end", { message: { ...error } });
+    await pi.emit("agent_settled");
+    assert.deepEqual(states.at(-1), ["--session", "session", "--state", "stopped", "--error", error.errorMessage, "--event", "delivered"]);
+    await sleep(30);
+    assert.equal(pi.messages.length, 3);
+  } finally { await pi.emit("session_shutdown"); }
+});
+
+test("a person's successful response cancels a pending retry and resets the retry count", async () => {
+  const { pi, states } = fixture([], undefined, [30, 10]);
+  try {
+    await pi.emit("session_start");
+    await pi.emit("message_end", { message: { ...error } });
+    await pi.emit("agent_settled");
+    await pi.emit("message_end", { message: { ...success } });
+    assert.deepEqual(states.at(-1), ["--session", "session", "--state", "resumed"]);
+    await sleep(50);
+    assert.deepEqual(pi.messages, []);
+    await pi.emit("message_end", { message: { ...error } });
+    await pi.emit("agent_settled");
+    assert.equal(states.at(-1)![7], "1");
+    await until(() => pi.messages.length === 1);
+    await pi.emit("message_end", { message: { ...success } });
+    await pi.emit("message_end", { message: { ...error } });
+    await pi.emit("agent_settled");
+    assert.equal(states.at(-1)![7], "1", "retry success also resets the count");
+  } finally { await pi.emit("session_shutdown"); }
+});
+
+for (const reason of ["shutdown", "closed", "aborted response", "aborted run"] as const) test(`${reason} cancels a configured pending provider retry`, async () => {
+  const f = fixture([], undefined, [20]);
+  try {
+    await f.pi.emit("session_start");
+    await f.pi.emit("message_end", { message: { ...error } });
+    await f.pi.emit("agent_settled");
+    if (reason === "shutdown") await f.pi.emit("session_shutdown");
+    if (reason === "closed") f.close();
+    if (reason === "aborted response") await f.pi.emit("message_end", { message: { ...error, stopReason: "aborted" } });
+    if (reason === "aborted run") await f.pi.emit("agent_settled", { aborted: true });
+    await sleep(50);
+    assert.deepEqual(f.pi.messages, []);
+    assert.equal(f.states.length, 1);
+  } finally { await f.pi.emit("session_shutdown"); }
+});
+
+test("success during the objective check cancels the retry before sending", async () => {
+  const f = fixture([], undefined, [5]);
+  let release!: () => void;
+  let checking = false;
+  f.beforeObjectiveCheck(() => new Promise<void>(resolve => { checking = true; release = resolve; }));
+  try {
+    await f.pi.emit("session_start");
+    await f.pi.emit("message_end", { message: { ...error } });
+    await f.pi.emit("agent_settled");
+    await until(() => checking);
+    await f.pi.emit("message_end", { message: { ...success } });
+    release();
+    await sleep(20);
+    assert.deepEqual(f.pi.messages, []);
+  } finally { release?.(); await f.pi.emit("session_shutdown"); }
 });
 
 test("an aborted assistant response is not reported as a provider error or a successful resumption", async () => {

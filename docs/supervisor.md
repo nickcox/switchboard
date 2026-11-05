@@ -35,7 +35,7 @@ All invocations accept `--config <path>` (default: `SWITCHBOARD_CONFIG`, then `.
 | `briefing` | Rebuilds the supervisor's briefing from current records. No other arguments or options. |
 | `note "<text>"` | Appends a supervisor note to the objective. Text must not be blank. |
 | `usage` | Host-only accounting, not an agent tool. Requires `--session <id>`; optional `--cost <cumulative-cost>` and `--tokens <cumulative-tokens>`. Omitted values or `unknown` mean unreported. |
-| `session-state` | Host-only observation, not an agent tool. Requires a registered `--session <id>` and `--state stopped\|resumed`. A stop requires `--error <message>` and accepts repeatable `--event <id>` for events delivered since the last successful response. |
+| `session-state` | Host-only observation, not an agent tool. Requires a registered `--session <id>` and `--state stopped\|resumed\|retrying`. Stopped and retrying require `--error <message>` and accept repeatable `--event <id>` for events delivered since the last successful response. Retrying also requires `--retry-number`, `--retry-total` and `--next-retry-at`. |
 | `ask "<question>"` | Records a question for the person. Optional repeatable `--choice <text>` and `--request-id <id>`. |
 | `wait` | Returns the first unhandled event, polling if none is pending. Optional `--timeout <seconds>` is a nonnegative number; omission waits indefinitely. |
 | `handled <event-id>` | Records that the next unhandled event has been dealt with. Safe to repeat. |
@@ -140,7 +140,11 @@ Schema 19 adds append-only `supervisor_usage` snapshots without changing existin
 
 ### Stopped supervisor sessions
 
-When Pi settles with its last assistant response ending in `stopReason: "error"`, the extension records the session as stopped. It uses `agent_settled`, not `agent_end` or `agent_before_settle`: Pi has finished its own automatic retries, recovery and queued continuations at that boundary. Switchboard reports the failure; it does not retry the model call.
+When Pi settles with its last assistant response ending in `stopReason: "error"`, the extension records the session as stopped. It uses `agent_settled`, not `agent_end` or `agent_before_settle`: Pi has finished its own automatic retries, recovery and queued continuations at that boundary. Without the opt-in `supervisor.providerRetries` setting, Switchboard reports the failure without retrying, exactly as before.
+
+With [`supervisor.providerRetries`](configuration.md#supervisor-provider-retries), each listed delay permits one retry, in order. The documented example `[60000, 300000, 900000]` waits 1, 5 and 15 minutes after successive settled failures. While waiting, the extension records `retrying`, including `retryNumber`, `retryTotal`, `nextRetryAt`, the provider error and delivered event IDs. After the delay it sends one user follow-up saying that the previous model request failed with that error and asking the model to read the briefing with `sb_briefing` and continue. It checks that the objective is still open before sending. Once the configured retries run out, the next settled error is recorded as stopped.
+
+A successful response, including a response to a person's message, cancels any pending retry, resets the count and reports resumed. Pending retries are also cancelled on session shutdown, objective closure or an aborted response. Aborted runs do not schedule retries. Timers are session-scoped, not a durable scheduler; shutting down Pi cancels them. Event delivery and acknowledgement continue as before, without replaying earlier events.
 
 The host-only operation records the Pi session ID, observation time, provider error message and IDs of events delivered since the last successful model response:
 
@@ -148,9 +152,14 @@ The host-only operation records the Pi session ID, observation time, provider er
 switchboard supervise session-state --objective release-notes --session <pi-session-id> \
   --state stopped --error "Codex error: The usage limit has been reached" --event <event-id>
 switchboard supervise session-state --objective release-notes --session <pi-session-id> --state resumed
+switchboard supervise session-state --objective release-notes --session <pi-session-id> \
+  --state retrying --error "Codex error: The usage limit has been reached" \
+  --retry-number 1 --retry-total 3 --next-retry-at 2026-11-05T04:00:00.000Z --event <event-id>
 ```
 
 Schema 20 adds append-only `supervisor_session_states` observations. Database triggers prevent changing, deleting, replacing or moving them. The session must already be registered through `usage` for that objective; observations remain allowed after objective closure. A later successful response in the same Pi session, or a replacement session registered to the same objective, appends a resumed record when supervision needs recovery. It clears attention from earlier stops for that objective without changing their history. Registering a fresh session alone does not clear attention, nor does a successful response for another objective. The Pi host reports resumed on each session's first successful response, then only on the next successful response after observing an error, including errors read from a reloaded session's entries. Once the report succeeds, later successful responses do not report again until another error; a failed report is retried on the next successful response. An automatic retry that succeeds before settling does not record a stop. Aborted responses are neither provider errors nor successful resumptions.
+
+Schema 21 adds the retrying state and its retry details, preserving all schema 20 observations, their append order and the append-only triggers. A successful response in any registered session for the objective clears earlier retrying states as well as stops. While retrying, `status` (text and JSON), the briefing and `objective show` expose `retryingSessions`, with `retryNumber`, `retryTotal`, `nextRetryAt`, `errorMessage` and `eventIds`. Retrying does not itself need attention and is not counted as attention by `status --attention-only`; independent attention issues still apply.
 
 While a session's latest observation is stopped and no later successful response has been recorded for that objective, `status` (including `--attention-only`), the briefing's `objective` and `objective show` report `attentionRequired: true`, `stoppedSessions` and a recovery `nextAction`. Each stopped session includes `observedAt`, `errorMessage` and `eventIds`. Status text marks the objective as needing attention. These IDs identify delivered work without a successful response, not events still waiting for delivery: the extension continues acknowledging delivery exactly as before. Acknowledgement is not proof that the model acted on an event, and this observation does not undo it or replay handled events.
 

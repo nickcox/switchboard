@@ -19,6 +19,22 @@ Use local storage, not network or synced folders. Switchboard probes exclusive c
 
 `supervisor` is an optional object with optional `provider`, `model` and `thinking` fields. `switchboard supervisor start` uses these for its interactive Pi session; each omitted field defaults to the worker's corresponding field. Thinking accepts the same levels as `worker.thinking`. The Pi entrypoint remains `worker.piEntrypoint`. See [starting a Pi supervisor](supervisor.md#starting-a-pi-supervisor) for session isolation and limits.
 
+### Supervisor provider retries
+
+Provider retries are opt-in and separate from Pi's own short transient-error retries. For example:
+
+```json
+{
+  "supervisor": {
+    "providerRetries": { "delaysMs": [60000, 300000, 900000] }
+  }
+}
+```
+
+This allows three retries, after 1, 5 and 15 minutes respectively. Each delay starts when Pi settles after a provider error, not from the original request. `delaysMs` is an ordered array of positive integer milliseconds, each at most 2147483647. An absent setting or an empty array means no retries – a settled provider error is reported as stopped as before. The setting is passed to the extension when starting the supervisor; it does not change worker retries or dispatch attempt limits.
+
+While waiting, the session is recorded as `retrying`, with its retry number, configured total, next retry time, error and delivered event IDs. Each retry sends one follow-up asking the model to read `sb_briefing` and continue. A successful response cancels the pending retry and resets the count. Shutdown, objective closure and aborted responses cancel pending retries; an aborted response does not start a retry. Timers belong to the running Pi session, not a durable scheduler. Exhausting the delays records `stopped`, which needs attention. See [stopped supervisor sessions](supervisor.md#stopped-supervisor-sessions).
+
 ## Provider availability
 
 Loading configuration validates its shape without opening providers. Task commands open only the database. Other inspection and finalisation commands read external owners only when needed – a missing Git or Treehouse executable leaves the affected observations unknown, without hiding local task or runtime records. Unknown evidence never permits a change.

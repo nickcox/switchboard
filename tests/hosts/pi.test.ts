@@ -8,7 +8,7 @@ import { configSchema } from "../../src/config.ts";
 import { commandLineCaller } from "../../src/caller.ts";
 import { ObjectiveStore } from "../../src/objectives/store.ts";
 import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
-import { registerSupervisor, commandExecutor, eventText, type SupervisorPi, type SupervisorTool, type SupervisorBinding, type ExecuteCommand, type SupervisorEvent } from "../../src/hosts/pi/extension.ts";
+import { bindingSchema, registerSupervisor, commandExecutor, eventText, type SupervisorPi, type SupervisorTool, type SupervisorBinding, type ExecuteCommand, type SupervisorEvent } from "../../src/hosts/pi/extension.ts";
 import { prepareSupervisor } from "../../src/hosts/pi/start.ts";
 import { supervisorToolNames } from "../../src/hosts/pi/tools.ts";
 import { supervisorSessionHealth } from "../../src/supervise/session-state.ts";
@@ -396,13 +396,21 @@ test("launcher fixes the tool allowlist, disables discovery and supplies a persi
     assert.equal(b.objectiveId, "goal");
     assert.equal(b.configPath, f.configPath);
     assert.equal(b.sessionId, option("--session-id"));
+    assert.equal(b.providerRetries, undefined);
     assert.ok(b.privateDirectory.startsWith(f.config.runtimeRoot));
-    f.config.supervisor = { provider: "supervisor-provider", model: "supervisor-model", thinking: "low" };
+    f.config.supervisor = { provider: "supervisor-provider", model: "supervisor-model", thinking: "low", providerRetries: { delaysMs: [60000, 300000, 900000] } };
     const overridden = await prepareSupervisor(f.config, f.configPath, "goal");
     assert.equal(overridden.args[overridden.args.indexOf("--provider") + 1], "supervisor-provider");
     assert.equal(overridden.args[overridden.args.indexOf("--model") + 1], "supervisor-model");
     assert.equal(overridden.args[overridden.args.indexOf("--thinking") + 1], "low");
     assert.notEqual(overridden.cwd, launch.cwd);
+    const retryBinding = bindingSchema.parse(JSON.parse(await readFile(overridden.env.SWITCHBOARD_SUPERVISOR_BINDING!, "utf8")));
+    assert.deepEqual(retryBinding.providerRetries, { delaysMs: [60000, 300000, 900000] });
+    for (const delaysMs of [[0], [-1], [1.5], [Infinity], [2_147_483_648], ["60000"]]) {
+      assert.throws(() => configSchema.parse({ ...f.config, supervisor: { providerRetries: { delaysMs } } }));
+      assert.throws(() => bindingSchema.parse({ ...retryBinding, providerRetries: { delaysMs } }));
+    }
+    assert.deepEqual(configSchema.parse({ ...f.config, supervisor: { providerRetries: { delaysMs: [] } } }).supervisor?.providerRetries, { delaysMs: [] });
     f.config.supervisor = { model: "supervisor-model" };
     const partial = await prepareSupervisor(f.config, f.configPath, "goal");
     assert.equal(partial.args[partial.args.indexOf("--provider") + 1], "worker-provider");

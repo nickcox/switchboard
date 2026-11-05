@@ -10,13 +10,17 @@ A finished label alone does not establish that an attempt needs no action. Indep
 
 The text view reports `Omitted attempts needing no attention: N`, including `0` for no omissions or an empty context. Only attempt rows are filtered. Context-wide information, questions and diagnostics remain visible, and totals, overall `reason`, `ok` and `nextAction` are calculated from the full context, not the shortened list. Filtering therefore does not turn an attention or unknown result into a clear result.
 
-## Stopped supervisors
+## Retrying and stopped supervisors
+
+With opt-in [`supervisor.providerRetries`](configuration.md#supervisor-provider-retries), a settled provider error can be recorded as `retrying` while the running Pi session waits to try again. Text shows the session ID, retry number and total, next retry time and error. JSON objectives include `retryingSessions`, each with `sessionId`, `observedAt`, `retryNumber`, `retryTotal`, `nextRetryAt`, `errorMessage` and `eventIds`. The briefing and `objective show` expose the same records.
+
+Retrying alone does not set `attentionRequired` or change the overall result to `attention`, including with `--attention-only`. Objective information remains visible because that option filters only attempt rows. Independent issues, including another stopped session, still need attention. When retries run out, the session is recorded as stopped and needs attention as below. A successful response clears earlier retrying and stopped states for that objective. Pending retries are cancelled on success, shutdown, objective closure or an aborted response.
 
 An objective needs attention when a supervisor session's latest recorded state is stopped after a Pi model provider error and no later successful response has been recorded for that objective. This remains visible with `--attention-only`, even with no worker attempts or pending events. The overall result is `reason: "attention"`, `ok: false` and a recovery next action, rather than quietly waiting for workers.
 
 Text shows the objective's attention warning, Pi session ID, error message, observation time and IDs of events delivered since its last successful response. Those events may already be acknowledged – delivery is not proof that the supervisor acted on them. JSON objectives include `attentionRequired`, `stoppedSessions` (with `sessionId`, `observedAt`, `errorMessage` and `eventIds`) and `nextAction`. The briefing and `objective show` expose the same fields.
 
-Check the provider, then send a message in the supervisor's Pi session or restart it with `switchboard supervisor start --objective <id> --config <path>`. Switchboard does not retry model calls. A later successful response in the same session or a replacement session registered to the same objective records recovery and clears the earlier stops' attention warnings without changing their history. Merely starting or registering a fresh session does not clear the warning – it must respond successfully. A successful response for another objective clears nothing here. See [stopped supervisor sessions](supervisor.md#stopped-supervisor-sessions).
+Check the provider, then send a message in the supervisor's Pi session or restart it with `switchboard supervisor start --objective <id> --config <path>`. Without the provider retry setting, Switchboard does not retry model calls. A later successful response in the same session or a replacement session registered to the same objective records recovery and clears the earlier stops' attention warnings without changing their history. Merely starting or registering a fresh session does not clear the warning – it must respond successfully. A successful response for another objective clears nothing here. See [stopped supervisor sessions](supervisor.md#stopped-supervisor-sessions).
 
 ## Historical specifications
 

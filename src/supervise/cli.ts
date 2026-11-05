@@ -27,7 +27,7 @@ const selectors = ["lease", "task", "attempt"];
 const definition = ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"];
 const allowed: Record<string, string[]> = {
   usage: ["session", "cost", "tokens"],
-  "session-state": ["session", "state", "error", "event"],
+  "session-state": ["session", "state", "error", "event", "retry-number", "retry-total", "next-retry-at"],
   briefing: [], note: [], ask: ["choice", "request-id"], wait: ["timeout"], handled: [],
   "objective show": [], "objective complete": ["statements-file"],
   "task add": definition, "task show": [], "task list": ["state", "repo"], "task update": definition,
@@ -60,6 +60,7 @@ export async function superviseCommand(argv: string[]): Promise<number> {
 async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   const { values, positionals, tokens } = parseArgs({ args: argv, allowPositionals: true, tokens: true, options: {
     error: { type: "string" }, event: { type: "string", multiple: true },
+    "retry-number": { type: "string" }, "retry-total": { type: "string" }, "next-retry-at": { type: "string" },
     session: { type: "string" }, cost: { type: "string" }, tokens: { type: "string" },
     objective: { type: "string" }, config: { type: "string" }, json: { type: "boolean" },
     title: { type: "string" }, body: { type: "string" }, "body-file": { type: "string" },
@@ -125,7 +126,10 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     if (operation === "usage") return { code: 0, value: { ok: true, action, usage: await recordSupervisorUsage(tasks.database, caller, caller.objectiveId,
       { sessionId: values.session!, cost, tokens: tokensUsed }) } };
     if (operation === "session-state") return { code: 0, value: { ok: true, action, sessionState: await recordSupervisorSessionState(tasks.database, caller, caller.objectiveId,
-      { sessionId: values.session!, state: values.state as "stopped" | "resumed", ...(values.error === undefined ? {} : { errorMessage: values.error }), ...(values.event === undefined ? {} : { eventIds: values.event }) }) } };
+      { sessionId: values.session!, state: values.state as "stopped" | "resumed" | "retrying", ...(values.error === undefined ? {} : { errorMessage: values.error }), ...(values.event === undefined ? {} : { eventIds: values.event }),
+        ...(values["retry-number"] === undefined ? {} : { retryNumber: Number(values["retry-number"]) }),
+        ...(values["retry-total"] === undefined ? {} : { retryTotal: Number(values["retry-total"]) }),
+        ...(values["next-retry-at"] === undefined ? {} : { nextRetryAt: values["next-retry-at"] }) }) } };
     requireOpenObjective(objective.state, `Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
     if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller, caller.objectiveId, timeout) };
     if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller, caller.objectiveId, args[0]!) } };

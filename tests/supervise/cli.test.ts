@@ -97,6 +97,45 @@ test("a stopped supervisor needs attention in status, attention-only status, bri
   assert.equal(JSON.parse(f.raw("status", "--attention-only", "--json").stdout).reason, "clear");
 });
 
+test("retrying supervision is visible in all views without attention until retries run out", () => {
+  const f = fixture();
+  f.ok("usage", "--session", "pi-retrying");
+  const error = "Codex error: The usage limit has been reached";
+  const nextRetryAt = new Date(Date.now() + 60000).toISOString();
+  const retry = f.ok("session-state", "--session", "pi-retrying", "--state", "retrying", "--error", error,
+    "--retry-number", "1", "--retry-total", "3", "--next-retry-at", nextRetryAt, "--event", "delivered").sessionState;
+  assert.equal(retry.retryNumber, 1);
+  assert.equal(retry.retryTotal, 3);
+  assert.equal(retry.nextRetryAt, nextRetryAt);
+  assert.deepEqual(retry.eventIds, ["delivered"]);
+  for (const objective of [f.person("objective", "show", "goal").objective, f.ok("objective", "show").objective, f.ok("briefing").objective]) {
+    assert.equal(objective.attentionRequired, false);
+    assert.deepEqual(objective.stoppedSessions, []);
+    assert.deepEqual(objective.retryingSessions, [retry]);
+    assert.equal(objective.nextAction, null);
+  }
+  for (const flags of [[], ["--attention-only"]]) {
+    const json = JSON.parse(f.raw("status", ...flags, "--json").stdout);
+    assert.equal(json.ok, true);
+    assert.equal(json.reason, "clear");
+    const objective = json.objectives.find((item: { id: string }) => item.id === "goal");
+    assert.equal(objective.attentionRequired, false);
+    assert.deepEqual(objective.retryingSessions, [retry]);
+    const text = f.raw("status", ...flags).stdout;
+    for (const value of ["pi-retrying", "retrying 1/3", nextRetryAt, error, "delivered"]) assert.ok(text.includes(value), value);
+    assert.equal(text.includes("NEEDS ATTENTION"), false);
+    assert.equal(text.includes("Needs attention"), false);
+  }
+  f.ok("session-state", "--session", "pi-retrying", "--state", "stopped", "--error", error);
+  const stopped = JSON.parse(f.raw("status", "--attention-only", "--json").stdout);
+  assert.equal(stopped.reason, "attention");
+  assert.equal(stopped.ok, false);
+  assert.deepEqual(stopped.objectives.find((item: { id: string }) => item.id === "goal").retryingSessions, []);
+  f.ok("usage", "--session", "replacement");
+  f.ok("session-state", "--session", "replacement", "--state", "resumed");
+  assert.equal(JSON.parse(f.raw("status", "--attention-only", "--json").stdout).reason, "clear");
+});
+
 test("successful supervision in a replacement session clears attention in every view, but registration and another objective do not", () => {
   const f = fixture();
   f.ok("usage", "--session", "stopped-session");

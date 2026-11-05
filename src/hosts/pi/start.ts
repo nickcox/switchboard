@@ -36,6 +36,7 @@ export async function prepareSupervisor(config: Config, configPath: string, obje
   const binding: SupervisorBinding = {
     objectiveId, configPath: resolve(configPath), sessionId, privateDirectory,
     cliPath: fileURLToPath(new URL("../../cli.ts", import.meta.url)),
+    ...(config.supervisor?.providerRetries === undefined ? {} : { providerRetries: config.supervisor.providerRetries }),
   };
   const bindingPath = join(privateDirectory, "binding.json");
   await writeFile(bindingPath, JSON.stringify(binding), { mode: 0o600 });

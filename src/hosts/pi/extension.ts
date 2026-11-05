@@ -6,10 +6,12 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { supervisorTools } from "./tools.ts";
+import { providerRetriesSchema } from "../../supervise/provider-retries.ts";
 
 export const bindingSchema = z.strictObject({
   objectiveId: z.string().min(1), configPath: z.string().min(1), cliPath: z.string().min(1),
   privateDirectory: z.string().min(1), sessionId: z.string().min(1),
+  providerRetries: providerRetriesSchema.optional(),
 });
 export type SupervisorBinding = z.infer<typeof bindingSchema>;
 export type CommandReply = { exitCode: number; stdout: string };
@@ -21,7 +23,7 @@ export type SupervisorTool = {
 };
 type PiUsage = { totalTokens?: number; cost?: { total?: number } };
 type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage; stopReason?: string; errorMessage?: string };
-type PiEvent = { prompt?: string; message?: PiMessage; messages?: PiMessage[]; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
+type PiEvent = { aborted?: boolean; prompt?: string; message?: PiMessage; messages?: PiMessage[]; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
 type PiContext = { signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
 /** The small part of Pi's extension API used here; Pi loads the extension, not Switchboard. */
 export interface SupervisorPi {
@@ -44,7 +46,21 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let controller: AbortController | undefined;
   let eventsStopped = false;
   const queued = new Set<string>();
-  const stopEvents = () => { eventsStopped = true; controller?.abort(); };
+  const retryQueued = new Set<string>();
+  const cancelledRetries = new Set<string>();
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryDelivery: Promise<void> | undefined;
+  let retryGeneration = 0;
+  let retryCount = 0;
+  let shuttingDown = false;
+  const cancelRetry = () => {
+    retryGeneration++;
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+    for (const text of retryQueued) cancelledRetries.add(text);
+    retryQueued.clear();
+  };
+  const stopEvents = () => { eventsStopped = true; controller?.abort(); cancelRetry(); };
   const command = async (operation: string[], args: string[], signal?: AbortSignal) => {
     const reply = await execute(["supervise", ...operation, ...fixed, ...args], signal);
     const value = JSON.parse(reply.stdout);
@@ -108,14 +124,20 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   const observeResponse = (message: PiMessage) => {
     lastAssistant = message;
     if (message.stopReason === "error") resumeNeeded = true;
-    if (successful(message)) deliveredSinceSuccess.clear();
+    if (successful(message)) {
+      cancelRetry();
+      retryCount = 0;
+      deliveredSinceSuccess.clear();
+    } else if (message.stopReason === "aborted") cancelRetry();
   };
-  const reportState = (state: "stopped" | "resumed", message?: PiMessage) => {
+  const errorText = (message?: PiMessage) => message?.errorMessage?.trim() ? message.errorMessage : "Pi model provider error (no error message reported)";
+  const reportState = (state: "stopped" | "resumed" | "retrying", message?: PiMessage, retry?: { number: number; total: number; at: string }) => {
     const args = ["--session", sessionId, "--state", state];
-    if (state === "stopped") {
-      args.push("--error", message?.errorMessage?.trim() ? message.errorMessage : "Pi model provider error (no error message reported)");
+    if (state !== "resumed") {
+      args.push("--error", errorText(message));
       for (const id of deliveredSinceSuccess) args.push("--event", id);
     }
+    if (retry) args.push("--retry-number", String(retry.number), "--retry-total", String(retry.total), "--next-retry-at", retry.at);
     stateReporting = stateReporting.catch(() => {}).then(async () => {
       await registerUsage();
       const reply = await command(["session-state"], args);
@@ -185,8 +207,32 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     await reportUsage();
   });
   // agent_end and agent_before_settle can still lead to retries or continuations. Only settled is final.
-  pi.on("agent_settled", async () => {
-    if (lastAssistant?.stopReason === "error") await reportState("stopped", lastAssistant);
+  pi.on("agent_settled", async event => {
+    if (event.aborted) { cancelRetry(); return; }
+    if (lastAssistant?.stopReason !== "error" || shuttingDown) return;
+    const message = lastAssistant;
+    const delays = binding.providerRetries?.delaysMs ?? [];
+    if (retryTimer || retryDelivery) return;
+    if (retryCount >= delays.length || eventsStopped) { await reportState("stopped", message); return; }
+    const generation = retryGeneration;
+    const delayMs = delays[retryCount++]!;
+    const at = new Date(Date.now() + delayMs).toISOString();
+    await reportState("retrying", message, { number: retryCount, total: delays.length, at });
+    if (generation !== retryGeneration || shuttingDown || eventsStopped) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      retryDelivery = (async () => {
+        const reply = await command(["objective", "show"], []);
+        if (generation !== retryGeneration || shuttingDown || eventsStopped) return;
+        if (reply.exitCode !== 0 || JSON.parse(reply.stdout).ok !== true) throw new Error("Could not check objective before provider retry");
+        const text = `The previous model request failed with this provider error: ${errorText(message)}\nRead the briefing with sb_briefing and continue. (Provider retry ${retryCount}/${delays.length}, scheduled for ${at}.)`;
+        queued.add(text);
+        retryQueued.add(text);
+        await pi.sendUserMessage(text, { deliverAs: "followUp" });
+      })().catch(async () => {
+        if (generation === retryGeneration && !shuttingDown && !eventsStopped) await reportState("stopped", message);
+      }).catch(() => {}).finally(() => { retryDelivery = undefined; });
+    }, Math.max(0, Date.parse(at) - Date.now()));
   });
   pi.on("session_compact", async event => {
     if (event.compactionEntry?.usage) addUsage(event.compactionEntry.usage, event.compactionEntry.id);
@@ -220,10 +266,14 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     if (!messages.some(queuedEvent)) return;
     // Pi cannot withdraw a queued follow-up. Check again at the model boundary and hide it if closed.
     if (!eventsStopped) await command(["objective", "show"], []);
+    const cancelledRetry = (message: PiMessage) => message.role === "user" && cancelledRetries.has(typeof message.content === "string" ? message.content
+      : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join(""));
     if (eventsStopped) return { messages: messages.filter(message => !queuedEvent(message)) };
+    if (messages.some(cancelledRetry)) return { messages: messages.filter(message => !cancelledRetry(message)) };
     for (const message of messages.filter(queuedEvent)) {
       const text = typeof message.content === "string" ? message.content : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("");
       queued.delete(text);
+      retryQueued.delete(text);
     }
   });
   const pause = (signal: AbortSignal) => delay(retryMs, undefined, { signal });
@@ -269,6 +319,9 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   }
   pi.on("session_start", async (_event, context) => {
     if (controller) return;
+    shuttingDown = false;
+    cancelRetry();
+    retryCount = 0;
     sessionId = context?.sessionManager.getSessionId() ?? binding.sessionId;
     registered = false;
     seen.clear();
@@ -301,7 +354,10 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     await startSession();
   });
   pi.on("session_shutdown", async () => {
+    shuttingDown = true;
+    cancelRetry();
     controller?.abort();
+    await retryDelivery;
     await loop;
     await reporting.catch(() => {});
     await stateReporting.catch(() => {});

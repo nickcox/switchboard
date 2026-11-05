@@ -259,6 +259,10 @@ export function describeStatus(value: StatusResult): string {
       lines.push(`  Supervisor session ${session.sessionId} stopped at ${session.observedAt}: ${session.errorMessage}`);
       lines.push(`  Delivered events without a successful response: ${session.eventIds.join(", ") || "none"}`);
     }
+    for (const session of objective.retryingSessions) {
+      lines.push(`  Supervisor session ${session.sessionId} retrying ${session.retryNumber}/${session.retryTotal}; next retry at ${session.nextRetryAt}: ${session.errorMessage}`);
+      lines.push(`  Delivered events without a successful response: ${session.eventIds.join(", ") || "none"}`);
+    }
     if (objective.nextAction) lines.push(`  Next: ${objective.nextAction}`);
   }
   for (const a of value.attempts) {

@@ -1,4 +1,5 @@
 import { constants } from "node:fs";
+import { providerRetriesSchema } from "./supervise/provider-retries.ts";
 import { callerSchema, type Caller } from "./caller.ts";
 import { access, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -58,6 +59,7 @@ export const configSchema = z.strictObject({
    */
   finalisation: operatorPolicySchema.extend({ globalFile: absolute.optional() }).default({}),
   supervisor: z.strictObject({
+    providerRetries: providerRetriesSchema.optional(),
     provider: nonempty.optional(),
     model: nonempty.optional(),
     thinking: thinkingLevelSchema.optional(),

@@ -41,7 +41,7 @@ test("stopped and resumed observations are append-only, scoped per session and r
     assert.equal(f.objectives.list()[0]!.attentionRequired, true);
     for (const sql of ["UPDATE supervisor_session_states SET state = 'resumed'", "DELETE FROM supervisor_session_states",
       "INSERT OR REPLACE INTO supervisor_session_states SELECT * FROM supervisor_session_states",
-      "INSERT INTO supervisor_session_states SELECT session_id,sequence-1,objective,observed_at,state,error_message,event_ids FROM supervisor_session_states"]) {
+      "INSERT INTO supervisor_session_states SELECT session_id,sequence-1,objective,observed_at,state,error_message,event_ids,retry_number,retry_total,next_retry_at FROM supervisor_session_states"]) {
       await assert.rejects(f.database.transaction(() => f.database.run(sql)));
     }
     const resumed = await recordSupervisorSessionState(second, supervisor, "goal", { sessionId: "session", state: "resumed" });
@@ -108,7 +108,82 @@ test("observations require the bound registered session, validate inputs and rem
   } finally { f.tasks.close(); }
 });
 
-test("schema 19 migrates concurrently to schema 20 without changing existing records", async () => {
+test("retrying observations carry retry details without attention, and success in any objective session clears them", async () => {
+  const f = await fixture();
+  const retry = { ...stopInput(), state: "retrying" as const, retryNumber: 1, retryTotal: 3, nextRetryAt: new Date(Date.now() + 60000).toISOString() };
+  try {
+    const snapshot = await recordSupervisorSessionState(f.database, supervisor, "goal", retry);
+    assert.deepEqual(supervisorSessionHealth(f.database, "goal"), { attentionRequired: false, stoppedSessions: [], retryingSessions: [snapshot], nextAction: null });
+    assert.deepEqual(f.objectives.show("goal").retryingSessions, [snapshot]);
+    for (const invalid of [{ retryNumber: 0 }, { retryNumber: 4 }, { retryNumber: 1.5 }, { retryTotal: 0 }, { nextRetryAt: "invalid" }, { errorMessage: "" }]) {
+      await assert.rejects(recordSupervisorSessionState(f.database, supervisor, "goal", { ...retry, ...invalid }));
+    }
+    await assert.rejects(recordSupervisorSessionState(f.database, supervisor, "goal", { ...retry, state: "stopped" }), /Only retrying/);
+    await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "replacement" });
+    await recordSupervisorSessionState(f.database, supervisor, "goal", { sessionId: "replacement", state: "resumed" });
+    assert.deepEqual(supervisorSessionHealth(f.database, "goal").retryingSessions, []);
+    await recordSupervisorSessionState(f.database, supervisor, "goal", retry);
+    await recordSupervisorSessionState(f.database, supervisor, "goal", stopInput());
+    assert.equal(supervisorSessionHealth(f.database, "goal").attentionRequired, true);
+    assert.deepEqual(supervisorSessionHealth(f.database, "goal").retryingSessions, []);
+    await recordSupervisorSessionState(f.database, supervisor, "goal", { sessionId: "session", state: "resumed" });
+    assert.equal(supervisorSessionHealth(f.database, "goal").attentionRequired, false);
+  } finally { f.tasks.close(); }
+});
+
+test("schema 20 migration preserves all records, append order and append-only triggers", async () => {
+  const f = await fixture();
+  await recordSupervisorSessionState(f.database, supervisor, "goal", stopInput());
+  await recordSupervisorUsage(f.database, supervisor, "goal", { sessionId: "replacement" });
+  await recordSupervisorSessionState(f.database, supervisor, "goal", { sessionId: "replacement", state: "resumed" });
+  await recordSupervisorSessionState(f.database, supervisor, "goal", stopInput());
+  const columns = "session_id,sequence,objective,observed_at,state,error_message,event_ids";
+  const oldRows = f.database.all(`SELECT rowid,${columns} FROM supervisor_session_states ORDER BY rowid`);
+  const triggers = f.database.all("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'supervisor_session_states'");
+  await f.database.transaction(() => {
+    f.database.run("DROP TABLE supervisor_session_states");
+    f.database.run(`CREATE TABLE supervisor_session_states (
+      session_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK(sequence > 0),
+      objective TEXT NOT NULL REFERENCES objectives(id), observed_at TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('stopped','resumed')), error_message TEXT,
+      event_ids TEXT NOT NULL CHECK(json_valid(event_ids) AND json_type(event_ids) = 'array'),
+      PRIMARY KEY(session_id,sequence),
+      CHECK((state = 'stopped' AND error_message IS NOT NULL) OR (state = 'resumed' AND error_message IS NULL)))`);
+    for (const row of oldRows) f.database.run(`INSERT INTO supervisor_session_states(rowid,${columns}) VALUES(?,?,?,?,?,?,?,?)`,
+      ...[row.rowid!, row.session_id!, row.sequence!, row.objective!, row.observed_at!, row.state!, row.error_message!, row.event_ids!]);
+    f.database.run("CREATE INDEX supervisor_session_states_by_objective ON supervisor_session_states(objective,session_id,sequence)");
+    for (const trigger of triggers) f.database.run(String(trigger.sql));
+    f.database.run("PRAGMA user_version = 20");
+  });
+  const before = contents(f.database);
+  f.tasks.close();
+  const databases = await Promise.all([Database.open(f.path), Database.open(f.path)]);
+  try {
+    for (const database of databases) {
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 21);
+      assert.deepEqual(database.all(`SELECT rowid,${columns} FROM supervisor_session_states ORDER BY rowid`), oldRows);
+      const { supervisor_session_states: _old, ...otherBefore } = before;
+      const { supervisor_session_states: _new, ...otherAfter } = contents(database);
+      assert.deepEqual(otherAfter, otherBefore);
+      assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);
+      assert.deepEqual(database.all("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'supervisor_session_states'"), triggers);
+      for (const sql of ["UPDATE supervisor_session_states SET observed_at = 'changed'", "DELETE FROM supervisor_session_states",
+        "INSERT OR REPLACE INTO supervisor_session_states SELECT * FROM supervisor_session_states",
+        "INSERT INTO supervisor_session_states SELECT session_id,sequence-1,objective,observed_at,state,error_message,event_ids,retry_number,retry_total,next_retry_at FROM supervisor_session_states"]) {
+        await assert.rejects(database.transaction(() => database.run(sql)));
+      }
+      assert.equal(supervisorSessionHealth(database, "goal").attentionRequired, true);
+    }
+    const retry = await recordSupervisorSessionState(databases[0]!, supervisor, "goal", {
+      ...stopInput(), state: "retrying", retryNumber: 1, retryTotal: 3, nextRetryAt: new Date().toISOString(),
+    });
+    assert.deepEqual(supervisorSessionHealth(databases[1]!, "goal").retryingSessions, [retry]);
+    await recordSupervisorSessionState(databases[1]!, supervisor, "goal", { sessionId: "replacement", state: "resumed" });
+    assert.deepEqual(supervisorSessionHealth(databases[0]!, "goal").retryingSessions, []);
+  } finally { for (const database of databases) database.close(); }
+});
+
+test("schema 19 migrates concurrently to schema 21 without changing existing records", async () => {
   const f = await fixture();
   await f.tasks.add({ id: "work", title: "Preserve this", objectiveId: "goal" });
   await f.objectives.update("goal", { scope: "Keep the scope" });
@@ -121,7 +196,7 @@ test("schema 19 migrates concurrently to schema 20 without changing existing rec
   const databases = await Promise.all([Database.open(f.path), Database.open(f.path)]);
   try {
     for (const database of databases) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 20);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 21);
       const { supervisor_session_states, ...after } = contents(database);
       assert.deepEqual(after, before);
       assert.deepEqual(supervisor_session_states, []);

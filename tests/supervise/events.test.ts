@@ -324,7 +324,7 @@ test("schema 14 migrates concurrently to 15 without changing existing data or ba
   const databases = await Promise.all([Database.open(f.path), Database.open(f.path)]);
   try {
     for (const database of databases) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 20);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 21);
       const { supervisor_session_states, supervisor_usage, person_questions, person_answers, supervisor_dispatches, supervisor_events, supervisor_positions, ...after } = contents(database);
       assert.deepEqual(after, before);
       assert.deepEqual(supervisor_events, []);
