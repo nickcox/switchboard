@@ -8,6 +8,7 @@ import { objectiveBudget } from "../objectives/budget.ts";
 import { heartbeatFresh } from "../runtime/heartbeat.ts";
 import { interventionEntry, personIntervention } from "../objectives/interventions.ts";
 import { TaskStoreError } from "../tasks/store.ts";
+import { requireOpenObjective } from "./errors.ts";
 
 export type SupervisorEvent = {
   id: string; objectiveId: string; sequence: number; kind: string; at: string;
@@ -136,9 +137,8 @@ export function pendingEvents(database: Database, objectiveId: string): { count:
 function requireSupervisor(database: Database, caller: Caller, objectiveId: string): void {
   if (caller.kind !== "supervisor" || caller.objectiveId !== objectiveId) throw new TaskStoreError("rejected", "Only the objective's supervisor can wait for or handle its events");
   requireScope(database, caller, { objectiveId });
-  if (database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") {
-    throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before supervising its events`);
-  }
+  requireOpenObjective(database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state,
+    `Objective ${objectiveId} must be open before supervising its events`);
 }
 
 export async function waitForEvent(database: Database, caller: Caller, objectiveId: string, timeoutSeconds?: number): Promise<{ ok: true; action: "wait"; event: SupervisorEvent | null; timedOut: boolean }> {

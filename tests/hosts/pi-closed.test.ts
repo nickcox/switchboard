@@ -126,8 +126,8 @@ test("completion cancels an in-flight wait even when its reply already contains 
   } finally { await pi.emit("session_shutdown"); f.tasks.close(); }
 });
 
-for (const detail of ["Objective goal is abandoned; reopen it explicitly before supervising it", "Objective goal must be open before supervising its events"]) {
-  test(`a closed-objective wait refusal ends polling: ${detail}`, async () => {
+for (const state of ["completed", "abandoned"]) {
+  test(`a coded ${state} wait refusal ends polling regardless of its detail`, async () => {
     const pi = new FakePi();
     let waits = 0;
     let usage = 0;
@@ -135,7 +135,7 @@ for (const detail of ["Objective goal is abandoned; reopen it explicitly before 
       if (args[1] === "usage") { usage++; return reply({ ok: true }); }
       assert.equal(args[1], "wait");
       waits++;
-      return reply({ ok: false, reason: "rejected", detail }, 1);
+      return reply({ ok: false, reason: "rejected", code: "objective_not_open", state, detail: "The objective has closed – supervision is unavailable" }, 1);
     };
     registerSupervisor(pi, { objectiveId: "goal", configPath: "/config", cliPath: "/cli", privateDirectory: "/private", sessionId: "session" }, execute, 5);
     try {
@@ -150,3 +150,26 @@ for (const detail of ["Objective goal is abandoned; reopen it explicitly before 
     } finally { await pi.emit("session_shutdown"); }
   });
 }
+
+for (const refusal of [
+  { detail: "Objective goal is abandoned; reopen it explicitly before supervising it" },
+  { detail: "Objective goal must be open before supervising its events" },
+  { code: "another_refusal", state: "abandoned" },
+  { code: "objective_not_open", state: "open" },
+  { code: "objective_not_open" },
+]) test(`other wait refusals keep polling: ${JSON.stringify(refusal)}`, async () => {
+  const pi = new FakePi();
+  let waits = 0;
+  const execute: ExecuteCommand = async args => {
+    if (args[1] === "usage") return reply({ ok: true });
+    assert.equal(args[1], "wait");
+    waits++;
+    return reply({ ok: false, reason: "rejected", ...refusal }, 1);
+  };
+  registerSupervisor(pi, { objectiveId: "goal", configPath: "/config", cliPath: "/cli", privateDirectory: "/private", sessionId: "session" }, execute, 5);
+  try {
+    await pi.emit("session_start");
+    await until(() => waits >= 2);
+    assert.deepEqual(pi.messages, []);
+  } finally { await pi.emit("session_shutdown"); }
+});

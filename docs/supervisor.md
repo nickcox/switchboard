@@ -220,6 +220,14 @@ The command exposes only the operations above, whatever permissions an objective
 
 An unknown objective is refused. A completed or abandoned objective is refused, including for inspection, except for usage observations from a session already registered to that objective. A person must reopen it through the ordinary objective command before supervision can resume.
 
+Refusals caused by a completed or abandoned objective include `code: "objective_not_open"` and its current `state` (`"completed"` or `"abandoned"`), alongside the unchanged `reason: "rejected"` and `detail`. This includes an objective closing during `wait` and registration of a new usage session after closure. For example:
+
+```json
+{ "ok": false, "reason": "rejected", "detail": "Objective release-notes is completed; reopen it explicitly before supervising it", "code": "objective_not_open", "state": "completed" }
+```
+
+Hosts should detect closure from `code` and `state`, not the human-readable `detail`. The Pi extension uses these fields to stop event delivery while continuing usage reporting. Unknown objectives and unrelated refusals do not carry this code.
+
 The command does not implement a second permissions policy. It calls the existing task, objective and attempt operations with the fixed supervisor caller; their current [authority checks](objectives.md#callers-and-permissions), acceptance evidence, budget and safety refusals still apply. Read-only inspection needs no mutation permission, but remains scoped to the objective. Showing its tasks, reading its briefing and reading or writing its notes cannot be narrowed through permissions. Task-list results are filtered to that objective. Changing a task outside the objective is refused by the existing operation checks, and their refusal reason is preserved. Finishing can accept, integrate and record a task as done, but it never confirms that processes have stopped or returns a lease. A person must inspect and confirm lease return separately.
 
 Each invocation prints exactly one JSON object to standard output, including usage, configuration and operation refusals. Successful task and objective operations use the ordinary `--json` wrapper (`ok`, `action` and `task`, `tasks` or `objective`); attempt operations return their existing structured result unchanged. Task-store refusals use `ok: false`, `reason` and `detail`. Usage and configuration errors also have `ok: false`, `reason` and `detail`, with `usage` for command-validation errors. Exit codes follow the ordinary commands: 0 for an operation whose result is successful, 1 for an operation refusal or attention outcome (including a held dispatch or a replay of one), and 2 for usage or configuration errors. Recording an answer succeeds even if delivery fails, as on ordinary `answer`.

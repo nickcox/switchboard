@@ -15,6 +15,7 @@ import { SqliteTaskStore, type TaskChanges } from "../tasks/sqlite.ts";
 import { TaskStoreError, type TaskState } from "../tasks/store.ts";
 import { briefing } from "./briefing.ts";
 import { appendNote } from "./notes.ts";
+import { ObjectiveNotOpenError, requireOpenObjective } from "./errors.ts";
 import { askPerson } from "./questions.ts";
 import { handleEvent, waitForEvent } from "./events.ts";
 import { detachedDispatch } from "./dispatch.ts";
@@ -48,7 +49,8 @@ export async function superviseCommand(argv: string[]): Promise<number> {
   } catch (error) {
     const refusal = error instanceof TaskStoreError || error instanceof SyntaxError;
     console.log(JSON.stringify({ ok: false, reason: error instanceof TaskStoreError ? error.reason : refusal ? "rejected" : "error",
-      detail: error instanceof Error ? error.message : String(error), ...(error instanceof UsageError ? { usage } : {}) }));
+      detail: error instanceof Error ? error.message : String(error),
+      ...(error instanceof ObjectiveNotOpenError ? { code: error.code, state: error.state } : {}), ...(error instanceof UsageError ? { usage } : {}) }));
     return refusal ? 1 : 2;
   }
 }
@@ -119,7 +121,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
     if (operation === "usage") return { code: 0, value: { ok: true, action, usage: await recordSupervisorUsage(tasks.database, caller, caller.objectiveId,
       { sessionId: values.session!, cost, tokens: tokensUsed }) } };
-    if (objective.state !== "open") rejected(`Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
+    requireOpenObjective(objective.state, `Objective ${objective.id} is ${objective.state}; reopen it explicitly before supervising it`);
     if (operation === "wait") return { code: 0, value: await waitForEvent(tasks.database, caller, caller.objectiveId, timeout) };
     if (operation === "handled") return { code: 0, value: { ok: true, action, event: await handleEvent(tasks.database, caller, caller.objectiveId, args[0]!) } };
     if (operation === "ask") return { code: 0, value: { ok: true, action, question: await askPerson(tasks.database, caller, caller.objectiveId, args[0]!, values.choice, values["request-id"]) } };

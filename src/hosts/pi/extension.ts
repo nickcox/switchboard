@@ -51,8 +51,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     // Completion gives an immediate signal; refusals also catch a person closing the objective.
     // Keep this separate from usage reporting, which must continue until session shutdown.
     if (value.ok === true && ["completed", "abandoned"].includes(value.objective?.state)
-      || value.ok === false && (value.detail === `Objective ${binding.objectiveId} must be open before supervising its events`
-        || ["completed", "abandoned"].some(state => value.detail === `Objective ${binding.objectiveId} is ${state}; reopen it explicitly before supervising it`))) stopEvents();
+      || value.ok === false && value.code === "objective_not_open" && ["completed", "abandoned"].includes(value.state)) stopEvents();
     return reply;
   };
   for (const [name, tool] of Object.entries(supervisorTools)) {

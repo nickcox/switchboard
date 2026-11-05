@@ -418,7 +418,17 @@ test("unknown and closed objectives refuse all operations and new usage sessions
       assert.equal(result.status, 1, result.stdout + result.stderr);
       const value = JSON.parse(result.stdout);
       assert.equal(value.ok, false);
-      assert.match(value.detail, state === "missing" ? /does not exist/ : /abandoned|must be open/);
+      assert.equal(value.reason, "rejected");
+      if (state === "missing") {
+        assert.equal(value.detail, "Objective missing does not exist");
+        assert.equal(Object.hasOwn(value, "code"), false);
+        assert.equal(Object.hasOwn(value, "state"), false);
+      } else {
+        assert.equal(value.code, "objective_not_open");
+        assert.equal(value.state, state);
+        assert.equal(value.detail, args[0] === "usage" ? "Objective goal must be open before registering supervisor usage"
+          : "Objective goal is abandoned; reopen it explicitly before supervising it");
+      }
     }
   }
   assert.equal(f.ok("usage", "--session", "registered", "--cost", "1.07").usage.cost, 1.07);
@@ -484,13 +494,15 @@ test("dispatch, continuation, review, finish and completion record the fixed sup
   assert.equal(f.person("objective", "show", "goal").objective.spending.observedCost, beforeUsage + 0.07);
   const registration = f.run("usage", "--session", "new");
   assert.equal(registration.code, 1);
-  assert.match(registration.value.detail, /must be open/);
+  assert.deepEqual(registration.value, { ok: false, reason: "rejected", detail: "Objective goal must be open before registering supervisor usage",
+    code: "objective_not_open", state: "completed" });
   const history = await f.rows("SELECT changed_by FROM objective_changes WHERE objective = 'goal' AND action = 'complete'");
   assert.deepEqual(history.map(row => row.changed_by), ["supervisor:goal"]);
   for (const args of closedOperations) {
     const refused = f.run(...args);
     assert.equal(refused.code, 1);
-    assert.match(refused.value.detail, /completed/);
+    assert.deepEqual(refused.value, { ok: false, reason: "rejected", detail: "Objective goal is completed; reopen it explicitly before supervising it",
+      code: "objective_not_open", state: "completed" });
   }
 });
 

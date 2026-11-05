@@ -2,6 +2,7 @@ import { callerName, callerSchema, type Caller } from "../caller.ts";
 import type { Database } from "../database.ts";
 import { requireScope } from "../dispatch/safety.ts";
 import { TaskStoreError } from "../tasks/store.ts";
+import { requireOpenObjective } from "./errors.ts";
 
 export type SupervisorNote = { objectiveId: string; sequence: number; text: string; writtenAt: string; writtenBy: string };
 
@@ -19,7 +20,7 @@ export async function appendNote(database: Database, caller: Caller, objectiveId
   return database.transaction(() => {
     requireScope(database, caller, { objectiveId });
     const objective = database.get("SELECT state FROM objectives WHERE id = ?", objectiveId);
-    if (objective?.state !== "open") throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before writing a note`);
+    requireOpenObjective(objective?.state, `Objective ${objectiveId} must be open before writing a note`);
     const sequence = Number(database.get("SELECT coalesce(max(sequence),0)+1 AS n FROM supervisor_notes WHERE objective = ?", objectiveId)!.n);
     const note = { objectiveId, sequence, text, writtenAt: new Date().toISOString(), writtenBy: callerName(caller) };
     database.run("INSERT INTO supervisor_notes VALUES(?,?,?,?,?)", objectiveId, sequence, text, note.writtenAt, note.writtenBy);

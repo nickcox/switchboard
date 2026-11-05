@@ -3,6 +3,7 @@ import { callerName, callerSchema, type Caller } from "../caller.ts";
 import type { Database } from "../database.ts";
 import { requireScope } from "../dispatch/safety.ts";
 import { TaskStoreError } from "../tasks/store.ts";
+import { requireOpenObjective } from "./errors.ts";
 import { recordEvent } from "./events.ts";
 
 export type PersonQuestion = {
@@ -26,7 +27,8 @@ export async function askPerson(database: Database, caller: Caller, objectiveId:
   if (!text.trim() || choices?.some(choice => !choice.trim()) || !requestId.trim()) throw new TaskStoreError("rejected", "Question text, choices and request ID must not be blank");
   return database.transaction(() => {
     requireScope(database, caller, { objectiveId });
-    if (database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state !== "open") throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before asking a question`);
+    requireOpenObjective(database.get("SELECT state FROM objectives WHERE id = ?", objectiveId)?.state,
+      `Objective ${objectiveId} must be open before asking a question`);
     const existing = readPersonQuestions(database, objectiveId).find(question => question.requestId === requestId);
     if (existing) {
       if (existing.text !== text || JSON.stringify(existing.choices) !== JSON.stringify(choices)) throw new TaskStoreError("rejected", "Request ID already records a different question");

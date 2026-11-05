@@ -8,7 +8,7 @@ import { status, type AttemptStatus } from "../dispatch/status.ts";
 import type { AttemptState } from "../dispatch/state.ts";
 import { ObjectiveStore } from "../objectives/store.ts";
 import { readQuestions } from "../runtime/questions-store.ts";
-import { TaskStoreError } from "../tasks/store.ts";
+import { requireOpenObjective } from "./errors.ts";
 import { readNotes } from "./notes.ts";
 import { pendingEvents } from "./events.ts";
 
@@ -27,7 +27,7 @@ export async function briefing(deps: Dependencies, objectiveId: string) {
   const database = deps.attempts.database;
   requireScope(database, deps.caller, { objectiveId });
   const shown = new ObjectiveStore(database, deps.caller).show(objectiveId);
-  if (shown.state !== "open") throw new TaskStoreError("rejected", `Objective ${objectiveId} must be open before supervising it`);
+  requireOpenObjective(shown.state, `Objective ${objectiveId} must be open before supervising it`);
   const { tasks: linked, personInterventions, ...objective } = shown;
   const contexts = database.all(`SELECT DISTINCT n.context FROM attempt_numbers n JOIN tasks t ON t.id = n.task
     WHERE t.objective_id = ? ORDER BY n.context`, objectiveId).map(row => String(row.context));
