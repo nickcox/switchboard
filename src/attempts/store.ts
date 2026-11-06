@@ -228,12 +228,14 @@ export class AttemptStore {
     return this.database.transaction(() => {
       this.requireOpen(ref);
       requireAuthority(this.database, this.caller, outcome.outcome === "done" ? "completeTasks" : "recordAttempt", { taskId: ref.taskId });
-      if (outcome.outcome === "done") this.checkAcceptance(ref, this.startingPointCommit(this.read(ref)));
+      if (outcome.outcome === "done" && !this.reviewTask(ref.taskId)) this.checkAcceptance(ref, this.startingPointCommit(this.read(ref)));
       if (!this.read(ref).entries.some(e => e.kind === "task_started")) throw new AttemptStoreError("not_ready", "The attempt has not started its task");
       const row = this.database.get("SELECT state, hold_revision, started_hold_revision FROM tasks WHERE id = ?", ref.taskId)!;
       const applied = row.state === "in_flight" && row.hold_revision === row.started_hold_revision;
-      if (applied) this.writeOutcome(ref.taskId, outcome.outcome, outcome.reason);
       this.recordReview(ref);
+      const review = this.reviewAttempt(ref);
+      if (review && !review.recorded) outcome = { outcome: "hold", reason: review.holdReason, category: "failed" };
+      if (applied) this.writeOutcome(ref.taskId, outcome.outcome, outcome.reason);
       this.insert(ref, "task_recorded", { ...outcome, applied });
       this.closeAttempt(ref);
       return { task: this.task(ref.taskId)!, applied };
@@ -245,10 +247,13 @@ export class AttemptStore {
       this.requireAttempt(ref);
       if (expectedRecord) this.expectRecord(expectedRecord);
       requireAuthority(this.database, this.caller, "completeTasks", { taskId: ref.taskId });
-      this.checkAcceptance(ref, this.startingPointCommit(this.read(ref)));
+      const review = this.reviewAttempt(ref);
+      if (review) {
+        if (!review.recorded) throw new AttemptStoreError("not_ready", "The review ended without a recorded verdict; use discard to return its lease");
+      } else this.checkAcceptance(ref, this.startingPointCommit(this.read(ref)));
       this.expectTask(ref.taskId, expected);
       this.writeOutcome(ref.taskId, "done", "finished");
-      this.recordReview(ref, reviewRetained);
+      if (!review) this.recordReview(ref, reviewRetained);
       this.insert(ref, "task_recorded", { outcome: "done", reason: "finished", category: "done", applied: true });
       this.closeAttempt(ref);
       return this.task(ref.taskId)!;
@@ -262,7 +267,12 @@ export class AttemptStore {
       requireAuthority(this.database, this.caller, "returnLease", { taskId: ref.taskId });
       const task = this.expectTask(ref.taskId, expected);
       this.confirm(ref, { fact: "discard", scope: { leaseId } });
-      if (task.state !== "done") this.writeOutcome(ref.taskId, "hold", `Switchboard attempt ${ref.attempt} discarded`);
+      const review = this.reviewAttempt(ref);
+      if (review) {
+        const reason = review.recorded ? `Review recorded; attempt ${ref.attempt} discarded` : review.holdReason;
+        this.writeOutcome(ref.taskId, review.recorded ? "done" : "hold", reason);
+        this.insert(ref, "task_recorded", { outcome: review.recorded ? "done" : "hold", reason, category: review.recorded ? "done" : "failed", applied: true });
+      } else if (task.state !== "done") this.writeOutcome(ref.taskId, "hold", `Switchboard attempt ${ref.attempt} discarded`);
       this.insert(ref, "discarded", note === undefined ? {} : { note });
       this.closeAttempt(ref);
       return this.task(ref.taskId)!;
@@ -377,7 +387,7 @@ export class AttemptStore {
         repository: archive.allocation?.backingRepository ?? archive.specification?.backingRepository,
         commit: archive.outputBranchRecord?.commit ?? accepted?.scope.commit ?? archive.summary?.resultCommit,
         targetBranch: archive.outputBranchRecord?.targetBranch ?? archive.allocation?.baseRef ?? archive.specification?.baseRef,
-        discarded: archive.outputBranchRecord?.discarded ?? false }];
+        discarded: archive.outputBranchRecord?.discarded === true || this.reviewAttempt({ contextId: this.contextId, taskId: String(row.task), attempt: Number(row.attempt) })?.recorded === true }];
     });
   }
 
@@ -418,7 +428,7 @@ export class AttemptStore {
         retention: [...current.entries].reverse().find(entry => entry.kind === "retention_checked") ?? null,
         outputBranchRecord: { commit: this.startingPointCommit(expected),
           targetBranch: [...current.entries].reverse().find(e => e.kind === "integrated")?.data.targetBranch ?? current.allocation?.baseRef ?? current.specification?.baseRef,
-          discarded: current.entries.some(e => e.kind === "discarded") },
+          discarded: current.entries.some(e => e.kind === "discarded") || this.reviewAttempt(current)?.recorded === true },
         outputBranchCleanup: current.entries.filter(e => e.kind === "output_branch_cleanup").map((e, sequence) => ({ sequence, recordedAt: e.recordedAt, askedBy: e.askedBy, ...e.data })),
         ...(current.entries.some(e => e.kind === "owner_read_failed") ? { readFailures: current.entries.filter(e => e.kind === "owner_read_failed" || e.kind === "owner_read_reconciled") } : {}),
         ...(current.specification ? { specification: current.specification } : {}), ...(current.allocation ? { allocation: current.allocation } : {}),
@@ -525,6 +535,17 @@ export class AttemptStore {
     if (checked.commit !== target.commit || source.allocation?.outputBranch !== target.outputBranch || sessionId !== target.sessionId) {
       throw new AttemptStoreError("attempt_changed", "The reviewed attempt no longer matches the exact recorded review target");
     }
+  }
+
+  reviewAttempt(ref: AttemptRef): { recorded: boolean; holdReason: string } | undefined {
+    const target = this.reviewTask(ref.taskId)?.target;
+    if (!target) return;
+    const source = this.findForTask(target.taskId, target.attempt);
+    const archived = source ? undefined : this.database.get("SELECT summary FROM archived_attempts WHERE context = ? AND task = ? AND attempt = ?", ref.contextId, target.taskId, target.attempt);
+    const reviews = source?.entries.filter(entry => entry.kind === "review_recorded").map(entry => entry.data)
+      ?? (archived ? JSON.parse(String(archived.summary)).reviews ?? [] : []);
+    return { recorded: reviews.some((review: { taskId: string; attempt: number }) => review.taskId === ref.taskId && review.attempt === ref.attempt),
+      holdReason: `Review ended without a recorded verdict for ${target.taskId} attempt ${target.attempt}; create a fresh review if needed` };
   }
 
   /** Written with the review attempt's outcome, using only its immutable validated result. */
@@ -636,6 +657,12 @@ export class AttemptStore {
     if (this.requireAttempt(ref).closed) throw new AttemptStoreError("attempt_closed", "The attempt is already closed");
   }
   private closeAttempt(ref: AttemptRef) {
+    const review = this.reviewAttempt(ref);
+    const task = review && !review.recorded ? this.task(ref.taskId) : undefined;
+    if (task && task.state !== "done" && !task.held) {
+      this.writeOutcome(ref.taskId, "hold", review!.holdReason);
+      this.insert(ref, "task_recorded", { outcome: "hold", reason: review!.holdReason, category: "failed", applied: true });
+    }
     this.database.run("UPDATE attempts SET closed = 1 WHERE context = ? AND task = ? AND number = ?", ref.contextId, ref.taskId, ref.attempt);
   }
   private insert<K extends EntryKind>(ref: AttemptRef, kind: K, data: EntryData<K>) {

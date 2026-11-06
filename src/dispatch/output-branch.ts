@@ -28,7 +28,7 @@ export async function cleanupOutputBranch(deps: Dependencies, record: AttemptRec
     cleanup = await removeOutputBranch(deps.policy?.git ?? onPath("git"), deps.policy?.environment ?? {}, {
       repository: record.allocation?.backingRepository ?? deps.repository, branch,
       commit: deps.attempts.startingPointCommit(record), targetBranch: outputTarget(record),
-      discarded: record.entries.some(e => e.kind === "discarded"), dryRun,
+      discarded: record.entries.some(e => e.kind === "discarded") || deps.attempts.reviewAttempt(record)?.recorded === true, dryRun,
     });
   } catch (error) {
     cleanup = { branch, status: "kept", detail: `Could not check output branch: ${error instanceof Error ? error.message : String(error)}` };

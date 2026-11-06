@@ -420,7 +420,7 @@ async function finalise(
     ...(report?.result?.criteriaReport ? { criteriaReport: report.result.criteriaReport } : {}),
     ...(typeof observed.resultDiscrepancy === "string" ? { resultDiscrepancy: observed.resultDiscrepancy } : {}),
     task: { id: recorded.id, state: recorded.state, held: recorded.held, holdReason: recorded.holdReason },
-    ...(!applied ? { detail: "The attempt outcome was recorded, but a newer operator decision left the task unchanged" } : outcome.done ? {} : { detail: holdReason }),
+    ...(!applied ? { detail: "The attempt outcome was recorded, but a newer operator decision left the task unchanged" } : outcome.done ? {} : { detail: recorded.holdReason ?? holdReason }),
     nextAction: outcome.done ? "finish_attempt" : outcome.category === "review_required" ? "review_then_finish" : "inspect_attempt",
   });
 }

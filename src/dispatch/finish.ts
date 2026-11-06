@@ -165,7 +165,7 @@ const unexpected = (command: "finish" | "discard") => (error: unknown) => readRe
 
 export async function finish(deps: Dependencies, options: FinishOptions): Promise<DispatchResult> {
   return withKeepAwake(options.dryRun ? false : deps.keepAwake ?? true, async () => {
-    try { requireOperationAuthority(deps, ["acceptOutput", "completeTasks", ...(options.rebase ? ["rebase" as const] : []), ...(options.noProcesses ? ["returnLease" as const] : [])], options); }
+    try { requireOperationAuthority(deps, ["completeTasks", ...(options.noProcesses ? ["returnLease" as const] : [])], options); }
     catch (error) { return refused("inspect_attempt", error instanceof Error ? error.message : String(error)); }
     return finishAttempt({ ...deps, reads: new OwnerReads(deps, "finish", options.leaseId) }, options).catch(unexpected("finish"));
   }, deps.progress);
@@ -198,10 +198,51 @@ async function reconcileIntegration(deps: OperationDependencies, record: Attempt
   }
 }
 
+async function finishReview(deps: OperationDependencies, options: FinishOptions, { attempt, record }: Located): Promise<DispatchResult> {
+  const base = { attempt: attempt.attempt };
+  const permission = checkCanDiscard(attempt.facts, true);
+  if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, observed: { refusal: permission } });
+  await deps.reads.checkEffects();
+  const task = await deps.reads.read("Task store", "read review outcome", () => deps.tasks.read(record.taskId));
+  if (!task) return refused("inspect_attempt", "The review task cannot be read", base);
+  const steps: OperationStep[] = [];
+  if (task.state !== "done" || !record.entries.some(e => e.kind === "task_recorded" && e.data.outcome === "done")) steps.push({
+    description: "record the review task as done without accepting or integrating its output", run: async () => {
+      const current = await locate(deps, options.leaseId);
+      if (!("record" in current)) return current;
+      const permission = checkCanDiscard(current.attempt.facts, true);
+      if (!permission.allowed) return refused(permission.nextAction, permission.detail, base);
+      await deps.reads.checkEffects();
+      deps.reads.effectAttempted = true;
+      await deps.attempts.finishAttempt(record, task, current.record);
+    },
+  });
+  const retainedDetail = `Review recorded. Lease retained. Once no worker process remains, return it with switchboard finish --lease ${options.leaseId} --no-processes`;
+  steps.push({ description: `${options.noProcesses ? "return" : "retain"} lease ${options.leaseId}${options.noProcesses ? " and delete the review output branch under the existing branch rules" : ""}`, run: async () => {
+    if (!options.noProcesses) return result({ ok: true, reason: "finished", stage: "finish", lease: "preserved", observed: {}, ...base, detail: retainedDetail, nextAction: "finish_attempt" });
+    await returnLease(deps, record, attempt, "finish", async () => deps.attempts.reviewAttempt(record)?.recorded === true);
+    const outputBranchCleanup = await cleanupOutputBranch(deps, record);
+    return result({ ok: true, reason: "finished", stage: "finish", lease: "none", observed: { outputBranchCleanup }, ...base, detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
+  } });
+  if (!options.dryRun) {
+    const fenced = await fenceLaunch(deps, record, options.leaseId);
+    if (fenced) return refused("inspect_attempt", fenced, base);
+  }
+  const run = await runSteps(steps, { ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }), stopped: error => readRefusal(error) ?? refused("inspect_attempt", `Finishing the review stopped: ${error instanceof Error ? error.message : String(error)}. Run finish again to complete it`, { ...base, lease: leaseAfter(error) }) });
+  if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: { steps: run.descriptions }, ...base,
+    detail: `Would ${run.descriptions.join(", then ")}${options.noProcesses ? "" : `. ${retainedDetail}`}`, nextAction: options.noProcesses ? "none" : "finish_attempt" });
+  return { ...run.result!, observed: { ...run.result!.observed, steps: run.descriptions } };
+}
+
 async function finishAttempt(deps: OperationDependencies, options: FinishOptions): Promise<DispatchResult> {
   const located = await locate(deps, options.leaseId);
   if (!("record" in located)) return located;
   const { attempt, record } = located;
+  const review = deps.attempts.reviewAttempt(record);
+  if (review) {
+    if (options.acceptOutput || options.rebase) return refused("inspect_attempt", "Review output is evidence, not work to integrate; --accept-output and --rebase cannot be used on a review attempt", { attempt: attempt.attempt });
+    if (!review.recorded) return refused("fix_or_discard", "The review ended without a recorded verdict; use discard to return its lease, and create a fresh review if needed", { attempt: attempt.attempt });
+  } else requireOperationAuthority(deps, ["acceptOutput", ...(options.rebase ? ["rebase" as const] : [])], options);
   const evidence = (record: AttemptRecord, commit: string | undefined): AcceptanceEvidence => ({ ...(commit ? { commit } : {}),
     permission: checkAcceptanceEvidence(commit, deps.checks ?? [], latestChecks(record, commit), recordedReviews(record, commit)) });
   const base = { attempt: attempt.attempt, acceptanceEvidence: evidence(record, attempt.outputCommit), checks: attempt.checks ?? [], ...(attempt.criteriaReport ? { criteriaReport: attempt.criteriaReport } : {}), ...(attempt.resultDiscrepancy ? { resultDiscrepancy: attempt.resultDiscrepancy } : {}) };
@@ -210,6 +251,7 @@ async function finishAttempt(deps: OperationDependencies, options: FinishOptions
     return result({ ok: true, reason: options.dryRun ? "planned" : "finished", stage: "finish", lease: "none", observed: { outputBranchCleanup }, ...base,
       detail: describeOutputBranch(outputBranchCleanup), nextAction: "none" });
   }
+  if (review) return finishReview(deps, options, located);
   if (record.entries.some(e => e.kind === "integration_started")) requireOperationAuthority(deps, ["integrate"], options);
   await reconcileIntegration(deps, record, options.dryRun);
   record.entries = (await deps.reads.read("Attempt records", "read integration reconciliation", () => deps.reads.current()))!.entries;
@@ -461,9 +503,10 @@ async function discardAttempt(deps: OperationDependencies, options: { leaseId: s
   if (!permission.allowed) return refused(permission.nextAction, permission.detail, { ...base, lease: attempt.leaseHeld ? "preserved" : "none", observed: { refusal: permission } });
   const task = await deps.reads.read("Task store", "read discard outcome", () => deps.tasks.read(attempt.attempt.taskId));
   if (!task) return refused("inspect_attempt", "The task cannot be read", base);
-  const holdReason = `Switchboard attempt ${attempt.attempt.attempt} discarded`;
+  const review = deps.attempts.reviewAttempt(record);
+  const holdReason = review?.holdReason ?? `Switchboard attempt ${attempt.attempt.attempt} discarded`;
   const hold = task.state !== "done" && !(task.held && task.holdReason === holdReason);
-  const steps = [...(hold ? ["hold the task"] : []), `discard the workspace's contents and return lease ${options.leaseId}`];
+  const steps = [...(review?.recorded ? ["record the review task as done with a note that the attempt was discarded"] : hold ? [`hold the task${review ? `: ${holdReason}` : ""}`] : []), `discard the workspace's contents and return lease ${options.leaseId}`, ...(review ? ["delete the review output branch under the existing branch rules"] : [])];
   if (options.dryRun) return result({ ok: true, reason: "planned", stage: "finish", lease: "preserved", observed: {}, ...base, detail: `Would ${steps.join(", then ")}`, nextAction: "none" });
 
   const stopped = (error: unknown, step: string) => readRefusal(error) ?? result({

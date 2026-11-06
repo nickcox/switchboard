@@ -6,7 +6,10 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import { dispatchOnce } from "../../src/dispatch/dispatch.ts";
 import { createReview } from "../../src/dispatch/review.ts";
-import { finish } from "../../src/dispatch/finish.ts";
+import { discard, finish } from "../../src/dispatch/finish.ts";
+import { AttemptStore } from "../../src/attempts/store.ts";
+import { briefing } from "../../src/supervise/briefing.ts";
+import { defaultPermissions } from "../../src/objectives/store.ts";
 import { describe } from "../../src/dispatch/result.ts";
 import { describeStatus, status } from "../../src/dispatch/status.ts";
 import { workerInput } from "../../src/attempts/specification.ts";
@@ -246,7 +249,7 @@ test("dispatch refuses when the reviewed output changes after review task creati
   } finally { f.tasks.close(); }
 });
 
-test("review findings and task outcome roll back together, and finish recovers the immutable report once", async () => {
+test("review findings and task outcome roll back together, and finish refuses an unrecorded verdict", async () => {
   const f = await completed(true);
   try {
     const created = await createReview(f.deps, { taskId });
@@ -265,15 +268,13 @@ test("review findings and task outcome roll back together, and finish recovers t
     const runtime = (await f.runtime.discover(f.deps.contextId, { leaseId: review.allocation!.leaseId }))[0]!;
     writeFileSync(runtime.binding.resultPath, "Changed after validation");
     const finished = await finish(f.deps, { leaseId: review.allocation!.leaseId, noProcesses: false });
-    assert.equal(finished.reason, "finished", JSON.stringify(finished));
-    assert.equal((await f.tasks.read(reviewId))!.state, "done");
-    const findings = f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded");
-    assert.equal(findings.length, 1);
-    assert.equal(findings[0]!.data.verdict, "passed");
-    assert.deepEqual(findings[0]!.data.findings, runtime.validatedResult!.content.criteriaReport);
-    assert.equal((await finish(f.deps, { leaseId: review.allocation!.leaseId, noProcesses: false })).reason, "finished");
-    assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 1);
-    assert.equal(f.tasks.database.all("SELECT * FROM supervisor_events WHERE kind = 'review_recorded'").length, 1);
+    assert.equal(finished.reason, "refused", JSON.stringify(finished));
+    assert.match(finished.detail!, /without a recorded verdict; use discard/);
+    assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.filter(entry => entry.kind === "review_recorded").length, 0);
+    assert.equal(f.tasks.database.all("SELECT * FROM supervisor_events WHERE kind = 'review_recorded'").length, 0);
+    const discarded = await discard(f.deps, { leaseId: review.allocation!.leaseId, noProcesses: true, confirm: true });
+    assert.equal(discarded.reason, "discarded", JSON.stringify(discarded));
+    assert.match((await f.tasks.read(reviewId))!.holdReason!, /without a recorded verdict/);
   } finally { f.tasks.close(); }
 });
 
@@ -294,5 +295,142 @@ test("a changed recorded output during review cannot receive findings for the ol
     assert.equal(outcome.reason, "stopped", JSON.stringify(outcome));
     assert.match(outcome.detail!, /exact output commit/);
     assert.equal(f.deps.attempts.findForTask(taskId, 1)!.entries.some(entry => entry.kind === "review_recorded"), false);
+  } finally { f.tasks.close(); }
+});
+
+async function recordedReview(verdict: "pass" | "fail", withObjective = false) {
+  const f = await completed(withObjective);
+  f.deps.delivery.byTaskKind.review = f.deps.delivery.default;
+  f.deps.policy = { git: "git", environment: f.environment, repository: f.deps.repository, baseRef: "main", globalFile: resolve(f.dir, "no-policy.json"), context: { kind: "local-merge", targetBranch: "main" } };
+  const created = await createReview(f.deps, { taskId });
+  reviewWorker(f, `review-commit-${verdict}`);
+  const outcome = await dispatchOnce(f.deps, { taskId: created.task!.id });
+  assert.equal(outcome.reason, "held", JSON.stringify(outcome));
+  assert.equal(outcome.retention?.retained, true, JSON.stringify(outcome));
+  const review = f.deps.attempts.findForTask(created.task!.id, 1)!;
+  assert.equal(f.deps.attempts.reviewAttempt(review)!.recorded, true);
+  return { ...f, review, leaseId: review.allocation!.leaseId };
+}
+
+for (const verdict of ["pass", "fail"] as const) test(`finish ends a ${verdict} review without accepting or integrating its commit`, async () => {
+  const f = await recordedReview(verdict);
+  try {
+    const main = f.run(["rev-parse", "main"]);
+    const branch = f.review.allocation!.outputBranch;
+    const commit = f.run(["rev-parse", branch]);
+    const before = f.deps.attempts.read(f.review);
+    for (const noProcesses of [false, true]) {
+      const plan = await finish(f.deps, { leaseId: f.leaseId, noProcesses, dryRun: true });
+      assert.equal(plan.reason, "planned", JSON.stringify(plan));
+      assert.match(plan.detail!, /record the review task as done without accepting or integrating/);
+      assert.match(plan.detail!, noProcesses ? /return lease.*delete the review output branch/ : /retain lease/);
+      assert.doesNotMatch(plan.detail!, /fast-forward|rebase|accept output commit/);
+      assert.deepEqual(f.deps.attempts.read(f.review), before);
+      assert.equal(f.run(["rev-parse", branch]), commit);
+    }
+    for (const flag of ["acceptOutput", "rebase"] as const) {
+      for (const dryRun of [false, true]) {
+        const refused = await finish(f.deps, { leaseId: f.leaseId, noProcesses: false, [flag]: true, dryRun });
+        assert.equal(refused.reason, "refused");
+        assert.match(refused.detail!, /Review output is evidence.*--accept-output and --rebase/);
+      }
+    }
+    const finished = await finish(f.deps, { leaseId: f.leaseId, noProcesses: false });
+    assert.equal(finished.reason, "finished", JSON.stringify(finished));
+    assert.equal(finished.lease, "preserved");
+    assert.equal((await f.tasks.read(f.review.taskId))!.state, "done");
+    assert.equal(f.run(["rev-parse", branch]), commit);
+    const returned = await finish(f.deps, { leaseId: f.leaseId, noProcesses: true });
+    assert.equal(returned.reason, "finished", JSON.stringify(returned));
+    assert.equal(returned.lease, "none");
+    assert.equal(f.run(["branch", "--list", branch]), "");
+    assert.equal(f.run(["rev-parse", "main"]), main);
+    assert.equal(f.deps.attempts.read(f.review).entries.some(e => ["output_accepted", "integration_started", "integrated", "rebase_started", "output_rebased"].includes(e.kind)), false);
+    assert.equal(f.deps.attempts.read(f.source).entries.filter(e => e.kind === "review_recorded").length, 1);
+  } finally { f.tasks.close(); }
+});
+
+for (const verdict of ["pass", "fail"] as const) test(`discard completes a recorded ${verdict} review and keeps its verdict`, async () => {
+  const f = await recordedReview(verdict);
+  try {
+    const before = f.deps.attempts.read(f.review);
+    const source = f.deps.attempts.read(f.source);
+    const plan = await discard(f.deps, { leaseId: f.leaseId, noProcesses: true, confirm: true, dryRun: true });
+    assert.equal(plan.reason, "planned");
+    assert.match(plan.detail!, /record the review task as done.*discarded/);
+    assert.doesNotMatch(plan.detail!, /hold the task/);
+    assert.deepEqual(f.deps.attempts.read(f.review), before);
+    const discarded = await discard(f.deps, { leaseId: f.leaseId, noProcesses: true, confirm: true });
+    assert.equal(discarded.reason, "discarded", JSON.stringify(discarded));
+    assert.equal(discarded.lease, "none");
+    assert.equal((await f.tasks.read(f.review.taskId))!.state, "done");
+    assert.match(String([...f.deps.attempts.read(f.review).entries].reverse().find(e => e.kind === "task_recorded")!.data.reason), /Review recorded; attempt 1 discarded/);
+    assert.equal(f.run(["branch", "--list", f.review.allocation!.outputBranch]), "");
+    assert.deepEqual(f.deps.attempts.read(f.source), source);
+  } finally { f.tasks.close(); }
+});
+
+for (const scenario of ["missing-result", "review-wrong-commit", "nonzero-exit", "startup-exit"] as const) test(`a review ending with ${scenario} is held for a decision, never ready`, async () => {
+  const f = await completed(true);
+  try {
+    const created = await createReview(f.deps, { taskId });
+    const reviewId = created.task!.id;
+    reviewWorker(f, scenario);
+    await dispatchOnce(f.deps, { taskId: reviewId });
+    const review = f.deps.attempts.findForTask(reviewId, 1)!;
+    const leaseId = review.allocation!.leaseId;
+    const held = (await f.tasks.read(reviewId))!;
+    assert.equal(held.state, "queued");
+    assert.equal(held.held, true);
+    assert.match(held.holdReason!, new RegExp(`without a recorded verdict for ${taskId} attempt 1`));
+    assert.equal((await f.tasks.ready()).includes(reviewId), false);
+    const view = await status(f.deps);
+    assert.equal(view.ready.includes(reviewId), false);
+    assert.equal(view.attempts.find(a => a.attempt.taskId === reviewId)!.state, "held");
+    assert.match(describeStatus(view), /held: Review ended without a recorded verdict/);
+    const brief = await briefing(f.deps, "goal");
+    const shown = brief.tasks.find(t => t.id === reviewId)!;
+    assert.equal(shown.held, true);
+    assert.equal(shown.attempts[0]!.status, "held");
+    assert.equal(shown.attempts[0]!.assessment!.nextAction.code, "inspect_attempt");
+    assert.equal((await dispatchOnce(f.deps, {})).reason, "no_ready_work");
+    for (const dryRun of [false, true]) {
+      const refused = await finish(f.deps, { leaseId, noProcesses: false, dryRun });
+      assert.equal(refused.reason, "refused");
+      assert.match(refused.detail!, /use discard/);
+    }
+    const plan = await discard(f.deps, { leaseId, noProcesses: true, confirm: true, dryRun: true });
+    assert.equal(plan.reason, "planned");
+    assert.deepEqual(await f.tasks.read(reviewId), held);
+    const discarded = await discard(f.deps, { leaseId, noProcesses: true, confirm: true });
+    assert.equal(discarded.reason, "discarded", JSON.stringify(discarded));
+    assert.equal((await f.tasks.read(reviewId))!.holdReason, held.holdReason);
+    assert.equal((await f.tasks.read(reviewId))!.held, true);
+    const fresh = await createReview(f.deps, { taskId });
+    assert.equal(fresh.reason, "review_created", JSON.stringify(fresh));
+    assert.notEqual(fresh.task!.id, reviewId);
+    assert.equal((await f.tasks.ready()).includes(fresh.task!.id), true);
+  } finally { f.tasks.close(); }
+});
+
+test("a supervisor finishes a recorded review with completeTasks alone, but cannot return its lease", async () => {
+  const f = await recordedReview("fail", true);
+  try {
+    const objectives = new ObjectiveStore(f.tasks.database, f.deps.caller);
+    await objectives.update("goal", { permissions: Object.fromEntries(Object.keys(defaultPermissions).map(key => [key, key === "completeTasks"])) as typeof defaultPermissions });
+    const caller = { kind: "supervisor" as const, objectiveId: "goal" };
+    const deps = { ...f.deps, caller, attempts: new AttemptStore(f.tasks.database, f.deps.contextId, caller) };
+    const refused = await finish(deps, { leaseId: f.leaseId, noProcesses: true });
+    assert.equal(refused.reason, "refused");
+    assert.match(refused.detail!, /cannot.*return a lease/);
+    const planned = await finish(deps, { leaseId: f.leaseId, noProcesses: false, dryRun: true });
+    assert.equal(planned.reason, "planned", JSON.stringify(planned));
+    const finished = await finish(deps, { leaseId: f.leaseId, noProcesses: false });
+    assert.equal(finished.reason, "finished", JSON.stringify(finished));
+    assert.equal(finished.lease, "preserved");
+    const done = [...f.deps.attempts.read(f.review).entries].reverse().find(e => e.kind === "task_recorded")!;
+    assert.equal(done.askedBy, "supervisor:goal");
+    await objectives.update("goal", { permissions: { ...defaultPermissions, completeTasks: false } });
+    assert.match((await finish(deps, { leaseId: f.leaseId, noProcesses: false })).detail!, /does not permit completeTasks/);
   } finally { f.tasks.close(); }
 });

@@ -43,9 +43,18 @@ function reportResult() {
     const target = binding.input.reviewTarget!;
     const report = join(binding.artefactDirectory!, "report.md");
     writeFileSync(report, "# Synthetic review\n");
-    if (scenario === "review-fail") result.criteriaReport[0]!.status = "not_met";
+    if (scenario.endsWith("fail")) result.criteriaReport[0]!.status = "not_met";
+    const output = [];
+    if (scenario.startsWith("review-commit-")) {
+      writeFileSync("review.md", "Synthetic review evidence\n");
+      execFileSync("git", ["add", "review.md"]);
+      execFileSync("git", ["-c", "core.hooksPath=/dev/null", "commit", "-q", "--no-gpg-sign", "-m", "Review report"]);
+      output.push({ kind: "git", name: "code", branch: binding.input.delivery.outputBranch,
+        commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim() });
+    }
     writeFileSync(binding.resultPath, JSON.stringify({
       ...result, workReferences: [
+        ...output,
         { kind: "git", name: "reviewed-output", branch: target.outputBranch, commit: scenario === "review-wrong-commit" ? "c".repeat(40) : target.commit },
         { kind: "artefact", name: "report", path: report, description: "Synthetic review findings" },
       ],
