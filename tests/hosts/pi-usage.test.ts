@@ -5,6 +5,7 @@ import { registerSupervisor, type SupervisorPi, type SupervisorBinding, type Exe
 
 type Handler = Parameters<SupervisorPi["on"]>[1];
 class FakePi implements SupervisorPi {
+  registerCommand() {}
   handlers = new Map<string, Handler>();
   registerTool() {}
   on(name: string, handler: Handler) { this.handlers.set(name, handler); }

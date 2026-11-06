@@ -14,6 +14,7 @@ import { specificationFor } from "../helpers.ts";
 
 type Handler = Parameters<SupervisorPi["on"]>[1];
 class FakePi implements SupervisorPi {
+  registerCommand() {}
   tools = new Map<string, SupervisorTool>();
   handlers = new Map<string, Handler>();
   messages: string[] = [];

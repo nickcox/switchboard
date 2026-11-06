@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { completionStatementsSchema } from "../../objectives/store.ts";
+import { resultRenderer } from "./rendering.ts";
 
 const text = z.string();
 const attempt = z.number().int().positive();
 const selector = { task: text.optional(), lease: text.optional(), attempt: attempt.optional() };
 const definition = { title: text.optional(), body: text.optional(), repo: text.optional(), kind: text.optional(), criteria: z.array(text.trim().min(1).refine(value => !/[\r\n]/.test(value), "Criteria must be single lines")).optional() };
-const operation = (command: string, fields: z.ZodRawShape = {}) => ({ command, schema: z.strictObject(fields) });
+const operation = (command: string, fields: z.ZodRawShape = {}) => ({ command, schema: z.strictObject(fields), renderResult: resultRenderer(command) });
 
 /** Only operation inputs belong here – authority and request identity belong to the host. */
 export const supervisorTools = {

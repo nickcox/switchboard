@@ -17,6 +17,7 @@ type Handler = Parameters<SupervisorPi["on"]>[1];
 type Event = Parameters<Handler>[0];
 type Context = Parameters<Handler>[1];
 class FakePi implements SupervisorPi {
+  registerCommand() {}
   tools = new Map<string, SupervisorTool>();
   handlers = new Map<string, Handler[]>();
   messages: { text: string; options: { deliverAs: "followUp" } }[] = [];

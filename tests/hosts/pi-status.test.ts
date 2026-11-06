@@ -6,6 +6,7 @@ import { eventText, registerSupervisor, type SupervisorPi, type SupervisorTool, 
 type Handler = Parameters<SupervisorPi["on"]>[1];
 type Context = NonNullable<Parameters<Handler>[1]>;
 class FakePi implements SupervisorPi {
+  registerCommand() {}
   handlers = new Map<string, Handler[]>();
   messages: string[] = [];
   registerTool(_tool: SupervisorTool) {}

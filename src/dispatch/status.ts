@@ -250,6 +250,11 @@ export function describeStatus(value: StatusResult): string {
   if (value.omittedCount !== undefined) lines.push(`Omitted attempts needing no attention: ${value.omittedCount}`);
   lines.push(`Ready: ${value.ready.join(", ") || "none"}`, `In flight: ${value.inFlight.join(", ") || "none"}`,
     `Active attempts: ${value.capacity.active ?? "unknown"} of at most ${value.capacity.maximum}`);
+  for (const question of value.openPersonQuestions) {
+    lines.push(`Open person question ${question.id}: objective ${question.objectiveId} – ${question.text}`);
+    if (question.choices) lines.push(`  Choices: ${question.choices.join("; ")}`);
+    lines.push(`  Answer with switchboard objective answer ${question.objectiveId} --question ${question.id} "<answer>"`);
+  }
   if (value.blockingDispatch.length) {
     lines.push(`Dispatch is blocked for the whole context by: ${value.blockingDispatch.map(a => `${a.taskId} attempt ${a.attempt}${a.leaseId ? ` (lease ${a.leaseId})` : ""}`).join(", ")}`);
   }
@@ -312,11 +317,6 @@ export function describeStatus(value: StatusResult): string {
     if (a.transcript) lines.push(`  Transcript: ${a.transcript}`);
     if (a.takeover) lines.push(`  Take over by hand: ${a.takeover}`);
     if (a.nextAction.code !== "none") lines.push(`  Next: ${a.nextAction.description}`);
-  }
-  for (const question of value.openPersonQuestions) {
-    lines.push(`Open person question ${question.id}: objective ${question.objectiveId} – ${question.text}`);
-    if (question.choices) lines.push(`  Choices: ${question.choices.join("; ")}`);
-    lines.push(`  Answer with switchboard objective answer ${question.objectiveId} --question ${question.id} "<answer>"`);
   }
   for (const question of value.openQuestions ?? []) {
     lines.push(`Open question ${question.id}: task ${question.taskId}, attempt ${question.attempt} – ${question.text}`);

@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { supervisorTools } from "./tools.ts";
+import { resultSummary, type TextComponent } from "./rendering.ts";
+import type { PersonQuestion } from "../../supervise/questions.ts";
 import { providerRetriesSchema } from "../../supervise/provider-retries.ts";
 
 export const bindingSchema = z.strictObject({
@@ -21,14 +23,22 @@ type ToolResult = { content: { type: "text"; text: string }[]; details: unknown 
 export type SupervisorTool = {
   name: string; label: string; description: string; parameters: Record<string, unknown>;
   execute(toolCallId: string, params: unknown, signal?: AbortSignal): Promise<ToolResult>;
+  renderResult(result: ToolResult, options: { expanded: boolean; isPartial?: boolean }): ReturnType<TextComponent>;
 };
 type PiUsage = { totalTokens?: number; cost?: { total?: number } };
 type PiMessage = { role: string; content: string | { type: string; text?: string }[]; usage?: PiUsage; stopReason?: string; errorMessage?: string };
 type PiEvent = { aborted?: boolean; prompt?: string; message?: PiMessage; messages?: PiMessage[]; messageEntryId?: string; toolResults?: PiMessage[]; toolResultEntryIds?: string[]; compactionEntry?: { id: string; usage?: PiUsage } };
-type PiContext = { hasUI?: boolean; ui?: { setStatus(key: string, text: string | undefined): void }; signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
+type PiContext = { hasUI?: boolean; ui?: {
+  setStatus(key: string, text: string | undefined): void;
+  setWidget?(key: string, lines: string[] | undefined): void;
+  select?(title: string, options: string[]): Promise<string | undefined>;
+  input?(title: string): Promise<string | undefined>;
+  notify?(message: string, type: "info" | "warning" | "error"): void;
+}; signal?: AbortSignal; sessionManager: { getSessionId(): string; getEntries(): { id: string; type: string; message?: PiMessage; usage?: PiUsage }[] } };
 /** The small part of Pi's extension API used here; Pi loads the extension, not Switchboard. */
 export interface SupervisorPi {
   registerTool(tool: SupervisorTool): void;
+  registerCommand(name: string, command: { description: string; handler(args: string, context: PiContext): Promise<void> }): void;
   on(event: string, handler: (event: PiEvent, context?: PiContext) => void | { messages: PiMessage[] } | Promise<void | { messages: PiMessage[] }>): void;
   sendUserMessage(text: string, options: { deliverAs: "followUp" }): void | Promise<void>;
 }
@@ -42,7 +52,8 @@ export function commandExecutor(binding: SupervisorBinding): ExecuteCommand {
   });
 }
 
-export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding, execute = commandExecutor(binding), retryMs = 1000) {
+export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding, execute = commandExecutor(binding), retryMs = 1000,
+  makeText: TextComponent = text => ({ render: () => text.split("\n"), invalidate() {} })) {
   const fixed = ["--objective", binding.objectiveId, "--config", binding.configPath];
   let controller: AbortController | undefined;
   let eventsStopped = false;
@@ -62,6 +73,8 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let providerRetry: { number: number; total: number; at: string } | undefined;
   let stopped = false;
   let stopRecordingFailed = false;
+  let openPersonQuestions: PersonQuestion[] = [];
+  let questionRefresh = Promise.resolve();
   const localTime = (date: Date) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   const setStatus = (text: string | undefined, ctx = context) => {
     if (!ctx?.hasUI) return;
@@ -72,6 +85,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     if (shuttingDown) return;
     if (objectiveState) setStatus(`Switchboard: objective ${objectiveState}`);
     else if (stopRecordingFailed) setStatus("Switchboard: provider error – failed to record stopped session");
+    else if (openPersonQuestions.length && !providerRetry && !stopped) setStatus("Switchboard: waiting for the person's answer – /answer");
     else if (running) setStatus(runEvent ? `Switchboard: handling ${runEvent.kind} event${runEvent.taskId === null ? "" : ` for ${runEvent.taskId}`}${runEvent.attempt === null ? "" : ` attempt ${runEvent.attempt}`}` : "Switchboard: working");
     else if (providerRetry) setStatus(`Switchboard: provider error, retry ${providerRetry.number}/${providerRetry.total} at ${localTime(new Date(providerRetry.at))}`);
     else if (stopped) setStatus("Switchboard: stopped after a provider error – see switchboard status");
@@ -99,10 +113,71 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     }
     return reply;
   };
+  const refreshQuestions = () => {
+    if (!context?.hasUI || shuttingDown) return Promise.resolve();
+    questionRefresh = questionRefresh.catch(() => {}).then(async () => {
+      const reply = await execute(["objective", "show", binding.objectiveId, "--config", binding.configPath, "--json"]);
+      const value = JSON.parse(reply.stdout);
+      if (reply.exitCode !== 0 || value.ok !== true || !Array.isArray(value.objective?.openPersonQuestions)) throw new Error("Could not read questions for the person");
+      if (shuttingDown) return;
+      openPersonQuestions = value.objective.openPersonQuestions;
+      const lines = openPersonQuestions.flatMap(question => [
+        `Question ${question.id}: ${question.text}`,
+        ...(question.choices ?? []).map((choice, index) => `  ${index + 1}. ${choice}`),
+      ]);
+      if (lines.length) lines.push("Answer with /answer <text> or /answer <choice number>; /answer opens a dialog.");
+      try { context?.ui?.setWidget?.("switchboard-questions", lines.length ? lines : undefined); }
+      catch { /* Widget failures must not interrupt supervision. */ }
+      updateStatus();
+    });
+    return questionRefresh;
+  };
+  const refreshDisplay = () => refreshQuestions().catch(() => {});
+  pi.registerCommand("answer", {
+    description: "Answer an open Switchboard question as the person",
+    async handler(args, ctx) {
+      context = ctx;
+      if (!ctx.hasUI || !ctx.ui) return;
+      try {
+        await refreshQuestions();
+        const questions = [...openPersonQuestions];
+        if (!questions.length) { ctx.ui.notify?.("No open questions for the person.", "info"); return; }
+        let question = questions[0]!;
+        if (questions.length > 1) {
+          const labels = questions.map(q => `${q.id}: ${q.text}`);
+          const selected = await ctx.ui.select?.("Which question?", labels);
+          if (selected === undefined) return;
+          question = questions[labels.indexOf(selected)]!;
+          if (!question) return;
+        }
+        let answer = args.trim();
+        if (!answer) {
+          if (question.choices?.length) {
+            const labels = question.choices.map((choice, index) => `${index + 1}. ${choice}`);
+            const selected = await ctx.ui.select?.(question.text, [...labels, "Type an answer"]);
+            if (selected === undefined) return;
+            const index = labels.indexOf(selected);
+            answer = index >= 0 ? question.choices[index]! : await ctx.ui.input?.(question.text) ?? "";
+          } else answer = await ctx.ui.input?.(question.text) ?? "";
+        } else if (question.choices?.length && /^\d+$/.test(answer)) {
+          const choice = question.choices[Number(answer) - 1];
+          if (choice === undefined) { ctx.ui.notify?.("No such choice – use a listed number or type an answer.", "warning"); return; }
+          answer = choice;
+        }
+        if (!answer.trim()) return;
+        const reply = await execute(["objective", "answer", binding.objectiveId, "--question", question.id,
+          "--config", binding.configPath, "--json", "--", answer]);
+        const details: unknown = JSON.parse(reply.stdout);
+        ctx.ui.notify?.(resultSummary("answer", { content: [{ type: "text", text: reply.stdout }], details }), reply.exitCode === 0 ? "info" : "error");
+      } catch (error) { ctx.ui.notify?.(`Answer failed: ${error instanceof Error ? error.message : String(error)}`, "error"); }
+      finally { await refreshDisplay(); }
+    },
+  });
   for (const [name, tool] of Object.entries(supervisorTools)) {
     pi.registerTool({
       name, label: tool.command, description: `Run Switchboard supervise ${tool.command} for this session's objective. Returns its JSON result.`,
       parameters: z.toJSONSchema(tool.schema),
+      renderResult: (result, options) => tool.renderResult(result, options, makeText),
       async execute(toolCallId, input, signal) {
         const params = tool.schema.parse(input) as Record<string, unknown>;
         const directory = await mkdtemp(join(binding.privateDirectory, "call-"));
@@ -134,7 +209,10 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
           const reply = await command(tool.command.split(" "), [...args, "--", ...positional], signal);
           const details: unknown = JSON.parse(reply.stdout);
           return { content: [{ type: "text", text: reply.stdout }], details };
-        } finally { await rm(directory, { recursive: true, force: true }); }
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+          await refreshDisplay();
+        }
       },
     });
   }
@@ -317,6 +395,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     const text = event.prompt ?? (message?.role === "user" ? typeof message.content === "string" ? message.content
       : message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("") : undefined);
     if (pending && text === pending.text) {
+      void refreshDisplay();
       runEvent = pending.event;
       pending.delivered();
       updateStatus();
@@ -427,16 +506,20 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
         if (entry.usage) addUsage(entry.usage, entry.id);
       }
     }
+    await refreshDisplay();
     await startSession();
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     shuttingDown = true;
     setStatus(undefined, ctx);
+    try { if (ctx?.hasUI) ctx.ui?.setWidget?.("switchboard-questions", undefined); }
+    catch { /* Widget failures must not interrupt shutdown. */ }
     context = undefined;
     cancelRetry();
     controller?.abort();
     await retryDelivery;
     await loop;
+    await questionRefresh.catch(() => {});
     await reporting.catch(() => {});
     await stateReporting.catch(() => {});
     controller = undefined;
@@ -461,8 +544,12 @@ export function eventText(event: SupervisorEvent): string {
   return `Switchboard event ${event.id}: kind=${event.kind}, task=${event.taskId ?? "none"}, attempt=${event.attempt ?? "none"}. ${next[event.kind] ?? "Read the briefing and decide the next action."}\n${JSON.stringify(event, null, 2)}`;
 }
 
-export default function (pi: SupervisorPi) {
+export default async function (pi: SupervisorPi) {
   const path = process.env.SWITCHBOARD_SUPERVISOR_BINDING;
   if (!path) throw new Error("Start this extension with switchboard supervisor start");
-  registerSupervisor(pi, bindingSchema.parse(JSON.parse(readFileSync(path, "utf8"))));
+  // Pi supplies its TUI package at extension load time; it is not a CLI dependency.
+  const tuiPackage = "@earendil-works/pi-tui";
+  const { Text } = await import(tuiPackage);
+  const binding = bindingSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  registerSupervisor(pi, binding, commandExecutor(binding), 1000, text => new Text(text, 0, 0));
 }
