@@ -75,6 +75,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   let stopRecordingFailed = false;
   let openPersonQuestions: PersonQuestion[] = [];
   let questionRefresh = Promise.resolve();
+  let questionTimer: ReturnType<typeof setTimeout> | undefined;
   const localTime = (date: Date) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   const setStatus = (text: string | undefined, ctx = context) => {
     if (!ctx?.hasUI) return;
@@ -111,6 +112,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
       objectiveState = value.ok ? value.objective.state : value.state;
       stopEvents();
       updateStatus();
+      void refreshDisplay();
     }
     return reply;
   };
@@ -133,7 +135,14 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     });
     return questionRefresh;
   };
-  const refreshDisplay = () => refreshQuestions().catch(() => {});
+  const refreshDisplay = (): Promise<void> => refreshQuestions().catch(() => {}).finally(() => {
+    clearTimeout(questionTimer);
+    questionTimer = undefined;
+    // Closed objectives no longer deliver events, but the person can still answer their questions.
+    if (objectiveState && openPersonQuestions.length && context?.hasUI && !shuttingDown) {
+      questionTimer = setTimeout(() => { void refreshDisplay(); }, retryMs);
+    }
+  });
   pi.registerCommand("answer", {
     description: "Answer an open Switchboard question as the person",
     async handler(args, ctx) {
@@ -512,6 +521,8 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     shuttingDown = true;
+    clearTimeout(questionTimer);
+    questionTimer = undefined;
     setStatus(undefined, ctx);
     try { if (ctx?.hasUI) ctx.ui?.setWidget?.("switchboard-questions", undefined); }
     catch { /* Widget failures must not interrupt shutdown. */ }

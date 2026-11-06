@@ -34,7 +34,7 @@ async function until(check: () => boolean) {
   for (let i = 0; i < 1000; i++) { if (check()) return; await sleep(5); }
   assert.fail("Timed out waiting for question display");
 }
-async function fixture(delaysMs?: number[]) {
+async function fixture(delaysMs?: number[], realEvents = false) {
   const root = resolve(".investigation/pi-questions");
   await mkdir(root, { recursive: true });
   const dir = await mkdtemp(join(root, "case-"));
@@ -67,11 +67,11 @@ async function fixture(delaysMs?: number[]) {
   }, sessionManager: { getSessionId: () => "session", getEntries: () => [] } };
   registerSupervisor(pi, binding, async (args, signal) => {
     calls.push(args);
-    if (args[0] === "supervise" && args[1] === "wait") {
+    if (!realEvents && args[0] === "supervise" && args[1] === "wait") {
       while (!events.length) await sleep(5, undefined, { signal });
       return reply({ ok: true, event: events.shift() });
     }
-    if (args[0] === "supervise" && args[1] === "handled") return reply({ ok: true });
+    if (!realEvents && args[0] === "supervise" && args[1] === "handled") return reply({ ok: true });
     return execute(args, signal);
   }, 5);
   const ask = (text = "Which design?", choices?: string[]) => askPerson(tasks.database, { kind: "supervisor", objectiveId: "goal" }, "goal", text, choices);
@@ -156,6 +156,42 @@ test("a new extension session restores open questions from records and clears it
     await until(() => f.widgets.at(-1) === undefined);
     assert.doesNotMatch(f.statuses.at(-1) ?? "", /waiting for the person's answer/);
   } finally { await replacement.emit("session_shutdown"); await f.close(); }
+});
+
+test("questions keep refreshing after observed abandonment and clear after ordinary external CLI answers", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    const first = await f.ask(undefined, ["Small", "Large"]);
+    const second = await f.ask("When?");
+    await f.pi.emit("session_start");
+    assert.match(f.widgets.at(-1)!.join("\n"), /Which design/);
+    const abandoned = await f.execute(["objective", "abandon", "goal", "--config", f.binding.configPath, "--json"]);
+    assert.equal(abandoned.exitCode, 0);
+    // Observe closure before answering, so the answer cannot arrive through a delivered event.
+    await until(() => f.statuses.at(-1) === "Switchboard: objective abandoned");
+    const eventCalls = () => f.calls.filter(args => args[0] === "supervise" && ["wait", "handled"].includes(args[1]!)).length;
+    const callsAtClosure = eventCalls();
+    assert.match(f.widgets.at(-1)!.join("\n"), /Which design/);
+    const answer = async (id: string, text: string) => {
+      const result = await f.execute(["objective", "answer", "goal", "--question", id, "--config", f.binding.configPath, "--json", "--", text]);
+      assert.equal(result.exitCode, 0);
+    };
+    await answer(first.id, "Small");
+    await until(() => !f.widgets.at(-1)?.some(line => line.includes("Which design?")));
+    assert.match(f.widgets.at(-1)!.join("\n"), /When\?/);
+    await answer(second.id, "Tomorrow");
+    assert.equal(readPersonQuestions(f.tasks.database, "goal").filter(q => !q.answer).length, 0);
+    await until(() => f.widgets.at(-1) === undefined);
+    assert.equal(f.statuses.at(-1), "Switchboard: objective abandoned");
+    assert.equal(eventCalls(), callsAtClosure, "question refresh must not resume supervisor events");
+    await sleep(50);
+    const callsAfterAnswers = f.calls.length;
+    await sleep(50);
+    assert.equal(f.calls.length, callsAfterAnswers, "question polling stops when all questions are answered");
+  } finally { await f.close(); }
+  const callsAfterShutdown = f.calls.length;
+  await sleep(50);
+  assert.equal(f.calls.length, callsAfterShutdown);
 });
 
 for (const argument of ["2", "A custom answer", "--a literal answer", "  Keep whitespace  "]) test(`/answer records the person's ${argument === "2" ? "choice text" : "text"} through the ordinary CLI: ${argument}`, async () => {
