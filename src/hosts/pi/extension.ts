@@ -90,6 +90,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
     else if (providerRetry) setStatus(`Switchboard: provider error, retry ${providerRetry.number}/${providerRetry.total} at ${localTime(new Date(providerRetry.at))}`);
     else if (stopped) setStatus("Switchboard: stopped after a provider error – see switchboard status");
     else if (waitingSince) setStatus(`Switchboard: waiting for events since ${localTime(waitingSince)}`);
+    else setStatus(undefined);
   };
   const cancelRetry = () => {
     providerRetry = undefined;
@@ -150,8 +151,8 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
           question = questions[labels.indexOf(selected)]!;
           if (!question) return;
         }
-        let answer = args.trim();
-        if (!answer) {
+        let answer = args;
+        if (!answer.trim()) {
           if (question.choices?.length) {
             const labels = question.choices.map((choice, index) => `${index + 1}. ${choice}`);
             const selected = await ctx.ui.select?.(question.text, [...labels, "Type an answer"]);
@@ -159,7 +160,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
             const index = labels.indexOf(selected);
             answer = index >= 0 ? question.choices[index]! : await ctx.ui.input?.(question.text) ?? "";
           } else answer = await ctx.ui.input?.(question.text) ?? "";
-        } else if (question.choices?.length && /^\d+$/.test(answer)) {
+        } else if (question.choices?.length && /^\d+$/.test(answer.trim())) {
           const choice = question.choices[Number(answer) - 1];
           if (choice === undefined) { ctx.ui.notify?.("No such choice – use a listed number or type an answer.", "warning"); return; }
           answer = choice;

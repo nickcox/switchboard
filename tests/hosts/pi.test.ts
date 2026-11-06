@@ -119,6 +119,9 @@ test("every Pi tool runs its operation with fixed authority, private file inputs
     const result = await tool.execute("call-1", params);
     assert.equal(result.content[0]!.text, json);
     assert.deepEqual(result.details, JSON.parse(json));
+    assert.match(tool.renderResult(result, { expanded: false }).render(100).join("\n"), /refused: fixture/);
+    assert.equal(tool.renderResult(result, { expanded: true }).render(100).join("\n"), json);
+    assert.equal(result.content[0]!.text, json, "Rendering never changes the model's full JSON");
     assert.deepEqual(observed, args, operation);
     for (const key of ["objective", "objectiveId", "config", "configPath", "caller", "requestId", "request-id"]) {
       assert.equal(Object.hasOwn(tool.parameters.properties as object, key), false);

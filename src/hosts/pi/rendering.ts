@@ -26,10 +26,9 @@ export function resultSummary(command: string, result: RenderResult): string {
     const running = tasks.filter(task => task.state === "in_flight").length;
     const done = tasks.filter(task => task.state === "done").length;
     const questions = (value.openPersonQuestions?.length ?? 0) + (value.openQuestions?.length ?? 0);
-    const objective = value.objective ?? {};
-    const spending = objective.spending ?? {};
+    const spending = value.objective?.spending ?? {};
     const cost = typeof spending.cost === "number" ? `$${spending.cost.toFixed(2)}` : "unknown cost";
-    const maximum = objective.budget?.maxCost;
+    const maximum = value.objective?.budget?.maxCost;
     return `Briefing: ${tasks.length} tasks (${running} running, ${done} done), ${questions} open question${questions === 1 ? "" : "s"}, ${cost}${typeof maximum === "number" ? ` of $${maximum}` : ""} spent`;
   }
   if (command === "dispatch" && value.attempt) return `${value.reason === "existing_request" ? "Existing dispatch:" : "Dispatched"} ${value.attempt.taskId} attempt ${value.attempt.attempt}`;

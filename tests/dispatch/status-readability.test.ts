@@ -15,6 +15,8 @@ import { SqliteTaskStore } from "../../src/tasks/sqlite.ts";
 import { RuntimeRecords } from "../../src/runtime/records.ts";
 import { PiWorker } from "../../src/runtime/pi/worker.ts";
 import { configSchema } from "../../src/config.ts";
+import { ObjectiveStore } from "../../src/objectives/store.ts";
+import { askPerson } from "../../src/supervise/questions.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 async function settled(f: Fixture, id: string) {
@@ -30,6 +32,27 @@ function cli(f: Fixture, json: boolean, filtered: boolean) {
   assert.equal(result.status, 1, result.stderr);
   return result.stdout;
 }
+
+test("person questions appear directly after the summary and before objectives and attempts in text status", async () => {
+  const f = await fixture({ tasks: [task("pending-a1")] });
+  try {
+    const objectives = new ObjectiveStore(f.tasks.database, testCaller);
+    await objectives.add({ id: "goal", request: "Useful work", acceptanceCriteria: ["Useful output"] });
+    const question = await askPerson(f.tasks.database, { kind: "supervisor", objectiveId: "goal" }, "goal", "Which design?", ["Small", "Large"]);
+    await f.deps.attempts.create("pending-a1", {}, 0);
+    for (const attentionOnly of [false, true]) {
+      const view = await status(f.deps, { attentionOnly });
+      const before = JSON.stringify(view);
+      const text = describeStatus(view);
+      assert.match(text, /Active attempts: [^\n]+\nOpen person question/);
+      assert.ok(text.indexOf(`Open person question ${question.id}`) < text.indexOf("- pending-a1 attempt 1:"));
+      assert.ok(text.indexOf(`Open person question ${question.id}`) < text.indexOf("Objective goal:"));
+      assert.ok(text.includes(`switchboard objective answer goal --question ${question.id}`));
+      assert.deepEqual(view.openPersonQuestions, [question]);
+      assert.equal(JSON.stringify(view), before, "Text rendering does not change JSON records or their order");
+    }
+  } finally { f.tasks.close(); }
+});
 
 test("mixed context: active, finished and historical attempts agree in text and JSON attention-only output", async () => {
   const f = await fixture({ tasks: [task("active-a1"), task("finished-a1"), task("historical-a1"), task("failed-a1")],
