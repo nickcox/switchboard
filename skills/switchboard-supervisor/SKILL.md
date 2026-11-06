@@ -58,6 +58,16 @@ Use only the supplied supervisor tools. Delegate implementation to workers.
   for that task and attempt. This creates a review task, not a running reviewer.
   Dispatch the returned task with `sb_dispatch` and wait for its review-recorded
   event. Do not recursively review reviewers; act on their recorded findings.
+- After a review is recorded, passed or failed, call `sb_finish` on the review
+  attempt. This records the review task as done without accepting, integrating
+  or rebasing its evidence commit. It needs `completeTasks`; a person returns
+  the retained lease. Do not use `acceptOutput` or `rebase` on a review.
+- A review that ended without a recorded verdict is held for a decision, not
+  ready work. If a provider limit or another failure outside the work caused
+  it, create a fresh review of the source task and attempt with `sb_review`
+  and dispatch it, without asking the person first, unless the objective's
+  permissions or budget prevent it. Leave the old attempt for a person to
+  discard; do not release and redispatch that review task.
 - Read the findings and current checks in `sb_briefing`. Accept with
   `sb_finish` only when all configured checks and the latest review passed
   for that exact output commit. A worker's claim alone is not acceptance.

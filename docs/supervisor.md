@@ -100,6 +100,12 @@ switchboard supervise finish --objective release-notes --task write-notes
 switchboard supervise objective complete --objective release-notes --statements-file completion.json
 ```
 
+### Ending reviews
+
+After a review is recorded, passed or failed, call `sb_finish` on the review attempt (or `supervise finish --task <review-task-id>`). This needs only `completeTasks`: it records the review task as done, never accepts, integrates or rebases the review worker's evidence commit, and retains its lease for a person to return. `acceptOutput` and `rebase` are refused on review attempts. A person can return the lease with `finish --no-processes`; branch cleanup then deletes the review output branch only under the existing exact-commit and moved-branch rules. Discarding a recorded review also leaves its task done, with a note that the attempt was discarded, and keeps the recorded verdict.
+
+A review that ended without a recorded verdict is held for a decision and is not ready work. The briefing and status include a hold reason naming the reviewed task and attempt. Finish refuses and directs the person to discard the workspace; discard leaves the same hold. When a provider limit or another failure outside the work caused the missing verdict, use `sb_review` to create a fresh review of the source task and attempt, then dispatch it, rather than asking the person first, unless the objective's permissions or budget prevent it. Do not release and redispatch the old review task. Unknown worker state still needs reconciliation before treating the worker as stopped.
+
 ### Detached dispatch
 
 Unlike ordinary `dispatch --once`, supervisor dispatch records the request and its fixed supervisor caller in the database, then starts a separate Node.js process. That process reads its caller and explicit inputs from the recorded request – no argument or environment variable supplies its caller. It has its own process group, no terminal input, and standard output and error go to `supervisor-dispatches/<request-hash>/output.log` under the runtime root. The database stores that path relative to the runtime root; responses name it as `observed.outputPath`.

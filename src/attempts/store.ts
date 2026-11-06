@@ -234,7 +234,8 @@ export class AttemptStore {
       const applied = row.state === "in_flight" && row.hold_revision === row.started_hold_revision;
       this.recordReview(ref);
       const review = this.reviewAttempt(ref);
-      if (review && !review.recorded) outcome = { outcome: "hold", reason: review.holdReason, category: "failed" };
+      if (review && !review.recorded) outcome = { outcome: "hold", reason: review.holdReason,
+        category: outcome.category === "done" || outcome.category === "review_required" ? "failed" : outcome.category };
       if (applied) this.writeOutcome(ref.taskId, outcome.outcome, outcome.reason);
       this.insert(ref, "task_recorded", { ...outcome, applied });
       this.closeAttempt(ref);
@@ -545,7 +546,7 @@ export class AttemptStore {
     const reviews = source?.entries.filter(entry => entry.kind === "review_recorded").map(entry => entry.data)
       ?? (archived ? JSON.parse(String(archived.summary)).reviews ?? [] : []);
     return { recorded: reviews.some((review: { taskId: string; attempt: number }) => review.taskId === ref.taskId && review.attempt === ref.attempt),
-      holdReason: `Review ended without a recorded verdict for ${target.taskId} attempt ${target.attempt}; create a fresh review if needed` };
+      holdReason: `Review ended without a recorded verdict for ${target.taskId} attempt ${target.attempt}` };
   }
 
   /** Written with the review attempt's outcome, using only its immutable validated result. */
@@ -599,6 +600,7 @@ export class AttemptStore {
 
   /** Commits explicitly accepted, integrated, or recorded done under the attempt's delivery contract. */
   acceptedCommits(ref: AttemptRef): string[] {
+    if (this.reviewTask(ref.taskId)) return [];
     const record = this.read(ref);
     const commits = record.entries.flatMap(entry => entry.kind === "integrated" ? [String(entry.data.commit)]
       : entry.kind === "output_accepted" && record.confirmations?.some(c => c.fact === "output_accepted" && c.scope.commit === entry.data.commit) ? [String(entry.data.commit)] : []);

@@ -52,7 +52,10 @@ function stateOf(input: StateInput): AttemptState {
   const entries = input.record.entries;
   const recorded = [...entries].reverse().find(e => e.kind === "task_recorded");
   const task = input.task;
-  if (!input.leaseHeld) return task.state === "in_flight" ? "stopped" : "finished";
+  if (!input.leaseHeld) {
+    if (input.record.specification?.reviewTarget && task.held) return "held";
+    return task.state === "in_flight" ? "stopped" : "finished";
+  }
   if (!recorded) return "stopped";
   if (task.state === "done") return "awaiting_finish";
   if (!task.held) return "stopped";

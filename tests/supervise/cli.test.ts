@@ -581,6 +581,33 @@ test("unknown and closed objectives refuse all operations and new usage sessions
   assert.equal(f.person("objective", "show", "goal").objective.spending.cost, 1.07);
 });
 
+test("the restricted sb_finish route completes a review with only completeTasks and cannot return its lease", async () => {
+  const f = fixture();
+  f.ok("task", "add", "work", "Work", "--criterion", "Working output");
+  const started = f.ok("dispatch", "--task", "work");
+  assert.equal((await f.finished(started.attempt.requestId)).reason, "held");
+  const review = f.ok("review", "--task", "work");
+  f.scenario("review-pass");
+  const reviewing = f.ok("dispatch", "--task", review.task.id);
+  assert.equal((await f.finished(reviewing.attempt.requestId)).reason, "held");
+  const permissions = join(f.dir, "review-permissions.json");
+  writeFileSync(permissions, JSON.stringify(Object.fromEntries(Object.keys(defaultPermissions).map(key => [key, key === "completeTasks"]))));
+  f.person("objective", "update", "goal", "--permissions-file", permissions);
+  const planned = f.ok("finish", "--task", review.task.id, "--dry-run");
+  assert.equal(planned.reason, "planned");
+  const finished = f.ok("finish", "--task", review.task.id);
+  assert.equal(finished.reason, "finished");
+  assert.equal(finished.lease, "preserved");
+  assert.equal(f.ok("task", "show", review.task.id).task.state, "done");
+  assert.equal(f.ok("task", "show", "work").task.held, true);
+  const returned = f.run("finish", "--task", review.task.id, "--no-processes");
+  assert.equal(returned.code, 2);
+  assert.match(returned.value.detail, /no-processes/);
+  const entries = (await f.rows("SELECT entry FROM attempt_entries WHERE task = ? ORDER BY sequence", review.task.id)).map(row => JSON.parse(String(row.entry)));
+  assert.equal(entries.some(entry => ["output_accepted", "integration_started", "integrated", "lease_return_started"].includes(entry.kind)), false);
+  assert.equal(entries.filter(entry => entry.kind === "task_recorded").at(-1).askedBy, "supervisor:goal");
+});
+
 test("dispatch, continuation, review, finish and completion record the fixed supervisor actor", async () => {
   const f = fixture();
   f.ok("task", "add", "work", "Work", "--criterion", "Working output");
