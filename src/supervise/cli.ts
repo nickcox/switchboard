@@ -19,14 +19,14 @@ import { ObjectiveNotOpenError, requireOpenObjective } from "./errors.ts";
 import { askPerson } from "./questions.ts";
 import { handleEvent, waitForEvent } from "./events.ts";
 import { detachedDispatch } from "./dispatch.ts";
-import { recordSupervisorUsage } from "./usage.ts";
+import { recordSupervisorUsage, type SupervisorSessionKind } from "./usage.ts";
 import { recordSupervisorSessionState } from "./session-state.ts";
 
 const usage = "Usage: switchboard supervise <operation> --objective <id> [options] [--config <path>]";
 const selectors = ["lease", "task", "attempt"];
 const definition = ["title", "body", "body-file", "repo", "kind", "criterion", "criteria-file"];
 const allowed: Record<string, string[]> = {
-  usage: ["session", "cost", "tokens"],
+  usage: ["session", "session-kind", "cost", "tokens"],
   "session-state": ["session", "state", "error", "event", "retry-number", "retry-total", "next-retry-at"],
   briefing: [], note: [], ask: ["choice", "request-id"], wait: ["timeout"], handled: [],
   "objective show": [], "objective complete": ["statements-file"],
@@ -61,7 +61,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
   const { values, positionals, tokens } = parseArgs({ args: argv, allowPositionals: true, tokens: true, options: {
     error: { type: "string" }, event: { type: "string", multiple: true },
     "retry-number": { type: "string" }, "retry-total": { type: "string" }, "next-retry-at": { type: "string" },
-    session: { type: "string" }, cost: { type: "string" }, tokens: { type: "string" },
+    "session-kind": { type: "string" }, session: { type: "string" }, cost: { type: "string" }, tokens: { type: "string" },
     objective: { type: "string" }, config: { type: "string" }, json: { type: "boolean" },
     title: { type: "string" }, body: { type: "string" }, "body-file": { type: "string" },
     repo: { type: "string" }, kind: { type: "string" }, criterion: { type: "string", multiple: true }, "criteria-file": { type: "string" },
@@ -111,6 +111,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     if (!text.trim() || !Number.isFinite(value) || value < 0) invalid(`--${name} must be a finite nonnegative number or unknown`);
     return value;
   };
+  if (values["session-kind"] !== undefined && !["restricted", "unrestricted"].includes(values["session-kind"])) invalid("--session-kind must be restricted or unrestricted");
   const cost = usageNumber(values.cost, "cost");
   const tokensUsed = usageNumber(values.tokens, "tokens");
 
@@ -124,7 +125,7 @@ async function run(argv: string[]): Promise<{ code: number; value: unknown }> {
     const objectives = new ObjectiveStore(tasks.database, caller);
     const objective = objectives.read(caller.objectiveId) ?? rejected(`Objective ${caller.objectiveId} does not exist`);
     if (operation === "usage") return { code: 0, value: { ok: true, action, usage: await recordSupervisorUsage(tasks.database, caller, caller.objectiveId,
-      { sessionId: values.session!, cost, tokens: tokensUsed }) } };
+      { sessionId: values.session!, cost, tokens: tokensUsed, ...(values["session-kind"] === undefined ? {} : { sessionKind: values["session-kind"] as SupervisorSessionKind }) }) } };
     if (operation === "session-state") return { code: 0, value: { ok: true, action, sessionState: await recordSupervisorSessionState(tasks.database, caller, caller.objectiveId,
       { sessionId: values.session!, state: values.state as "stopped" | "resumed" | "retrying", ...(values.error === undefined ? {} : { errorMessage: values.error }), ...(values.event === undefined ? {} : { eventIds: values.event }),
         ...(values["retry-number"] === undefined ? {} : { retryNumber: Number(values["retry-number"]) }),

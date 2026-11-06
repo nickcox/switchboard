@@ -13,9 +13,9 @@ class FakePi implements SupervisorPi {
     await this.handlers.get(name)?.(event, context);
   }
 }
-const binding: SupervisorBinding = { objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private" };
+const binding: SupervisorBinding = { objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private", sessionKind: "unrestricted" };
 const reply = { exitCode: 0, stdout: '{"ok":true}' };
-function fixture(fail?: (args: string[]) => void) {
+function fixture(fail?: (args: string[]) => void, sessionKind = binding.sessionKind) {
   const pi = new FakePi();
   const snapshots: string[][] = [];
   const execute: ExecuteCommand = async (args, signal) => {
@@ -25,16 +25,16 @@ function fixture(fail?: (args: string[]) => void) {
     fail?.(args);
     return reply;
   };
-  registerSupervisor(pi, binding, execute, 5);
+  registerSupervisor(pi, { ...binding, sessionKind }, execute, 5);
   return { pi, snapshots };
 }
 const message = (cost?: number, totalTokens?: number) => ({ role: "assistant", content: "", usage: { ...(cost === undefined ? {} : { cost: { total: cost } }), ...(totalTokens === undefined ? {} : { totalTokens }) } });
 
-test("usage registers before the first request and reports cumulative totals after each turn", async () => {
-  const { pi, snapshots } = fixture();
+for (const sessionKind of ["restricted", "unrestricted"] as const) test(`${sessionKind} usage registers its kind once before the first request and reports cumulative totals after each turn`, async () => {
+  const { pi, snapshots } = fixture(undefined, sessionKind);
   try {
     await pi.emit("session_start");
-    assert.deepEqual(snapshots, [["--session", "session"]]);
+    assert.deepEqual(snapshots, [["--session", "session", "--session-kind", sessionKind]]);
     await pi.emit("before_provider_request");
     await pi.emit("turn_end", { message: message(0.25, 100), messageEntryId: "first" });
     await pi.emit("turn_end", { message: message(0.5, 200), messageEntryId: "second" });
@@ -42,7 +42,7 @@ test("usage registers before the first request and reports cumulative totals aft
     await pi.emit("turn_end", { message: message(0.5, 200), messageEntryId: "second" });
     await pi.emit("turn_end", { message: message(0, 0), messageEntryId: "third" });
     assert.deepEqual(snapshots, [
-      ["--session", "session"],
+      ["--session", "session", "--session-kind", sessionKind],
       ["--session", "session", "--cost", "0.25", "--tokens", "100"],
       ["--session", "session", "--cost", "0.75", "--tokens", "300"],
       ["--session", "session", "--cost", "0.75", "--tokens", "300"],
@@ -99,7 +99,7 @@ test("reload reconstructs total spending from all entries, including compacted m
     ], toolResultEntryIds: ["tool-1", "tool-2"] });
     await pi.emit("session_compact", { compactionEntry: { id: "compact-2", usage: message(0.125, 15).usage } });
     assert.deepEqual(snapshots, [
-      ["--session", "actual-session"],
+      ["--session", "actual-session", "--session-kind", "unrestricted"],
       ["--session", "actual-session", "--cost", "1.5", "--tokens", "150"],
       ["--session", "actual-session", "--cost", "1.875", "--tokens", "185"],
       ["--session", "actual-session", "--cost", "2", "--tokens", "200"],
@@ -115,7 +115,7 @@ test("registration failure is retried before a provider request; failed reports 
   try {
     await assert.rejects(pi.emit("session_start"), /Unavailable/);
     await pi.emit("before_provider_request");
-    assert.deepEqual(snapshots.slice(0, 3), Array.from({ length: 3 }, () => ["--session", "session"]));
+    assert.deepEqual(snapshots.slice(0, 3), Array.from({ length: 3 }, () => ["--session", "session", "--session-kind", "unrestricted"]));
     await assert.rejects(pi.emit("turn_end", { message: message(0.25, 100) }), /Unavailable/);
     await pi.emit("turn_end", { message: message(0.5, 200) });
     assert.deepEqual(snapshots.at(-1), ["--session", "session", "--cost", "0.75", "--tokens", "300"]);

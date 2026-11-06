@@ -32,7 +32,7 @@ function fixture(events: SupervisorEvent[] = [], resumeFailure?: "refusal" | "th
   const handled: string[] = [];
   let closed = false;
   let checkObjective: (() => Promise<void>) | undefined;
-  registerSupervisor(pi, { objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private",
+  registerSupervisor(pi, { sessionKind: "restricted", objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private",
     ...(delaysMs === undefined ? {} : { providerRetries: { delaysMs } }) }, async (args, signal) => {
     if (args[1] === "wait") {
       if (events.length) return reply({ ok: true, event: events.shift() });

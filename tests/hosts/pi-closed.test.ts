@@ -47,7 +47,7 @@ async function fixture() {
   const commit = "a".repeat(40);
   await attempts.appendConfirmed(ref, "output_accepted", { commit }, { fact: "output_accepted", scope: { commit } });
   const statements = [{ position: 1, statement: "Met", references: objectives.show("goal").availableReferences }];
-  const binding = { objectiveId: "goal", configPath, cliPath: resolve("src/cli.ts"), privateDirectory: dir, sessionId: "session" };
+  const binding = { sessionKind: "restricted" as const, objectiveId: "goal", configPath, cliPath: resolve("src/cli.ts"), privateDirectory: dir, sessionId: "session" };
   return { tasks, objectives, statements, binding };
 }
 const message = (cost: number, tokens: number) => ({ role: "assistant", content: "Reply", usage: { cost: { total: cost }, totalTokens: tokens } });
@@ -137,7 +137,7 @@ for (const state of ["completed", "abandoned"]) {
       waits++;
       return reply({ ok: false, reason: "rejected", code: "objective_not_open", state, detail: "The objective has closed – supervision is unavailable" }, 1);
     };
-    registerSupervisor(pi, { objectiveId: "goal", configPath: "/config", cliPath: "/cli", privateDirectory: "/private", sessionId: "session" }, execute, 5);
+    registerSupervisor(pi, { sessionKind: "restricted", objectiveId: "goal", configPath: "/config", cliPath: "/cli", privateDirectory: "/private", sessionId: "session" }, execute, 5);
     try {
       await pi.emit("session_start");
       await until(() => waits === 1);
@@ -166,7 +166,7 @@ for (const refusal of [
     waits++;
     return reply({ ok: false, reason: "rejected", ...refusal }, 1);
   };
-  registerSupervisor(pi, { objectiveId: "goal", configPath: "/config", cliPath: "/cli", privateDirectory: "/private", sessionId: "session" }, execute, 5);
+  registerSupervisor(pi, { sessionKind: "restricted", objectiveId: "goal", configPath: "/config", cliPath: "/cli", privateDirectory: "/private", sessionId: "session" }, execute, 5);
   try {
     await pi.emit("session_start");
     await until(() => waits >= 2);

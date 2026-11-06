@@ -255,6 +255,9 @@ export function describeStatus(value: StatusResult): string {
   }
   for (const objective of value.objectives) {
     lines.push(`Objective ${objective.id}: ${objective.request.replace(/\s+/g, " ").slice(0, 120)}; ${objective.doneTaskCount}/${objective.taskCount} tasks done; ${describeObjectiveBudget(objective)}${objective.attentionRequired ? "; NEEDS ATTENTION" : ""}`);
+    for (const session of objective.spending.supervisors.sessions) {
+      if (session.sessionKind !== "restricted") lines.push(`  Supervisor session ${session.sessionId}: ${session.sessionKind}${session.limitsNotice ? ` – ${session.limitsNotice.toLowerCase()}` : ""}`);
+    }
     for (const session of objective.stoppedSessions) {
       lines.push(`  Supervisor session ${session.sessionId} stopped at ${session.observedAt}: ${session.errorMessage}`);
       lines.push(`  Delivered events without a successful response: ${session.eventIds.join(", ") || "none"}`);

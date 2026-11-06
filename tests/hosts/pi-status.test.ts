@@ -35,7 +35,7 @@ function fixture(events: SupervisorEvent[] = [], delaysMs?: number[], successful
     ui: { setStatus(key, text) { assert.equal(key, "switchboard"); statuses.push(text); } },
     sessionManager: { getSessionId: () => "session", getEntries: () => [] },
   };
-  registerSupervisor(pi, { objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private",
+  registerSupervisor(pi, { sessionKind: "restricted", objectiveId: "goal", sessionId: "session", configPath: "/config", cliPath: "/cli", privateDirectory: "/private",
     ...(delaysMs === undefined ? {} : { providerRetries: { delaysMs } }) }, async (args, signal) => {
     calls.push(args);
     if (closed && args[1] === "objective" && successfulClosure) return reply({ ok: true, objective: { state: closed } });

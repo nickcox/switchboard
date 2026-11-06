@@ -34,7 +34,7 @@ async function directory() {
 }
 async function binding(): Promise<SupervisorBinding> {
   const dir = await directory();
-  return { objectiveId: "fixed-objective", configPath: join(dir, "config.json"), cliPath: resolve("src/cli.ts"), privateDirectory: dir, sessionId: "fixed-session" };
+  return { objectiveId: "fixed-objective", configPath: join(dir, "config.json"), cliPath: resolve("src/cli.ts"), privateDirectory: dir, sessionId: "fixed-session", sessionKind: "restricted" };
 }
 const reply = (value: unknown, exitCode = 0) => ({ exitCode, stdout: JSON.stringify(value) + "\n" });
 async function until(check: () => boolean) {
@@ -393,6 +393,16 @@ test("launcher fixes the tool allowlist, disables discovery and supplies a persi
     assert.ok((await stat(launch.cwd)).isDirectory());
     assert.ok((await stat(option("--session-dir"))).isDirectory());
     const b = JSON.parse(await readFile(launch.env.SWITCHBOARD_SUPERVISOR_BINDING!, "utf8"));
+    assert.equal(b.sessionKind, "restricted");
+    assert.deepEqual(launch.args, [f.config.worker.piEntrypoint,
+      "--session-id", b.sessionId, "--session-dir", option("--session-dir"),
+      "--provider", "worker-provider", "--model", "worker-model", "--thinking", "high",
+      "--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve",
+      "--extension", resolve("src/hosts/pi/extension.ts"), "--tools", supervisorToolNames.join(","),
+      "--system-prompt", "You are the Switchboard supervisor for one objective. Act only through the supplied supervisor tools and follow the supervisor routine.",
+      "--append-system-prompt", resolve("skills/switchboard-supervisor/SKILL.md"),
+      "--", "Read the current briefing with sb_briefing before doing anything else. Continue this objective from Switchboard's records.",
+    ]);
     assert.equal(b.objectiveId, "goal");
     assert.equal(b.configPath, f.configPath);
     assert.equal(b.sessionId, option("--session-id"));
@@ -422,17 +432,47 @@ test("launcher fixes the tool allowlist, disables discovery and supplies a persi
   } finally { f.tasks.close(); }
 });
 
+test("unrestricted launches keep normal Pi resources and append the routine and authority instruction", async () => {
+  const f = await objectiveFixture();
+  try {
+    for (const settings of [undefined, { provider: "personal-provider", model: "personal-model", thinking: "low" as const }]) {
+      if (settings) f.config.supervisor = settings;
+      const restricted = await prepareSupervisor(f.config, f.configPath, "goal");
+      const launch = await prepareSupervisor(f.config, f.configPath, "goal", true);
+      const option = (key: string) => launch.args[launch.args.indexOf(key) + 1]!;
+      const b = bindingSchema.parse(JSON.parse(await readFile(launch.env.SWITCHBOARD_SUPERVISOR_BINDING!, "utf8")));
+      assert.equal(b.sessionKind, "unrestricted");
+      for (const flag of ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--tools", "--system-prompt"]) assert.equal(launch.args.includes(flag), false, flag);
+      for (const key of ["--provider", "--model", "--thinking", "--extension"]) assert.equal(option(key), restricted.args[restricted.args.indexOf(key) + 1]);
+      assert.equal(option("--session-id"), b.sessionId);
+      assert.ok(option("--session-dir").startsWith(f.config.runtimeRoot));
+      assert.ok((await stat(option("--session-dir"))).isDirectory());
+      assert.ok((await stat(launch.cwd)).isDirectory());
+      const prompts = launch.args.flatMap((arg, index) => arg === "--append-system-prompt" ? [launch.args[index + 1]!] : []);
+      assert.equal(prompts.length, 2);
+      assert.match(prompts[0]!, /unrestricted supervisor session for objective goal/);
+      assert.match(prompts[0]!, /only through the sb_ tools/);
+      assert.match(prompts[0]!, /Do not run switchboard commands or change Switchboard's database through other tools/);
+      assert.match(prompts[0]!, /limits are not enforced/);
+      assert.equal(prompts[1], resolve("skills/switchboard-supervisor/SKILL.md"));
+      assert.equal(launch.args.at(-1), restricted.args.at(-1));
+    }
+  } finally { f.tasks.close(); }
+});
+
 test("supervisor start CLI launches the interactive child and refuses a closed objective before launch", async () => {
   const f = await objectiveFixture();
   const log = join(f.dir, "pi.json");
   try {
-    const run = () => spawnSync(process.execPath, [resolve("src/cli.ts"), "supervisor", "start", "--objective", "goal", "--config", f.configPath], {
+    const run = (...options: string[]) => spawnSync(process.execPath, [resolve("src/cli.ts"), "supervisor", "start", "--objective", "goal", "--config", f.configPath, ...options], {
       env: { ...process.env, FAKE_PI_SUPERVISOR_LOG: log }, encoding: "utf8",
     });
-    const result = run();
+    const result = run("--unrestricted");
     assert.equal(result.status, 0, result.stderr);
     const launched = JSON.parse(await readFile(log, "utf8"));
     assert.ok(launched.args.includes("--extension"));
+    assert.equal(launched.args.includes("--tools"), false);
+    assert.equal(launched.args.includes("--system-prompt"), false);
     assert.equal(launched.args.includes("--mode"), false);
     assert.equal(launched.args.includes("--print"), false);
     assert.ok(launched.cwd.startsWith(f.config.runtimeRoot));

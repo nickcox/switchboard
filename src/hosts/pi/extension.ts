@@ -11,6 +11,7 @@ import { providerRetriesSchema } from "../../supervise/provider-retries.ts";
 export const bindingSchema = z.strictObject({
   objectiveId: z.string().min(1), configPath: z.string().min(1), cliPath: z.string().min(1),
   privateDirectory: z.string().min(1), sessionId: z.string().min(1),
+  sessionKind: z.enum(["restricted", "unrestricted"]),
   providerRetries: providerRetriesSchema.optional(),
 });
 export type SupervisorBinding = z.infer<typeof bindingSchema>;
@@ -218,7 +219,7 @@ export function registerSupervisor(pi: SupervisorPi, binding: SupervisorBinding,
   };
   async function registerUsage() {
     if (registered) return;
-    registration ??= command(["usage"], ["--session", sessionId]).then(reply => {
+    registration ??= command(["usage"], ["--session", sessionId, "--session-kind", binding.sessionKind]).then(reply => {
       if (reply.exitCode !== 0 || JSON.parse(reply.stdout).ok !== true) throw new Error("Supervisor usage registration failed");
       registered = true;
     }).finally(() => { registration = undefined; });

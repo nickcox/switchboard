@@ -59,7 +59,7 @@ export class Database {
     const result = new Database(db, retryMs, path);
     try {
       const version = Number(result.get("PRAGMA user_version")!.user_version);
-      if (version > 21) throw new Error(`Unsupported database schema version ${version}`);
+      if (version > 22) throw new Error(`Unsupported database schema version ${version}`);
       if (options.migrate === false) return result;
       if (version === 0) await result.transaction(() => {
         // Another opener may have migrated while this connection waited for the write lock.
@@ -516,6 +516,23 @@ export class Database {
           CREATE TRIGGER supervisor_session_states_not_removed BEFORE DELETE ON supervisor_session_states
             BEGIN SELECT RAISE(ABORT, 'Supervisor session states cannot be removed'); END;
           PRAGMA user_version = 21;
+        `);
+      });
+      if (Number(result.get("PRAGMA user_version")!.user_version) < 22) await result.transaction(() => {
+        if (Number(result.get("PRAGMA user_version")!.user_version) >= 22) return;
+        db.exec(`
+          CREATE TABLE supervisor_session_kinds (
+            session_id TEXT PRIMARY KEY CHECK(length(trim(session_id)) > 0),
+            kind TEXT NOT NULL CHECK(kind IN ('restricted','unrestricted')));
+          CREATE TRIGGER supervisor_session_kinds_not_replaced BEFORE INSERT ON supervisor_session_kinds
+            WHEN EXISTS(SELECT 1 FROM supervisor_session_kinds WHERE session_id = NEW.session_id)
+              OR EXISTS(SELECT 1 FROM supervisor_usage WHERE session_id = NEW.session_id)
+            BEGIN SELECT RAISE(ABORT, 'Supervisor session kind can only be recorded at registration'); END;
+          CREATE TRIGGER supervisor_session_kinds_immutable BEFORE UPDATE ON supervisor_session_kinds
+            BEGIN SELECT RAISE(ABORT, 'Supervisor session kind cannot be changed'); END;
+          CREATE TRIGGER supervisor_session_kinds_not_removed BEFORE DELETE ON supervisor_session_kinds
+            BEGIN SELECT RAISE(ABORT, 'Supervisor session kind cannot be removed'); END;
+          PRAGMA user_version = 22;
         `);
       });
       return result;

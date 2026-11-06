@@ -23,7 +23,7 @@ import { answerQuestion } from "./dispatch/answer.ts";
 const usage = `Usage:
   switchboard --version
   switchboard supervise <operation> --objective <id> [options] [--config <path>]
-  switchboard supervisor start --objective <id> [--config <path>]
+  switchboard supervisor start --objective <id> [--unrestricted] [--config <path>]
   switchboard task <add|show|list|ready|update|hold|release|block|unblock|done|reopen|convert-criteria> [id] [options] [--json]
   switchboard objective <add|show|list|update|confirm-budget|complete|abandon|reopen|answer> [id] [options] [--json]
   switchboard import (--attempts | --runtime | --tasks-axi <backlog.md> [--archive <done-archive.md>]) [--json] [--config <path>]

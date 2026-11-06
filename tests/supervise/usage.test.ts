@@ -150,6 +150,7 @@ test("schema 18 migrates concurrently without changing existing records", async 
   await f.database.transaction(() => {
     f.database.run("DROP TABLE supervisor_session_states");
     f.database.run("DROP TABLE supervisor_usage");
+    f.database.run("DROP TABLE supervisor_session_kinds");
     f.database.run("PRAGMA user_version = 18");
   });
   const before = contents(f.database);
@@ -157,8 +158,8 @@ test("schema 18 migrates concurrently without changing existing records", async 
   const databases = await Promise.all([Database.open(f.path), Database.open(f.path)]);
   try {
     for (const database of databases) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 21);
-      const { supervisor_session_states, supervisor_usage, ...after } = contents(database);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 22);
+      const { supervisor_session_kinds, supervisor_session_states, supervisor_usage, ...after } = contents(database);
       assert.deepEqual(after, before);
       assert.deepEqual(supervisor_usage, []);
       assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);

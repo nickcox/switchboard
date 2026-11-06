@@ -173,6 +173,37 @@ test("successful supervision in a replacement session clears attention in every 
   attention(false);
 });
 
+test("session kinds and unrestricted limits are visible in every view without requiring attention", () => {
+  const f = fixture();
+  for (const kind of ["restricted", "unrestricted"]) f.ok("usage", "--session", `pi-${kind}`, "--session-kind", kind);
+  f.ok("usage", "--session", "legacy");
+  assert.equal(f.run("usage", "--session", "pi-restricted", "--session-kind", "unrestricted").code, 1);
+  assert.equal(f.run("usage", "--session", "legacy", "--session-kind", "restricted").code, 1);
+  assert.equal(f.run("usage", "--session", "invalid", "--session-kind", "other").code, 2);
+  const check = (objective: { attentionRequired: boolean; spending: { supervisors: { sessions: { sessionId: string; sessionKind: string; limitsNotice: string | null }[] } } }) => {
+    assert.equal(objective.attentionRequired, false);
+    assert.deepEqual(objective.spending.supervisors.sessions.map(({ sessionId, sessionKind, limitsNotice }) => ({ sessionId, sessionKind, limitsNotice })), [
+      { sessionId: "legacy", sessionKind: "not recorded", limitsNotice: null },
+      { sessionId: "pi-restricted", sessionKind: "restricted", limitsNotice: null },
+      { sessionId: "pi-unrestricted", sessionKind: "unrestricted", limitsNotice: "The objective's limits were not enforced" },
+    ]);
+  };
+  for (const objective of [f.person("objective", "show", "goal").objective, f.ok("objective", "show").objective, f.ok("briefing").objective]) check(objective);
+  const showText = f.raw("objective", "show", "goal").stdout;
+  assert.ok(showText.includes("unrestricted"));
+  assert.ok(showText.includes("The objective's limits were not enforced"));
+  for (const flags of [[], ["--attention-only"]]) {
+    const json = JSON.parse(f.raw("status", ...flags, "--json").stdout);
+    assert.equal(json.reason, "clear");
+    check(json.objectives.find((item: { id: string }) => item.id === "goal"));
+    const text = f.raw("status", ...flags).stdout;
+    assert.ok(text.includes("Supervisor session pi-unrestricted: unrestricted – the objective's limits were not enforced"));
+    assert.ok(text.includes("Supervisor session legacy: not recorded"));
+    assert.equal(text.includes("Supervisor session pi-restricted:"), false);
+    assert.equal(text.includes("NEEDS ATTENTION"), false);
+  }
+});
+
 test("host usage records simple cumulative Pi counts and appears separately in show and briefing", () => {
   const f = fixture();
   const unknown = f.ok("usage", "--session", "pi-session").usage;

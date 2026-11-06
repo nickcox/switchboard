@@ -15,7 +15,7 @@ import type { SupervisorBinding } from "./extension.ts";
 export type SupervisorLaunch = { executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv };
 
 /** A new session always reconstructs its state from the briefing, never an old transcript. */
-export async function prepareSupervisor(config: Config, configPath: string, objectiveId: string): Promise<SupervisorLaunch> {
+export async function prepareSupervisor(config: Config, configPath: string, objectiveId: string, unrestricted = false): Promise<SupervisorLaunch> {
   await requireRetainedStorage(config.runtimeRoot, [config.workspaces.poolRoot]);
   await requireRetainedStorage(databasePath(config), [config.workspaces.poolRoot]);
   const tasks = await SqliteTaskStore.open({ caller: commandLineCaller(), path: databasePath(config), repo: config.tasks.repo, retryMs: config.databaseRetryMs });
@@ -34,7 +34,7 @@ export async function prepareSupervisor(config: Config, configPath: string, obje
   for (const path of [cwd, sessions, privateDirectory]) await mkdir(path, { mode: 0o700 });
   const sessionId = randomUUID();
   const binding: SupervisorBinding = {
-    objectiveId, configPath: resolve(configPath), sessionId, privateDirectory,
+    objectiveId, configPath: resolve(configPath), sessionId, privateDirectory, sessionKind: unrestricted ? "unrestricted" : "restricted",
     cliPath: fileURLToPath(new URL("../../cli.ts", import.meta.url)),
     ...(config.supervisor?.providerRetries === undefined ? {} : { providerRetries: config.supervisor.providerRetries }),
   };
@@ -52,11 +52,13 @@ export async function prepareSupervisor(config: Config, configPath: string, obje
       "--session-id", sessionId, "--session-dir", sessions,
       "--provider", settings.provider, "--model", settings.model,
       ...(settings.thinking === undefined ? [] : ["--thinking", settings.thinking]),
-      "--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve",
+      ...(unrestricted ? [] : ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve"]),
       "--extension", fileURLToPath(new URL("./extension.ts", import.meta.url)),
-      "--tools", supervisorToolNames.join(","),
-      // --no-context-files does not suppress a user-level SYSTEM.md; fix the role as well as the routine.
-      "--system-prompt", "You are the Switchboard supervisor for one objective. Act only through the supplied supervisor tools and follow the supervisor routine.",
+      ...(unrestricted ? ["--append-system-prompt", `This is an unrestricted supervisor session for objective ${objectiveId}. Act on Switchboard only through the sb_ tools. Do not run switchboard commands or change Switchboard's database through other tools. The objective's limits are not enforced in this session.`] : [
+        "--tools", supervisorToolNames.join(","),
+        // --no-context-files does not suppress a user-level SYSTEM.md; fix the role as well as the routine.
+        "--system-prompt", "You are the Switchboard supervisor for one objective. Act only through the supplied supervisor tools and follow the supervisor routine.",
+      ]),
       "--append-system-prompt", fileURLToPath(new URL("../../../skills/switchboard-supervisor/SKILL.md", import.meta.url)),
       "--", "Read the current briefing with sb_briefing before doing anything else. Continue this objective from Switchboard's records.",
     ],
@@ -79,15 +81,15 @@ export async function launchSupervisor(launch: SupervisorLaunch): Promise<number
 export async function supervisorCommand(argv: string[]): Promise<number> {
   try {
     const { values, positionals, tokens } = parseArgs({ args: argv, allowPositionals: true, tokens: true, options: {
-      objective: { type: "string" }, config: { type: "string" },
+      objective: { type: "string" }, config: { type: "string" }, unrestricted: { type: "boolean" },
     } });
     if (positionals.length !== 1 || positionals[0] !== "start" || !values.objective ||
       tokens.filter(token => token.kind === "option" && token.name === "objective").length !== 1) {
-      throw new Error("Usage: switchboard supervisor start --objective <id> [--config <path>]");
+      throw new Error("Usage: switchboard supervisor start --objective <id> [--unrestricted] [--config <path>]");
     }
     const configPath = resolve(values.config ?? process.env.SWITCHBOARD_CONFIG ?? "switchboard.json");
     const config = await loadConfig(configPath);
-    return await launchSupervisor(await prepareSupervisor(config, configPath, values.objective));
+    return await launchSupervisor(await prepareSupervisor(config, configPath, values.objective, values.unrestricted));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 2;

@@ -17,7 +17,7 @@ Use local storage, not network or synced folders. Switchboard probes exclusive c
 
 ## Supervisor model
 
-`supervisor` is an optional object with optional `provider`, `model` and `thinking` fields. `switchboard supervisor start` uses these for its interactive Pi session; each omitted field defaults to the worker's corresponding field. Thinking accepts the same levels as `worker.thinking`. The Pi entrypoint remains `worker.piEntrypoint`. See [starting a Pi supervisor](supervisor.md#starting-a-pi-supervisor) for session isolation and limits.
+`supervisor` is an optional object with optional `provider`, `model` and `thinking` fields. `switchboard supervisor start` uses these for its interactive Pi session; each omitted field defaults to the worker's corresponding field. Thinking accepts the same levels as `worker.thinking`. The Pi entrypoint remains `worker.piEntrypoint`. The launcher defaults to a restricted session; `supervisor start --unrestricted` keeps Pi's normal tools and the person's resources, so the objective's limits are not enforced across the session. This is a per-launch option, not a configuration setting. See [starting a Pi supervisor](supervisor.md#starting-a-pi-supervisor) for both kinds of session and their limits.
 
 ### Supervisor provider retries
 

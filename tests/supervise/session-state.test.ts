@@ -153,6 +153,7 @@ test("schema 20 migration preserves all records, append order and append-only tr
       ...[row.rowid!, row.session_id!, row.sequence!, row.objective!, row.observed_at!, row.state!, row.error_message!, row.event_ids!]);
     f.database.run("CREATE INDEX supervisor_session_states_by_objective ON supervisor_session_states(objective,session_id,sequence)");
     for (const trigger of triggers) f.database.run(String(trigger.sql));
+    f.database.run("DROP TABLE supervisor_session_kinds");
     f.database.run("PRAGMA user_version = 20");
   });
   const before = contents(f.database);
@@ -160,10 +161,10 @@ test("schema 20 migration preserves all records, append order and append-only tr
   const databases = await Promise.all([Database.open(f.path), Database.open(f.path)]);
   try {
     for (const database of databases) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 21);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 22);
       assert.deepEqual(database.all(`SELECT rowid,${columns} FROM supervisor_session_states ORDER BY rowid`), oldRows);
       const { supervisor_session_states: _old, ...otherBefore } = before;
-      const { supervisor_session_states: _new, ...otherAfter } = contents(database);
+      const { supervisor_session_kinds, supervisor_session_states: _new, ...otherAfter } = contents(database);
       assert.deepEqual(otherAfter, otherBefore);
       assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);
       assert.deepEqual(database.all("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'supervisor_session_states'"), triggers);
@@ -183,12 +184,13 @@ test("schema 20 migration preserves all records, append order and append-only tr
   } finally { for (const database of databases) database.close(); }
 });
 
-test("schema 19 migrates concurrently to schema 21 without changing existing records", async () => {
+test("schema 19 migrates concurrently to schema 22 without changing existing records", async () => {
   const f = await fixture();
   await f.tasks.add({ id: "work", title: "Preserve this", objectiveId: "goal" });
   await f.objectives.update("goal", { scope: "Keep the scope" });
   await f.database.transaction(() => {
     f.database.run("DROP TABLE supervisor_session_states");
+    f.database.run("DROP TABLE supervisor_session_kinds");
     f.database.run("PRAGMA user_version = 19");
   });
   const before = contents(f.database);
@@ -196,8 +198,8 @@ test("schema 19 migrates concurrently to schema 21 without changing existing rec
   const databases = await Promise.all([Database.open(f.path), Database.open(f.path)]);
   try {
     for (const database of databases) {
-      assert.equal(database.get("PRAGMA user_version")!.user_version, 21);
-      const { supervisor_session_states, ...after } = contents(database);
+      assert.equal(database.get("PRAGMA user_version")!.user_version, 22);
+      const { supervisor_session_kinds, supervisor_session_states, ...after } = contents(database);
       assert.deepEqual(after, before);
       assert.deepEqual(supervisor_session_states, []);
       assert.deepEqual(database.all("PRAGMA foreign_key_check"), []);
